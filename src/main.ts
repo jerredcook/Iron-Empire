@@ -75,7 +75,9 @@ async function boot(): Promise<void> {
       inspector.select(null);
       minimap.setSelection(null);
     },
-    (line) => network.addTrain(line, selectedLoco)
+    (line) => {
+      if (!line.owner.isAI) network.addTrain(line, selectedLoco);
+    }
   );
   const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());
   picker.onSelect = (sel) => {

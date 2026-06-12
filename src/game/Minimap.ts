@@ -118,10 +118,10 @@ export class Minimap {
     ctx.clearRect(0, 0, SIZE, SIZE);
     ctx.drawImage(this.terrain, 0, 0, SIZE, SIZE);
 
-    // Rail lines.
-    ctx.strokeStyle = 'rgba(245,235,210,0.85)';
+    // Rail lines, tinted by their owner.
     ctx.lineWidth = 1.6;
     for (const l of this.network.lines) {
+      ctx.strokeStyle = '#' + l.owner.color.toString(16).padStart(6, '0');
       ctx.beginPath();
       ctx.moveTo(this.wx(l.a.pos.x), this.wy(l.a.pos.z));
       ctx.lineTo(this.wx(l.b.pos.x), this.wy(l.b.pos.z));
@@ -149,15 +149,16 @@ export class Minimap {
       ctx.stroke();
     }
 
-    // Trains.
+    // Trains, tinted by owner (selected one in white).
     const selTrain = this.sel?.kind === 'train' ? this.sel.train : null;
     for (const l of this.network.lines) {
+      const color = '#' + l.owner.color.toString(16).padStart(6, '0');
       for (const t of l.trains) {
         const p = t.headPosition;
         const on = t === selTrain;
         ctx.beginPath();
         ctx.arc(this.wx(p.x), this.wy(p.z), on ? 3.4 : 2.4, 0, Math.PI * 2);
-        ctx.fillStyle = on ? '#ffffff' : '#ff5a3c';
+        ctx.fillStyle = on ? '#ffffff' : color;
         ctx.fill();
       }
     }

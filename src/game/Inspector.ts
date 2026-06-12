@@ -154,7 +154,10 @@ export class Inspector {
 
     html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.12)">`;
     html += `<span style="opacity:0.7;font-size:11.5px">${line.trains.length} train${line.trains.length > 1 ? 's' : ''} on line</span>`;
-    html += `<span data-addtrain style="cursor:pointer;pointer-events:auto;padding:4px 10px;border-radius:6px;border:1px solid rgba(143,255,168,0.5);color:#8fffa8;font-size:11.5px">+ Add train</span></div>`;
+    html += line.owner.isAI
+      ? `<span style="font-size:11.5px;color:#${line.owner.color.toString(16).padStart(6, '0')}">${line.owner.name}</span>`
+      : `<span data-addtrain style="cursor:pointer;pointer-events:auto;padding:4px 10px;border-radius:6px;border:1px solid rgba(143,255,168,0.5);color:#8fffa8;font-size:11.5px">+ Add train</span>`;
+    html += `</div>`;
     return html;
   }
 

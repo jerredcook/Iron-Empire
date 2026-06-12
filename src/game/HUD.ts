@@ -28,6 +28,7 @@ export class HUD {
   private qualityBtns = new Map<QualityLevel, HTMLButtonElement>();
   private upkeep!: HTMLDivElement;
   private goalLine!: HTMLDivElement;
+  private rivalLine!: HTMLDivElement;
   private debtLine!: HTMLDivElement;
   private engineSel!: HTMLSelectElement;
   private overlay!: HTMLDivElement;
@@ -74,7 +75,8 @@ export class HUD {
       border: '1px solid rgba(143,255,168,0.25)',
       borderRadius: '6px',
     });
-    top.append(this.money, this.year, this.upkeep, this.goalLine);
+    this.rivalLine = el('div', { fontSize: '12px', opacity: '0.75', marginTop: '6px' });
+    top.append(this.money, this.year, this.upkeep, this.goalLine, this.rivalLine);
 
     // Finance: outstanding debt + bond/repay controls.
     this.debtLine = el('div', { fontSize: '12px', opacity: '0.7', marginTop: '8px' });
@@ -341,6 +343,13 @@ export class HUD {
             this.network.interestPerYear
           ).toLocaleString()}/yr)</span>`
         : `Debt-free <span style="opacity:0.6">· borrow up to $${Math.round(this.network.creditLimit / 1000)}k</span>`;
+
+    const rival = this.network.rival;
+    const lead = this.network.netWorth - rival.netWorth;
+    this.rivalLine.innerHTML =
+      `<span style="color:#${rival.color.toString(16).padStart(6, '0')}">${rival.name}</span> ` +
+      `$${Math.round(rival.netWorth).toLocaleString()} ` +
+      `<span style="opacity:0.6">(${lead >= 0 ? 'lead' : 'behind'} $${Math.round(Math.abs(lead)).toLocaleString()})</span>`;
 
     if (this.network.status !== 'playing' && this.overlay.style.display === 'none') this.showEnd();
 

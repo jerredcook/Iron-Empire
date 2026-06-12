@@ -5,7 +5,7 @@ import { Train } from './Train';
 import { CargoKind, haulRevenue } from './Cargo';
 import { Archetype, CitySite, Recipe } from './Economy';
 import { buildTown, buildStation } from './Buildings';
-import { LocoClass } from './Locomotives';
+import { LocoClass, defaultLoco } from './Locomotives';
 
 export const STOCK_CAP = 90; // a city can only stockpile so much waiting freight
 const LOAD_PER_STOP = 40; // units a train can take on in one berth
@@ -43,11 +43,75 @@ export interface GLine {
   track: Track;
   /** One or more trains shuttling the line — add more for throughput. */
   trains: Train[];
+  owner: Company;
 }
 
 export interface Delivery {
   text: string;
   amount: number;
+}
+
+/**
+ * A railroad operator with its own treasury, debt, and roster of lines — the player is
+ * one, each rival tycoon another. They share the world's cities (and so compete for the
+ * same waiting cargo), but their books are separate.
+ */
+export class Company {
+  money: number;
+  debt = 0;
+  readonly lines: GLine[] = [];
+  /** AI build cadence accumulator. */
+  aiTimer = 4;
+
+  constructor(
+    readonly name: string,
+    readonly color: number,
+    readonly isAI: boolean,
+    startMoney: number
+  ) {
+    this.money = startMoney;
+  }
+
+  /** Cash plus fleet salvage minus debt. */
+  get netWorth(): number {
+    let w = this.money - this.debt;
+    for (const l of this.lines) for (const t of l.trains) w += t.locoClass.cost * 0.5;
+    return w;
+  }
+
+  get upkeepPerYear(): number {
+    let u = 0;
+    for (const l of this.lines) for (const t of l.trains) u += t.locoClass.upkeep;
+    return u;
+  }
+
+  get interestPerYear(): number {
+    return this.debt * INTEREST_RATE;
+  }
+
+  get creditLimit(): number {
+    return Math.max(0, Math.round(this.netWorth * 1.5 + 300_000 - this.debt));
+  }
+
+  issueBond(amount: number): boolean {
+    if (amount <= 0 || amount > this.creditLimit) return false;
+    this.money += amount;
+    this.debt += amount;
+    return true;
+  }
+
+  repayDebt(amount: number): boolean {
+    const pay = Math.min(amount, this.debt, this.money);
+    if (pay <= 0) return false;
+    this.money -= pay;
+    this.debt -= pay;
+    return true;
+  }
+
+  /** Has this company already joined these two cities? */
+  connects(a: GStation, b: GStation): boolean {
+    return this.lines.some((l) => (l.a === a && l.b === b) || (l.a === b && l.b === a));
+  }
 }
 
 /**
@@ -58,10 +122,11 @@ export interface Delivery {
  */
 export class Network {
   readonly stations: GStation[] = [];
+  /** Every line in the world, both companies'. */
   readonly lines: GLine[] = [];
-  money = 850_000;
-  /** Outstanding bond principal; accrues interest until repaid. */
-  debt = 0;
+  readonly player = new Company('Iron Empire', 0x8fffa8, false, 850_000);
+  readonly rival = new Company('Atlas & Pacific', 0xff8a4d, true, 850_000);
+  readonly companies = [this.player, this.rival];
   year = 1862;
   status: GameStatus = 'playing';
   readonly goal: Goal = { targetCash: 2_500_000, byYear: 1890 };
@@ -71,45 +136,30 @@ export class Network {
 
   constructor(private scene: THREE.Scene, private field: Heightfield, private seed: number) {}
 
-  /** Cash plus fleet salvage minus debt — what the objective is measured against. */
+  // The HUD/builder talk to "the railroad" — i.e. the player company.
+  get money(): number {
+    return this.player.money;
+  }
+  get debt(): number {
+    return this.player.debt;
+  }
   get netWorth(): number {
-    let w = this.money - this.debt;
-    for (const l of this.lines) for (const t of l.trains) w += t.locoClass.cost * 0.5;
-    return w;
+    return this.player.netWorth;
   }
-
-  /** Combined annual maintenance of every train in service. */
   get upkeepPerYear(): number {
-    let u = 0;
-    for (const l of this.lines) for (const t of l.trains) u += t.locoClass.upkeep;
-    return u;
+    return this.player.upkeepPerYear;
   }
-
-  /** Annual interest the current debt is accruing. */
   get interestPerYear(): number {
-    return this.debt * INTEREST_RATE;
+    return this.player.interestPerYear;
   }
-
-  /** How much more the railroad can borrow against its worth. */
   get creditLimit(): number {
-    return Math.max(0, Math.round(this.netWorth * 1.5 + 300_000 - this.debt));
+    return this.player.creditLimit;
   }
-
-  /** Take on a bond: cash now against principal owed (capped by credit). */
   issueBond(amount: number): boolean {
-    if (amount <= 0 || amount > this.creditLimit) return false;
-    this.money += amount;
-    this.debt += amount;
-    return true;
+    return this.player.issueBond(amount);
   }
-
-  /** Pay down principal from cash. */
   repayDebt(amount: number): boolean {
-    const pay = Math.min(amount, this.debt, this.money);
-    if (pay <= 0) return false;
-    this.money -= pay;
-    this.debt -= pay;
-    return true;
+    return this.player.repayDebt(amount);
   }
 
   /** Build the economic node + its town/depot visuals from a generated site. */
@@ -182,46 +232,52 @@ export class Network {
    * on it. Returns false (building nothing) if the player can't afford it.
    */
   buildLine(a: GStation, mids: THREE.Vector3[], b: GStation, loco: LocoClass): boolean {
+    return this.buildLineFor(this.player, a, mids, b, loco);
+  }
+
+  /** Commit a line owned by the given company. */
+  buildLineFor(owner: Company, a: GStation, mids: THREE.Vector3[], b: GStation, loco: LocoClass): boolean {
     const waypoints = [a.pos.clone(), ...mids.map((m) => m.clone()), b.pos.clone()];
     const cost = this.lineCost(waypoints, loco);
-    if (cost > this.money) return false;
-    this.money -= cost;
+    if (cost > owner.money) return false;
+    owner.money -= cost;
 
     const track = new Track(this.field, waypoints);
     this.scene.add(track.group);
 
-    const line: GLine = { a, b, track, trains: [] };
+    const line: GLine = { a, b, track, trains: [], owner };
     this.lines.push(line);
+    owner.lines.push(line);
     this.spawnTrain(line, loco);
     return true;
   }
 
   /** Buy and place an additional train on an existing line for more throughput. */
   addTrain(line: GLine, loco: LocoClass): boolean {
-    if (loco.cost > this.money) return false;
-    this.money -= loco.cost;
+    if (loco.cost > line.owner.money) return false;
+    line.owner.money -= loco.cost;
     this.spawnTrain(line, loco);
     return true;
   }
 
   /** Put a train on a line, staggered so multiple trains don't ride on top of one
-   *  another, and wire its berth servicing. */
+   *  another, and wire its berth servicing to the line's owner. */
   private spawnTrain(line: GLine, loco: LocoClass): void {
     const train = new Train(line.track, this.scene, loco);
     train.offsetStart(line.trains.length * 0.28);
     this.scene.add(train.group);
-    train.onArrive = (end) => this.serviceTrain(train, end === 0 ? line.a : line.b);
+    train.onArrive = (end) => this.serviceTrain(line.owner, train, end === 0 ? line.a : line.b);
     line.trains.push(train);
   }
 
-  /** Unload anything the berth demands (paying for the haul), then load what it offers. */
-  private serviceTrain(train: Train, at: GStation): void {
+  /** Unload anything the berth demands (paying the owner for the haul), then load. */
+  private serviceTrain(owner: Company, train: Train, at: GStation): void {
     for (const [kind, lot] of [...train.cargo]) {
       if (!at.demands.has(kind)) continue;
       const dist = lot.originPos.distanceTo(at.pos);
       const rev = haulRevenue(kind, lot.amount, dist);
-      this.money += rev;
-      this.pushDelivery(`${Math.floor(lot.amount)} ${kind} → ${at.name}`, rev);
+      owner.money += rev;
+      if (!owner.isAI) this.pushDelivery(`${Math.floor(lot.amount)} ${kind} → ${at.name}`, rev);
       // Raw delivered to a processor feeds its input inventory; anything else is
       // consumed on arrival. Either way the haul is paid.
       if (at.recipe && kind in at.recipe.inputs) {
@@ -281,8 +337,11 @@ export class Network {
     }
     for (const l of this.lines) for (const t of l.trains) t.update(dt);
 
-    // Maintenance and bond interest bleed continuously — an idle railroad still costs.
-    this.money -= ((this.upkeepPerYear + this.interestPerYear) / SECONDS_PER_YEAR) * dt;
+    // Maintenance and bond interest bleed every company's books continuously.
+    for (const c of this.companies) {
+      c.money -= ((c.upkeepPerYear + c.interestPerYear) / SECONDS_PER_YEAR) * dt;
+      if (c.isAI) this.planAI(c, dt);
+    }
 
     this.yearAccum += dt;
     if (this.yearAccum >= SECONDS_PER_YEAR) {
@@ -290,9 +349,45 @@ export class Network {
       this.year += 1;
     }
 
-    // Resolve the objective.
-    if (this.money < DEBT_LIMIT) this.status = 'lost';
-    else if (this.netWorth >= this.goal.targetCash) this.status = 'won';
+    // Resolve the player's objective.
+    if (this.player.money < DEBT_LIMIT) this.status = 'lost';
+    else if (this.player.netWorth >= this.goal.targetCash) this.status = 'won';
     else if (this.year > this.goal.byYear) this.status = 'lost';
+  }
+
+  /** What a station puts on the market: raw extraction plus any processed output. */
+  private offersOf(s: GStation): CargoKind[] {
+    const out = Object.keys(s.supplies) as CargoKind[];
+    if (s.recipe) out.push(s.recipe.output);
+    return out;
+  }
+
+  /**
+   * A rival's turn: every few seconds, if it has comfortable cash and room to grow,
+   * connect the cheapest unbuilt city pair that would actually trade. Crude, but it
+   * spreads a competing network that races the player for the same waiting cargo.
+   */
+  private planAI(c: Company, dt: number): void {
+    c.aiTimer -= dt;
+    if (c.aiTimer > 0 || c.lines.length >= 7) return;
+    c.aiTimer = 6;
+
+    const loco = defaultLoco(this.year);
+    const reserve = 160_000;
+    let best: { a: GStation; b: GStation; cost: number } | null = null;
+    for (let i = 0; i < this.stations.length; i++) {
+      for (let j = i + 1; j < this.stations.length; j++) {
+        const a = this.stations[i];
+        const b = this.stations[j];
+        if (c.connects(a, b)) continue;
+        const trades =
+          this.offersOf(a).some((k) => b.demands.has(k)) || this.offersOf(b).some((k) => a.demands.has(k));
+        if (!trades) continue;
+        const cost = this.lineCost([a.pos, b.pos], loco);
+        if (cost > c.money - reserve) continue;
+        if (!best || cost < best.cost) best = { a, b, cost };
+      }
+    }
+    if (best) this.buildLineFor(c, best.a, [], best.b, loco);
   }
 }
