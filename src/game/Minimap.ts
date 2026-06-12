@@ -118,13 +118,17 @@ export class Minimap {
     ctx.clearRect(0, 0, SIZE, SIZE);
     ctx.drawImage(this.terrain, 0, 0, SIZE, SIZE);
 
-    // Rail lines, tinted by their owner.
+    // Rail lines, tinted by their owner, drawn through every stop.
     ctx.lineWidth = 1.6;
     for (const l of this.network.lines) {
       ctx.strokeStyle = '#' + l.owner.color.toString(16).padStart(6, '0');
       ctx.beginPath();
-      ctx.moveTo(this.wx(l.a.pos.x), this.wy(l.a.pos.z));
-      ctx.lineTo(this.wx(l.b.pos.x), this.wy(l.b.pos.z));
+      l.stops.forEach((s, i) => {
+        const x = this.wx(s.pos.x);
+        const y = this.wy(s.pos.z);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
       ctx.stroke();
     }
 

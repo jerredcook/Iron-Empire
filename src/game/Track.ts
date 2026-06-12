@@ -48,6 +48,25 @@ export class Track {
     this.group.name = 'track';
   }
 
+  /** Arc-length fraction (0..1) of the point on the curve nearest a world position —
+   *  used to place a station stop along the route. */
+  nearestU(p: THREE.Vector3): number {
+    const tmp = new THREE.Vector3();
+    let bu = 0;
+    let bd = Infinity;
+    const n = 300;
+    for (let i = 0; i <= n; i++) {
+      const u = i / n;
+      this.curve.getPointAt(u, tmp);
+      const d = (tmp.x - p.x) ** 2 + (tmp.z - p.z) ** 2;
+      if (d < bd) {
+        bd = d;
+        bu = u;
+      }
+    }
+    return bu;
+  }
+
   /** Laplacian relax + grade clamp, endpoints fixed. */
   private smoothGrade(pts: THREE.Vector3[]): void {
     const n = pts.length;

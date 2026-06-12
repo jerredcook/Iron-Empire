@@ -48,7 +48,7 @@ async function boot(): Promise<void> {
   // Seed one productive line so the world opens in motion and the cargo loop is
   // legible from the first frame — the closest pair that actually trades.
   const pair = starterPair(network);
-  if (pair) network.buildLine(pair[0], [], pair[1], selectedLoco);
+  if (pair) network.buildLine([pair[0], pair[1]], [[]], selectedLoco);
 
   // Quality tier: rebuild the post pipeline and resize the sun's shadow map together.
   const applyQuality = (q: QualityLevel): void => {

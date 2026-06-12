@@ -47,13 +47,17 @@ export interface GStation {
 }
 
 export interface GLine {
+  /** Ordered stations the corridor serves (≥2); a/b are its ends. */
+  stops: GStation[];
   a: GStation;
   b: GStation;
   track: Track;
-  /** One or more trains shuttling the line — add more for throughput. */
+  /** Arc-length fraction (0..1) of each stop along the track. */
+  stopFracs: number[];
+  /** One or more trains shuttling the corridor — add more for throughput. */
   trains: Train[];
   owner: Company;
-  /** The full a→…→b ground route, kept so the line can be re-laid on load. */
+  /** The full ground route through every stop, kept so the line can be re-laid on load. */
   waypoints: THREE.Vector3[];
 }
 
@@ -144,9 +148,9 @@ export class Company {
     return true;
   }
 
-  /** Has this company already joined these two cities? */
+  /** Has this company already joined these two cities on one corridor? */
   connects(a: GStation, b: GStation): boolean {
-    return this.lines.some((l) => (l.a === a && l.b === b) || (l.a === b && l.b === a));
+    return this.lines.some((l) => l.stops.includes(a) && l.stops.includes(b));
   }
 }
 
@@ -229,8 +233,7 @@ export class Network {
       })),
       lines: this.lines.map((l) => ({
         owner: ci(l.owner),
-        a: l.a.id,
-        b: l.b.id,
+        stops: l.stops.map((s) => s.id),
         wp: l.waypoints.map((p) => [Math.round(p.x), Math.round(p.z)]),
         locos: l.trains.map((t) => t.locoClass.id),
       })),
@@ -282,13 +285,12 @@ export class Network {
     });
 
     for (const ld of data.lines) {
-      const a = this.stations[ld.a];
-      const b = this.stations[ld.b];
+      const stops = (ld.stops as number[]).map((id) => this.stations[id]);
       const owner = this.companies[ld.owner];
-      if (!a || !b || !owner) continue;
+      if (stops.some((s) => !s) || !owner) continue;
       const wp: THREE.Vector3[] = ld.wp.map((p: [number, number]) => new THREE.Vector3(p[0], this.field.height(p[0], p[1]), p[1]));
       const locos = (ld.locos as string[]).map((id) => LOCOS.find((l) => l.id === id) ?? defaultLoco(this.year));
-      this.layLine(owner, a, b, wp, locos);
+      this.layLine(owner, stops, wp, locos);
     }
     return true;
   }
@@ -393,9 +395,9 @@ export class Network {
     return best;
   }
 
-  /** Are two stations already joined by a line (either direction)? */
+  /** Are two stations already joined on some corridor? */
   isConnected(a: GStation, b: GStation): boolean {
-    return this.lines.some((l) => (l.a === a && l.b === b) || (l.a === b && l.b === a));
+    return this.lines.some((l) => l.stops.includes(a) && l.stops.includes(b));
   }
 
   /** Grading cost of a route through the given ground waypoints (track only). */
@@ -415,25 +417,38 @@ export class Network {
    * staffed by the chosen locomotive. Deducts cost, lays the Track, and puts a train
    * on it. Returns false (building nothing) if the player can't afford it.
    */
-  buildLine(a: GStation, mids: THREE.Vector3[], b: GStation, loco: LocoClass): boolean {
-    return this.buildLineFor(this.player, a, mids, b, loco);
+  buildLine(stops: GStation[], segMids: THREE.Vector3[][], loco: LocoClass): boolean {
+    return this.buildLineFor(this.player, stops, segMids, loco);
   }
 
-  /** Commit a line owned by the given company (charges its treasury). */
-  buildLineFor(owner: Company, a: GStation, mids: THREE.Vector3[], b: GStation, loco: LocoClass): boolean {
-    const waypoints = [a.pos.clone(), ...mids.map((m) => m.clone()), b.pos.clone()];
+  /** Assemble the full ground route from an ordered stop list and the grade points
+   *  dropped between each consecutive pair. */
+  private routeWaypoints(stops: GStation[], segMids: THREE.Vector3[][]): THREE.Vector3[] {
+    const wp: THREE.Vector3[] = [];
+    for (let i = 0; i < stops.length; i++) {
+      wp.push(stops[i].pos.clone());
+      if (i < stops.length - 1) for (const m of segMids[i] ?? []) wp.push(m.clone());
+    }
+    return wp;
+  }
+
+  /** Commit a corridor owned by the given company (charges its treasury). */
+  buildLineFor(owner: Company, stops: GStation[], segMids: THREE.Vector3[][], loco: LocoClass): boolean {
+    if (stops.length < 2) return false;
+    const waypoints = this.routeWaypoints(stops, segMids);
     const cost = this.lineCost(waypoints, loco);
     if (cost > owner.money) return false;
     owner.money -= cost;
-    this.layLine(owner, a, b, waypoints, [loco]);
+    this.layLine(owner, stops, waypoints, [loco]);
     return true;
   }
 
-  /** Lay the rails + trains for a line without charging — shared by build and load. */
-  private layLine(owner: Company, a: GStation, b: GStation, waypoints: THREE.Vector3[], locos: LocoClass[]): GLine {
+  /** Lay the rails + trains for a corridor without charging — shared by build and load. */
+  private layLine(owner: Company, stops: GStation[], waypoints: THREE.Vector3[], locos: LocoClass[]): GLine {
     const track = new Track(this.field, waypoints);
     this.scene.add(track.group);
-    const line: GLine = { a, b, track, trains: [], owner, waypoints };
+    const stopFracs = stops.map((s) => track.nearestU(s.pos));
+    const line: GLine = { stops, a: stops[0], b: stops[stops.length - 1], track, stopFracs, trains: [], owner, waypoints };
     this.lines.push(line);
     owner.lines.push(line);
     for (const loco of locos) this.spawnTrain(line, loco);
@@ -449,12 +464,12 @@ export class Network {
   }
 
   /** Put a train on a line, staggered so multiple trains don't ride on top of one
-   *  another, and wire its berth servicing to the line's owner. */
+   *  another, and wire its stop servicing to the line's owner. */
   private spawnTrain(line: GLine, loco: LocoClass): void {
-    const train = new Train(line.track, this.scene, loco);
+    const train = new Train(line.track, this.scene, loco, line.stopFracs);
     train.offsetStart(line.trains.length * 0.28);
     this.scene.add(train.group);
-    train.onArrive = (end) => this.serviceTrain(line.owner, train, end === 0 ? line.a : line.b);
+    train.onStop = (i) => this.serviceTrain(line.owner, train, line.stops[i]);
     line.trains.push(train);
   }
 
@@ -594,6 +609,6 @@ export class Network {
         if (!best || cost < best.cost) best = { a, b, cost };
       }
     }
-    if (best) this.buildLineFor(c, best.a, [], best.b, loco);
+    if (best) this.buildLineFor(c, [best.a, best.b], [[]], loco);
   }
 }

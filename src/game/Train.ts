@@ -26,8 +26,8 @@ export class Train {
   readonly group = new THREE.Group();
   readonly cargo = new Map<CargoKind, CargoLot>();
   readonly capacity: number;
-  /** Fired when the train berths at an end: 0 = line start, 1 = line end. */
-  onArrive?: (end: 0 | 1) => void;
+  /** Fired when the train berths at a stop, with that stop's index along the line. */
+  onStop?: (stopIndex: number) => void;
 
   /** The class this train is hauling with — its stats drive speed/capacity/upkeep. */
   readonly locoClass: LocoClass;
@@ -35,8 +35,11 @@ export class Train {
   private loco: LocomotiveRig;
   private cars: FreightCar[] = [];
   private smoke: Smoke;
+  /** Arc-length position of each stop along the track, ascending (ends inset by the berth margin). */
+  private stopDist: number[];
   private dist: number;
   private dir: 1 | -1 = 1;
+  private target = 1; // index in stopDist we're heading toward
   private speed = 0;
   private maxSpeed: number;
   private wheelAngle = 0;
@@ -48,10 +51,15 @@ export class Train {
   private _head = new THREE.Vector3();
   private _tip = new THREE.Vector3();
 
-  constructor(private track: Track, scene: THREE.Scene, locoClass: LocoClass) {
+  constructor(private track: Track, scene: THREE.Scene, locoClass: LocoClass, stopFracs: number[]) {
     this.locoClass = locoClass;
     this.capacity = locoClass.capacity;
     this.maxSpeed = locoClass.speed;
+    const len = track.length;
+    // Stops at their arc positions, ends pulled in to the berth margin, ascending.
+    this.stopDist = stopFracs
+      .map((f) => THREE.MathUtils.clamp(f * len, STOP_MARGIN, len - STOP_MARGIN))
+      .sort((a, b) => a - b);
     // One boxcar per ~35 units of capacity, kept within a sensible consist length.
     const carCount = THREE.MathUtils.clamp(Math.round(locoClass.capacity / 35), 2, 5);
     this.loco = buildLocomotive();
@@ -63,8 +71,9 @@ export class Train {
     }
     this.smoke = new Smoke(220);
     scene.add(this.smoke.points);
-    this.dist = STOP_MARGIN;
+    this.dist = this.stopDist[0];
     this.dir = 1;
+    this.target = 1;
   }
 
   /** World position of the locomotive (for minimap dots / camera framing). */
@@ -72,10 +81,19 @@ export class Train {
     return this.loco.group.position;
   }
 
-  /** Shift this train's starting point along the line (0..1 of its length) so several
-   *  trains on one line stay spaced out instead of stacking. */
+  /** Shift this train's start along the line (0..1) so several trains on one corridor
+   *  stay spaced out, re-aiming it at the next stop ahead. */
   offsetStart(frac: number): void {
-    this.dist = THREE.MathUtils.clamp(STOP_MARGIN + frac * this.track.length, STOP_MARGIN, this.track.length - STOP_MARGIN);
+    const len = this.track.length;
+    this.dist = THREE.MathUtils.clamp(frac * len, STOP_MARGIN, len - STOP_MARGIN);
+    const ahead = this.stopDist.findIndex((d) => d > this.dist + 1);
+    if (ahead === -1) {
+      this.dir = -1;
+      this.target = this.stopDist.length - 2;
+    } else {
+      this.dir = 1;
+      this.target = ahead;
+    }
   }
 
   /** Total units currently aboard. */
@@ -103,29 +121,34 @@ export class Train {
 
   update(dt: number): void {
     const len = this.track.length;
-    const farEnd = len - STOP_MARGIN;
 
     if (this.dwell > 0) {
       this.dwell -= dt;
       this.speed = 0;
     } else {
-      // Trapezoidal speed: ease toward a target that collapses near the berth so the
-      // train glides in rather than slamming to a halt.
-      const remaining = this.dir > 0 ? farEnd - this.dist : this.dist - STOP_MARGIN;
+      // Glide toward the next scheduled stop, easing down as it approaches.
+      const targetDist = this.stopDist[this.target];
+      const remaining = Math.abs(targetDist - this.dist);
       const target = Math.min(this.maxSpeed, Math.max(3, remaining * 0.9));
       this.speed += THREE.MathUtils.clamp(target - this.speed, -28 * dt, 12 * dt);
       this.dist += this.dir * this.speed * dt;
 
-      if (this.dir > 0 && this.dist >= farEnd) {
-        this.dist = farEnd;
-        this.dir = -1;
+      const reached = this.dir > 0 ? this.dist >= targetDist : this.dist <= targetDist;
+      if (reached) {
+        this.dist = targetDist;
         this.dwell = 2.2;
-        this.onArrive?.(1);
-      } else if (this.dir < 0 && this.dist <= STOP_MARGIN) {
-        this.dist = STOP_MARGIN;
-        this.dir = 1;
-        this.dwell = 2.2;
-        this.onArrive?.(0);
+        const stopped = this.target;
+        // Advance to the next stop, reversing at either end of the corridor.
+        if (this.target >= this.stopDist.length - 1) {
+          this.dir = -1;
+          this.target = this.stopDist.length - 2;
+        } else if (this.target <= 0) {
+          this.dir = 1;
+          this.target = 1;
+        } else {
+          this.target += this.dir;
+        }
+        this.onStop?.(stopped);
       }
     }
 

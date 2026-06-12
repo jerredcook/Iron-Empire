@@ -133,7 +133,8 @@ export class Inspector {
 
   private trainHtml(line: GLine, t: Train): string {
     const lc = t.locoClass;
-    let html = this.header(`${lc.name} ${lc.wheel}`, `${line.a.name} ↔ ${line.b.name}`);
+    const route = line.stops.map((s) => s.name).join(' → ');
+    let html = this.header(`${lc.name} ${lc.wheel}`, route);
     html += `<div style="display:flex;gap:10px;font-size:11.5px;opacity:0.75;margin:-2px 0 6px">` +
       `<span>${lc.speed} mph</span><span>cap ${lc.capacity}</span><span>−$${(lc.upkeep / 1000).toFixed(0)}k/yr</span></div>`;
     const total = t.cargoTotal();
