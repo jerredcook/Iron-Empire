@@ -5,11 +5,20 @@ import { Train } from './Train';
 import { CargoKind, haulRevenue } from './Cargo';
 import { Archetype, CitySite, Recipe } from './Economy';
 import { buildTown, buildStation } from './Buildings';
+import { LocoClass } from './Locomotives';
 
 export const STOCK_CAP = 90; // a city can only stockpile so much waiting freight
 const LOAD_PER_STOP = 40; // units a train can take on in one berth
 export const TRACK_COST_PER_UNIT = 95; // $ per world-unit of rail
-const TRAIN_COST = 42000;
+const SECONDS_PER_YEAR = 22; // calendar pace
+const DEBT_LIMIT = -120_000; // sink below this and the railroad is bankrupt
+
+export type GameStatus = 'playing' | 'won' | 'lost';
+
+export interface Goal {
+  targetCash: number;
+  byYear: number;
+}
 
 export interface GStation {
   id: number;
@@ -50,11 +59,27 @@ export class Network {
   readonly lines: GLine[] = [];
   money = 850_000;
   year = 1862;
+  status: GameStatus = 'playing';
+  readonly goal: Goal = { targetCash: 2_500_000, byYear: 1890 };
   private yearAccum = 0;
   /** Newest first; the HUD shows the head of this list. */
   readonly deliveries: Delivery[] = [];
 
   constructor(private scene: THREE.Scene, private field: Heightfield, private seed: number) {}
+
+  /** Cash plus the resale value of the fleet — what the objective is measured against. */
+  get netWorth(): number {
+    let w = this.money;
+    for (const l of this.lines) w += l.train.locoClass.cost * 0.5;
+    return w;
+  }
+
+  /** Combined annual maintenance of every train in service. */
+  get upkeepPerYear(): number {
+    let u = 0;
+    for (const l of this.lines) u += l.train.locoClass.upkeep;
+    return u;
+  }
 
   /** Build the economic node + its town/depot visuals from a generated site. */
   addStation(site: CitySite): GStation {
@@ -108,27 +133,32 @@ export class Network {
     return this.lines.some((l) => (l.a === a && l.b === b) || (l.a === b && l.b === a));
   }
 
-  /** Quoted cost of a route through the given ground waypoints. */
+  /** Grading cost of a route through the given ground waypoints (track only). */
   routeCost(points: THREE.Vector3[]): number {
     let len = 0;
     for (let i = 1; i < points.length; i++) len += points[i - 1].distanceTo(points[i]);
-    return Math.round(len * TRACK_COST_PER_UNIT + TRAIN_COST);
+    return Math.round(len * TRACK_COST_PER_UNIT);
+  }
+
+  /** Full quote for a line: grading the route plus the chosen locomotive. */
+  lineCost(points: THREE.Vector3[], loco: LocoClass): number {
+    return this.routeCost(points) + loco.cost;
   }
 
   /**
-   * Commit a line between two stations through the given intermediate waypoints.
-   * Deducts cost, lays the Track, and puts a train on it. Returns false (building
-   * nothing) if the player can't afford it.
+   * Commit a line between two stations through the given intermediate waypoints,
+   * staffed by the chosen locomotive. Deducts cost, lays the Track, and puts a train
+   * on it. Returns false (building nothing) if the player can't afford it.
    */
-  buildLine(a: GStation, mids: THREE.Vector3[], b: GStation): boolean {
+  buildLine(a: GStation, mids: THREE.Vector3[], b: GStation, loco: LocoClass): boolean {
     const waypoints = [a.pos.clone(), ...mids.map((m) => m.clone()), b.pos.clone()];
-    const cost = this.routeCost(waypoints);
+    const cost = this.lineCost(waypoints, loco);
     if (cost > this.money) return false;
     this.money -= cost;
 
     const track = new Track(this.field, waypoints);
     this.scene.add(track.group);
-    const train = new Train(track, this.scene);
+    const train = new Train(track, this.scene, loco);
     this.scene.add(train.group);
 
     const line: GLine = { a, b, track, train };
@@ -192,6 +222,8 @@ export class Network {
   }
 
   update(dt: number): void {
+    if (this.status !== 'playing') return;
+
     for (const s of this.stations) {
       // Raw extraction accrues as outbound stock, capped so it can't pile up forever.
       for (const kind of Object.keys(s.supplies) as CargoKind[]) {
@@ -204,10 +236,18 @@ export class Network {
     }
     for (const l of this.lines) l.train.update(dt);
 
+    // Fleet maintenance bleeds continuously — an idle railroad still costs money.
+    this.money -= (this.upkeepPerYear / SECONDS_PER_YEAR) * dt;
+
     this.yearAccum += dt;
-    if (this.yearAccum >= 22) {
-      this.yearAccum -= 22;
+    if (this.yearAccum >= SECONDS_PER_YEAR) {
+      this.yearAccum -= SECONDS_PER_YEAR;
       this.year += 1;
     }
+
+    // Resolve the objective.
+    if (this.money < DEBT_LIMIT) this.status = 'lost';
+    else if (this.netWorth >= this.goal.targetCash) this.status = 'won';
+    else if (this.year > this.goal.byYear) this.status = 'lost';
   }
 }

@@ -3,6 +3,7 @@ import { Network } from './Network';
 import { BuildStatus } from './TrackBuilder';
 import { CARGO, CargoKind } from './Cargo';
 import { QUALITY, QualityLevel } from '../engine/Renderer';
+import { LocoClass, availableLocos, defaultLoco } from './Locomotives';
 
 /**
  * The 2D overlay: treasury and calendar, the build-mode banner, a scrolling ledger of
@@ -25,13 +26,21 @@ export class HUD {
   private ledgerKey = '';
 
   private qualityBtns = new Map<QualityLevel, HTMLButtonElement>();
+  private upkeep!: HTMLDivElement;
+  private goalLine!: HTMLDivElement;
+  private engineSel!: HTMLSelectElement;
+  private overlay!: HTMLDivElement;
+  private selectedLoco: LocoClass;
+  private lastEngineYear = 0;
 
   constructor(
     private network: Network,
     onBuildToggle: () => void,
     quality: QualityLevel,
-    onQuality: (q: QualityLevel) => void
+    onQuality: (q: QualityLevel) => void,
+    private onLoco: (l: LocoClass) => void
   ) {
+    this.selectedLoco = defaultLoco(network.year);
     this.root = el('div', {
       position: 'fixed',
       inset: '0',
@@ -55,7 +64,16 @@ export class HUD {
     });
     this.money = el('div', { fontSize: '22px', fontWeight: '700', letterSpacing: '0.3px' });
     this.year = el('div', { fontSize: '13px', opacity: '0.75', marginTop: '2px' });
-    top.append(this.money, this.year);
+    this.upkeep = el('div', { fontSize: '12px', opacity: '0.65', marginTop: '1px' });
+    this.goalLine = el('div', {
+      fontSize: '12px',
+      marginTop: '7px',
+      padding: '5px 8px',
+      background: 'rgba(143,255,168,0.08)',
+      border: '1px solid rgba(143,255,168,0.25)',
+      borderRadius: '6px',
+    });
+    top.append(this.money, this.year, this.upkeep, this.goalLine);
 
     this.buildBtn = document.createElement('button');
     Object.assign(this.buildBtn.style, {
@@ -74,6 +92,38 @@ export class HUD {
     this.buildBtn.textContent = '🛤  Build Track  (B)';
     this.buildBtn.onclick = onBuildToggle;
     top.append(this.buildBtn);
+
+    // Engine picker — the class a finished line will be staffed with.
+    const eLabel = el('div', {
+      marginTop: '10px',
+      fontSize: '10.5px',
+      textTransform: 'uppercase',
+      letterSpacing: '0.6px',
+      opacity: '0.55',
+    });
+    eLabel.textContent = 'Locomotive';
+    this.engineSel = document.createElement('select');
+    Object.assign(this.engineSel.style, {
+      marginTop: '4px',
+      width: '100%',
+      padding: '6px',
+      pointerEvents: 'auto',
+      cursor: 'pointer',
+      borderRadius: '6px',
+      border: '1px solid rgba(255,255,255,0.18)',
+      background: 'rgba(12,16,20,0.9)',
+      color: '#f4f0e6',
+      fontSize: '12px',
+    } as CSSStyleDeclaration);
+    this.engineSel.onchange = () => {
+      const loco = availableLocos(this.network.year).find((l) => l.id === this.engineSel.value);
+      if (loco) {
+        this.selectedLoco = loco;
+        this.onLoco(loco);
+      }
+    };
+    this.populateEngines();
+    top.append(eLabel, this.engineSel);
 
     // Quality tier selector — a segmented row of three.
     const qLabel = el('div', {
@@ -161,7 +211,72 @@ export class HUD {
     this.labelLayer = el('div', { position: 'absolute', inset: '0' });
     this.root.append(this.labelLayer);
 
+    // Win/lose overlay — hidden until the objective resolves.
+    this.overlay = el('div', {
+      position: 'absolute',
+      inset: '0',
+      display: 'none',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: '16px',
+      background: 'rgba(8,10,14,0.72)',
+      backdropFilter: 'blur(3px)',
+      pointerEvents: 'auto',
+      textAlign: 'center',
+    });
+    this.root.append(this.overlay);
+
     document.body.append(this.root);
+    this.onLoco(this.selectedLoco); // sync the initial engine to the builder
+  }
+
+  /** Fill the engine dropdown with the classes available this year. */
+  private populateEngines(): void {
+    const avail = availableLocos(this.network.year);
+    if (!avail.some((l) => l.id === this.selectedLoco.id)) {
+      this.selectedLoco = avail[avail.length - 1];
+      this.onLoco(this.selectedLoco);
+    }
+    this.engineSel.innerHTML = '';
+    for (const l of avail) {
+      const o = document.createElement('option');
+      o.value = l.id;
+      o.textContent = `${l.name} ${l.wheel} · cap ${l.capacity} · $${Math.round(l.cost / 1000)}k`;
+      if (l.id === this.selectedLoco.id) o.selected = true;
+      this.engineSel.append(o);
+    }
+    this.lastEngineYear = this.network.year;
+  }
+
+  /** Render the end-of-game overlay for the resolved objective. */
+  private showEnd(): void {
+    const won = this.network.status === 'won';
+    const title = won ? 'Empire Secured' : 'Railroad Bankrupt';
+    const sub = won
+      ? `You reached $${Math.round(this.network.netWorth).toLocaleString()} net worth by ${this.network.year}.`
+      : this.network.money < 0
+        ? `The treasury collapsed in ${this.network.year}.`
+        : `The deadline of ${this.network.goal.byYear} passed short of the target.`;
+    this.overlay.innerHTML =
+      `<div style="font-size:40px;font-weight:800;color:${won ? '#8fffa8' : '#ff7766'}">${title}</div>` +
+      `<div style="font-size:15px;opacity:0.85;max-width:420px">${sub}</div>`;
+    const again = document.createElement('button');
+    Object.assign(again.style, {
+      marginTop: '6px',
+      padding: '10px 22px',
+      cursor: 'pointer',
+      border: '1px solid rgba(255,255,255,0.3)',
+      borderRadius: '8px',
+      background: 'rgba(255,255,255,0.1)',
+      color: '#f4f0e6',
+      fontSize: '15px',
+      fontWeight: '700',
+    } as CSSStyleDeclaration);
+    again.textContent = 'New Empire';
+    again.onclick = () => location.reload();
+    this.overlay.append(again);
+    this.overlay.style.display = 'flex';
   }
 
   /** Highlight the active graphics tier. */
@@ -199,7 +314,18 @@ export class HUD {
     if (this.network.year !== this.lastYear) {
       this.year.textContent = `Year ${this.network.year}`;
       this.lastYear = this.network.year;
+      if (this.network.year !== this.lastEngineYear) this.populateEngines();
     }
+
+    const up = Math.round(this.network.upkeepPerYear);
+    this.upkeep.textContent = up > 0 ? `Upkeep −$${up.toLocaleString()}/yr` : 'No fleet in service';
+    const g = this.network.goal;
+    const pct = Math.max(0, Math.min(100, (this.network.netWorth / g.targetCash) * 100));
+    this.goalLine.innerHTML = `🎯 $${(g.targetCash / 1e6).toFixed(1)}M net worth by ${g.byYear}<br><span style="opacity:0.7">${pct.toFixed(
+      0
+    )}% &middot; worth $${Math.round(this.network.netWorth).toLocaleString()}</span>`;
+
+    if (this.network.status !== 'playing' && this.overlay.style.display === 'none') this.showEnd();
 
     const key = this.network.deliveries.map((d) => d.amount + d.text).join('|');
     if (key !== this.ledgerKey) {

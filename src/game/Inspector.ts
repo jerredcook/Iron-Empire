@@ -125,7 +125,10 @@ export class Inspector {
 
   private trainHtml(line: GLine): string {
     const t = line.train;
-    let html = this.header('Train', `${line.a.name} ↔ ${line.b.name}`);
+    const lc = t.locoClass;
+    let html = this.header(`${lc.name} ${lc.wheel}`, `${line.a.name} ↔ ${line.b.name}`);
+    html += `<div style="display:flex;gap:10px;font-size:11.5px;opacity:0.75;margin:-2px 0 6px">` +
+      `<span>${lc.speed} mph</span><span>cap ${lc.capacity}</span><span>−$${(lc.upkeep / 1000).toFixed(0)}k/yr</span></div>`;
     const total = t.cargoTotal();
     html += this.bar('Load', '#8fffa8', total / t.capacity, `${Math.floor(total)} / ${t.capacity}`);
 

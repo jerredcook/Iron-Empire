@@ -3,6 +3,7 @@ import { Track } from './Track';
 import { buildLocomotive, LocomotiveRig } from './Locomotive';
 import { buildBoxcar, FreightCar } from './Cars';
 import { CargoKind, CARGO } from './Cargo';
+import { LocoClass } from './Locomotives';
 
 const FORWARD = new THREE.Vector3(0, 0, 1);
 const STOP_MARGIN = 9; // how close to the line's end the train berths
@@ -28,13 +29,16 @@ export class Train {
   /** Fired when the train berths at an end: 0 = line start, 1 = line end. */
   onArrive?: (end: 0 | 1) => void;
 
+  /** The class this train is hauling with — its stats drive speed/capacity/upkeep. */
+  readonly locoClass: LocoClass;
+
   private loco: LocomotiveRig;
   private cars: FreightCar[] = [];
   private smoke: Smoke;
   private dist: number;
   private dir: 1 | -1 = 1;
   private speed = 0;
-  private maxSpeed = 22;
+  private maxSpeed: number;
   private wheelAngle = 0;
   private dwell = 0;
 
@@ -44,8 +48,12 @@ export class Train {
   private _head = new THREE.Vector3();
   private _tip = new THREE.Vector3();
 
-  constructor(private track: Track, scene: THREE.Scene, carCount = 3, capacity = 60) {
-    this.capacity = capacity;
+  constructor(private track: Track, scene: THREE.Scene, locoClass: LocoClass) {
+    this.locoClass = locoClass;
+    this.capacity = locoClass.capacity;
+    this.maxSpeed = locoClass.speed;
+    // One boxcar per ~35 units of capacity, kept within a sensible consist length.
+    const carCount = THREE.MathUtils.clamp(Math.round(locoClass.capacity / 35), 2, 5);
     this.loco = buildLocomotive();
     this.group.add(this.loco.group);
     for (let i = 0; i < carCount; i++) {

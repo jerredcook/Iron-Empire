@@ -13,6 +13,7 @@ import { HUD } from './game/HUD';
 import { Inspector } from './game/Inspector';
 import { Picker } from './game/Picker';
 import { Minimap } from './game/Minimap';
+import { LocoClass, defaultLoco } from './game/Locomotives';
 
 const WORLD = { seed: 20260611, size: 4096, seaLevel: 0 };
 
@@ -41,10 +42,13 @@ async function boot(): Promise<void> {
   const network = new Network(scene, field, WORLD.seed);
   for (const site of sites) network.addStation(site);
 
+  // The engine a finished line is staffed with — the HUD's picker drives this.
+  let selectedLoco: LocoClass = defaultLoco(network.year);
+
   // Seed one productive line so the world opens in motion and the cargo loop is
   // legible from the first frame — the closest pair that actually trades.
   const pair = starterPair(network);
-  if (pair) network.buildLine(pair[0], [], pair[1]);
+  if (pair) network.buildLine(pair[0], [], pair[1], selectedLoco);
 
   // Quality tier: rebuild the post pipeline and resize the sun's shadow map together.
   const applyQuality = (q: QualityLevel): void => {
@@ -56,8 +60,10 @@ async function boot(): Promise<void> {
   };
 
   // Interactive track laying + HUD.
-  const builder = new TrackBuilder(rig.camera, renderer.gl.domElement, terrain.mesh, network, scene);
-  const hud = new HUD(network, () => builder.toggle(), renderer.quality, applyQuality);
+  const builder = new TrackBuilder(rig.camera, renderer.gl.domElement, terrain.mesh, network, scene, () => selectedLoco);
+  const hud = new HUD(network, () => builder.toggle(), renderer.quality, applyQuality, (loco) => {
+    selectedLoco = loco;
+  });
   builder.onStatus = (s) => hud.setBuildStatus(s);
   renderer.gl.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 

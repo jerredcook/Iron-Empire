@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { Network, GStation } from './Network';
+import { LocoClass } from './Locomotives';
 
 const SNAP = 60; // ground-distance within which the cursor latches to a city
 const CLICK_SLOP = 6; // px of pointer travel still counted as a click, not a drag
@@ -43,7 +44,9 @@ export class TrackBuilder {
     private dom: HTMLElement,
     private terrain: THREE.Object3D,
     private network: Network,
-    overlay: THREE.Scene
+    overlay: THREE.Scene,
+    /** The engine to staff a finished line with — supplied live by the HUD. */
+    private getLoco: () => LocoClass
   ) {
     this.ghost = new THREE.Mesh(
       new THREE.SphereGeometry(3.2, 16, 12),
@@ -161,7 +164,7 @@ export class TrackBuilder {
     if (this.snapTarget) {
       // Closing on a second city commits the line.
       if (!this.network.isConnected(this.from, this.snapTarget)) {
-        const ok = this.network.buildLine(this.from, this.mids, this.snapTarget);
+        const ok = this.network.buildLine(this.from, this.mids, this.snapTarget, this.getLoco());
         if (!ok) return; // unaffordable — keep the route up so the player can see it
       }
       this.from = null;
@@ -187,7 +190,7 @@ export class TrackBuilder {
     if (this.from && route.length >= 2) {
       this.previewGeo.setFromPoints(route.map((p) => new THREE.Vector3(p.x, p.y + 2.5, p.z)));
       this.preview.visible = true;
-      const affordable = this.network.routeCost(route) <= this.network.money;
+      const affordable = this.network.lineCost(route, this.getLoco()) <= this.network.money;
       (this.ghost.material as THREE.MeshBasicMaterial).color.setHex(
         this.snapTarget ? (affordable ? 0x8fffa8 : 0xff7766) : 0xffe28a
       );
@@ -207,7 +210,7 @@ export class TrackBuilder {
 
   private emit(): void {
     const route = this.routePoints();
-    const cost = this.from && route.length >= 2 ? this.network.routeCost(route) : 0;
+    const cost = this.from && route.length >= 2 ? this.network.lineCost(route, this.getLoco()) : 0;
     this.onStatus?.({
       active: this.active,
       fromName: this.from?.name ?? null,
