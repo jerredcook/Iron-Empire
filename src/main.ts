@@ -6,6 +6,8 @@ import { TerrainMesh } from './world/TerrainMesh';
 import { buildSky } from './world/Sky';
 import { WaterPlane } from './world/WaterPlane';
 import { Scatter } from './world/Scatter';
+import { Track } from './game/Track';
+import { Train } from './game/Train';
 
 const WORLD = { seed: 20260611, size: 4096, seaLevel: 0 };
 
@@ -27,6 +29,19 @@ async function boot(): Promise<void> {
   const scatter = new Scatter(field, WORLD.seed);
   scene.add(scatter.group);
 
+  // Demo line: a scenic run along the coast and up the valley, crossing the bay inlet.
+  const track = new Track(field, [
+    new THREE.Vector3(900, 0, 900),
+    new THREE.Vector3(620, 0, 520),
+    new THREE.Vector3(420, 0, 420),
+    new THREE.Vector3(80, 0, 250),
+    new THREE.Vector3(-320, 0, 60),
+    new THREE.Vector3(-650, 0, -260),
+  ]);
+  scene.add(track.group);
+  const train = new Train(track, scene);
+  scene.add(train.group);
+
   renderer.attach(scene, rig.camera, WORLD.size);
   window.addEventListener('resize', () => {
     renderer.resize();
@@ -38,7 +53,7 @@ async function boot(): Promise<void> {
   rig.camera.position.set(380, 420, 900);
 
   if (import.meta.env.DEV) {
-    (window as unknown as { __ie: unknown }).__ie = { scene, rig, renderer, field, terrain, water, scatter };
+    (window as unknown as { __ie: unknown }).__ie = { scene, rig, renderer, field, terrain, water, scatter, track, train };
   }
 
   const clock = new THREE.Clock();
@@ -48,6 +63,7 @@ async function boot(): Promise<void> {
     rig.update(dt);
     water.update(dt);
     scatter.update(dt);
+    train.update(dt);
     renderer.render();
   };
   loop();
