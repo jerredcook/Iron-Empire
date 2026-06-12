@@ -170,6 +170,8 @@ export class Network {
   year = 1862;
   status: GameStatus = 'playing';
   readonly goal: Goal = { targetCash: 2_500_000, byYear: 1890 };
+  /** City count this world was generated with — stored so a save reloads identically. */
+  cities = 0;
   private yearAccum = 0;
   /** Newest first; the HUD shows the head of this list. */
   readonly deliveries: Delivery[] = [];
@@ -177,7 +179,25 @@ export class Network {
   onRevenue?: (amount: number) => void;
   onBuilt?: () => void;
 
-  constructor(private scene: THREE.Scene, private field: Heightfield, private seed: number) {}
+  constructor(
+    private scene: THREE.Scene,
+    private field: Heightfield,
+    private seed: number,
+    cfg?: { startMoney: number; year: number; cities: number; goal: Goal }
+  ) {
+    if (cfg) {
+      this.player.money = cfg.startMoney;
+      this.rival.money = cfg.startMoney;
+      this.year = cfg.year;
+      this.cities = cfg.cities;
+      this.goal.targetCash = cfg.goal.targetCash;
+      this.goal.byYear = cfg.goal.byYear;
+    }
+  }
+
+  get worldSeed(): number {
+    return this.seed;
+  }
 
   // The HUD/builder talk to "the railroad" — i.e. the player company.
   get money(): number {
@@ -215,12 +235,28 @@ export class Network {
     }
   }
 
+  /** The world parameters (seed + city count) a save was made in, so it can be
+   *  regenerated identically before the dynamic state is restored. */
+  static savedWorld(): { seed: number; cities: number } | null {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) return null;
+      const d = JSON.parse(raw);
+      return { seed: d.seed, cities: d.cities };
+    } catch {
+      return null;
+    }
+  }
+
   /** Snapshot the dynamic game state. Cities are deterministic from the seed, so only
    *  their changing stock/prosperity is stored; lines store their route + roster. */
   save(): void {
     const ci = (c: Company): number => this.companies.indexOf(c);
     const data = {
+      seed: this.seed,
+      cities: this.cities,
       year: this.year,
+      goal: { targetCash: this.goal.targetCash, byYear: this.goal.byYear },
       status: this.status,
       companies: this.companies.map((c) => ({
         money: c.money,
@@ -261,6 +297,10 @@ export class Network {
 
     this.year = data.year;
     this.status = data.status ?? 'playing';
+    if (data.goal) {
+      this.goal.targetCash = data.goal.targetCash;
+      this.goal.byYear = data.goal.byYear;
+    }
     this.clearLines();
 
     this.companies.forEach((c, i) => {

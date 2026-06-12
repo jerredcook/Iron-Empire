@@ -112,10 +112,7 @@ export class HUD {
       saveBtn.textContent = 'Saved ✓';
       setTimeout(() => (saveBtn.textContent = 'Save'), 1200);
     });
-    const loadBtn = financeBtn('Load', () => {
-      sessionStorage.setItem('ie.load', '1');
-      location.reload();
-    });
+    const loadBtn = financeBtn('Menu', () => location.reload());
     const soundBtn = financeBtn('🔊', () => {
       soundBtn.textContent = onToggleSound() ? '🔊' : '🔇';
     });
