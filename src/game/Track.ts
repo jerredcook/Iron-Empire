@@ -203,20 +203,20 @@ export class Track {
         leg.rotation.y = yaw;
         leg.castShadow = true;
         bents.add(leg);
-        // Diagonal brace on taller bents.
-        if (clear > 6) {
-          const brace = new THREE.Mesh(new THREE.BoxGeometry(0.3, clear * 0.92, 0.3), timber);
-          brace.position.copy(leg.position);
-          brace.rotation.set(0, yaw, s * 0.35);
-          brace.castShadow = true;
-          bents.add(brace);
-        }
       }
+      // Cap under the deck + a horizontal cross-girt at mid-height on taller bents.
       const cap = new THREE.Mesh(new THREE.BoxGeometry(GAUGE * 2.0, 0.4, 0.7), timber);
       cap.position.set(pos.x, deckUnder - 0.18, pos.z);
       cap.rotation.y = yaw;
       cap.castShadow = true;
       bents.add(cap);
+      if (clear > 5) {
+        const girt = new THREE.Mesh(new THREE.BoxGeometry(GAUGE * 1.7, 0.3, 0.4), timber);
+        girt.position.set(pos.x, base + clear * 0.5, pos.z);
+        girt.rotation.y = yaw;
+        girt.castShadow = true;
+        bents.add(girt);
+      }
     }
     if (bents.children.length) this.group.add(bents);
   }

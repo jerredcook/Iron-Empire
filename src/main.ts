@@ -8,6 +8,7 @@ import { WaterPlane } from './world/WaterPlane';
 import { Scatter } from './world/Scatter';
 import { Track } from './game/Track';
 import { Train } from './game/Train';
+import { buildTown, buildStation } from './game/Buildings';
 
 const WORLD = { seed: 20260611, size: 4096, seaLevel: 0 };
 
@@ -20,6 +21,12 @@ async function boot(): Promise<void> {
   const sky = await buildSky(scene, WORLD.size);
 
   const field = new Heightfield(WORLD);
+  // Town sites — flatten pads before the terrain mesh samples heights.
+  const townSites = [
+    new THREE.Vector3(940, 0, 940),
+    new THREE.Vector3(-690, 0, -300),
+  ];
+  for (const t of townSites) field.addFlat(t.x, t.z, 60);
   const terrain = new TerrainMesh(field);
   scene.add(terrain.mesh);
 
@@ -31,16 +38,40 @@ async function boot(): Promise<void> {
 
   // Demo line: a scenic run along the coast and up the valley, crossing the bay inlet.
   const track = new Track(field, [
-    new THREE.Vector3(900, 0, 900),
+    new THREE.Vector3(930, 0, 925),
     new THREE.Vector3(620, 0, 520),
     new THREE.Vector3(420, 0, 420),
     new THREE.Vector3(80, 0, 250),
     new THREE.Vector3(-320, 0, 60),
-    new THREE.Vector3(-650, 0, -260),
+    new THREE.Vector3(-660, 0, -285),
   ]);
   scene.add(track.group);
   const train = new Train(track, scene);
   scene.add(train.group);
+
+  // Towns at the line's ends, stations beside the track.
+  for (const [i, site] of townSites.entries()) {
+    const town = buildTown(WORLD.seed + i * 97, 14);
+    town.position.set(site.x, field.height(site.x, site.z), site.z);
+    scene.add(town);
+
+    // Walk inward from the line's end to the first stretch of solid ground.
+    let u = i === 0 ? 0.005 : 0.995;
+    const step = (i === 0 ? 1 : -1) * 0.005;
+    for (let k = 0; k < 40; k++) {
+      const q = track.curve.getPointAt(u);
+      const sx = q.x - track.curve.getTangentAt(u).z * 4.4;
+      const sz = q.z + track.curve.getTangentAt(u).x * 4.4;
+      if (field.height(sx, sz) > WORLD.seaLevel + 1.2) break;
+      u += step;
+    }
+    const p = track.curve.getPointAt(u);
+    const tan = track.curve.getTangentAt(u);
+    const station = buildStation();
+    station.position.set(p.x - tan.z * 4.4, field.height(p.x - tan.z * 4.4, p.z + tan.x * 4.4), p.z + tan.x * 4.4);
+    station.rotation.y = Math.atan2(tan.x, tan.z);
+    scene.add(station);
+  }
 
   renderer.attach(scene, rig.camera, WORLD.size);
   window.addEventListener('resize', () => {

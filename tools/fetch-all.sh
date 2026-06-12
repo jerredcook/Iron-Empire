@@ -6,7 +6,7 @@ N=.toolchain/node-v20.18.0-darwin-arm64/bin/node
 
 $N tools/fetch-assets.mjs hdri kloofendal_48d_partly_cloudy_puresky 4k
 
-for t in leafy_grass rock_face forest_floor coast_sand_01 snow_02 gravel_ground_01 weathered_planks; do
+for t in leafy_grass rock_face forest_floor coast_sand_01 snow_02 gravel_ground_01 weathered_planks red_slate_roof_tiles_01 painted_plaster_wall brick_wall_005; do
   $N tools/fetch-assets.mjs texture "$t" 2k Diffuse nor_gl Rough
 done
 
