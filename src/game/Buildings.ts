@@ -249,6 +249,45 @@ export function buildStation(): THREE.Group {
   return flattenByMaterial(g);
 }
 
+/** A brick industrial hall with a low roof and a tall smokestack — what a
+ *  player-founded factory drops onto the map. */
+export function buildFactory(): THREE.Group {
+  const m = mats();
+  const g = new THREE.Group();
+  const w = 12;
+  const d = 8;
+  const h = 6;
+
+  const front = wall(w, h, m.brick);
+  front.position.set(0, h / 2, d / 2);
+  const back = wall(w, h, m.brick);
+  back.position.set(0, h / 2, -d / 2);
+  back.rotation.y = Math.PI;
+  const left = wall(d, h, m.brick);
+  left.position.set(-w / 2, h / 2, 0);
+  left.rotation.y = -Math.PI / 2;
+  const right = wall(d, h, m.brick);
+  right.position.set(w / 2, h / 2, 0);
+  right.rotation.y = Math.PI / 2;
+  g.add(front, back, left, right);
+
+  const roof = gableRoof(w, d, 1.6);
+  roof.position.y = h;
+  g.add(roof);
+
+  const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.95, 11, 14), m.brick);
+  stack.position.set(w / 2 - 1.6, h + 4.5, -d / 2 + 1.3);
+  g.add(stack);
+
+  g.traverse((x) => {
+    if ((x as THREE.Mesh).isMesh) {
+      x.castShadow = true;
+      x.receiveShadow = true;
+    }
+  });
+  return flattenByMaterial(g);
+}
+
 /** A small town: houses on a jittered ring (minR..maxR) facing the centre. Growth
  *  appends fresh outer rings by calling again with larger radii. */
 export function buildTown(seed: number, count: number, minR = 13, maxR = 47): THREE.Group {

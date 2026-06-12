@@ -3,8 +3,8 @@ import { Heightfield } from '../world/Heightfield';
 import { Track } from './Track';
 import { Train } from './Train';
 import { CargoKind, haulRevenue } from './Cargo';
-import { Archetype, CitySite, Recipe } from './Economy';
-import { buildTown, buildStation } from './Buildings';
+import { Archetype, CitySite, Recipe, ARCHETYPES } from './Economy';
+import { buildTown, buildStation, buildFactory } from './Buildings';
 import { LocoClass, defaultLoco, LOCOS } from './Locomotives';
 
 export const STOCK_CAP = 90; // a city can only stockpile so much waiting freight
@@ -457,6 +457,27 @@ export class Network {
     owner.lines.push(line);
     for (const loco of locos) this.spawnTrain(line, loco);
     return line;
+  }
+
+  /** Found a factory at a city that has no industry yet: it gains the goods recipe
+   *  (consuming coal + lumber), starts demanding those inputs, and a hall appears. */
+  buildIndustry(st: GStation): boolean {
+    if (st.recipe || this.status !== 'playing') return false;
+    const cost = 160_000;
+    if (cost > this.player.money) return false;
+    this.player.money -= cost;
+
+    st.recipe = ARCHETYPES.factory.recipe;
+    for (const k of Object.keys(st.recipe!.inputs) as CargoKind[]) st.demands.add(k);
+
+    const f = buildFactory();
+    const fx = st.pos.x - 28;
+    const fz = st.pos.z + 22;
+    f.position.set(fx, this.field.height(fx, fz), fz);
+    f.rotation.y = st.id * 0.7;
+    this.scene.add(f);
+    this.onBuilt?.();
+    return true;
   }
 
   /** Buy and place an additional train on an existing line for more throughput. */

@@ -91,7 +91,8 @@ async function boot(): Promise<void> {
     },
     (line) => {
       if (!line.owner.isAI) network.addTrain(line, selectedLoco);
-    }
+    },
+    (st) => network.buildIndustry(st)
   );
   const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());
   picker.onSelect = (sel) => {

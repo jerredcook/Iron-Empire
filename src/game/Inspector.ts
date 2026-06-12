@@ -22,7 +22,8 @@ export class Inspector {
   constructor(
     private network: Network,
     private onClose: () => void,
-    private onAddTrain: (line: GLine) => void
+    private onAddTrain: (line: GLine) => void,
+    private onBuildIndustry: (st: GStation) => void
   ) {
     this.panel = document.createElement('div');
     Object.assign(this.panel.style, {
@@ -65,6 +66,11 @@ export class Inspector {
     if (add && this.sel.kind === 'train') {
       const line = this.sel.line;
       add.onclick = () => this.onAddTrain(line);
+    }
+    const ind = this.panel.querySelector('[data-industry]') as HTMLElement | null;
+    if (ind && this.sel.kind === 'station') {
+      const st = this.sel.station;
+      ind.onclick = () => this.onBuildIndustry(st);
     }
   }
 
@@ -121,12 +127,17 @@ export class Inspector {
     }
 
     const links = this.network.lines
-      .filter((l) => l.a === st || l.b === st)
-      .map((l) => (l.a === st ? l.b.name : l.a.name));
+      .filter((l) => l.stops.includes(st))
+      .map((l) => l.stops.filter((s) => s !== st).map((s) => s.name).join(', '));
     html += `<div style="opacity:0.55;font-size:10.5px;text-transform:uppercase;letter-spacing:0.5px;margin-top:10px">Lines</div>`;
     html += links.length
       ? `<div style="margin-top:3px">${links.map((n) => `→ ${n}`).join('<br>')}</div>`
       : `<div style="opacity:0.5;margin-top:3px">Unconnected — build a line here.</div>`;
+
+    // Found a factory here if the city has no industry of its own.
+    if (!st.recipe) {
+      html += `<div data-industry style="margin-top:12px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,226,138,0.5);color:#ffe28a;font-size:12px">🏭 Build Factory — $160k</div>`;
+    }
 
     return html;
   }
