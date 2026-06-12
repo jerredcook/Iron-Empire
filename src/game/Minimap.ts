@@ -150,13 +150,16 @@ export class Minimap {
     }
 
     // Trains.
-    const selLine = this.sel?.kind === 'train' ? this.sel.line : null;
+    const selTrain = this.sel?.kind === 'train' ? this.sel.train : null;
     for (const l of this.network.lines) {
-      const p = l.train.headPosition;
-      ctx.beginPath();
-      ctx.arc(this.wx(p.x), this.wy(p.z), l === selLine ? 3.4 : 2.4, 0, Math.PI * 2);
-      ctx.fillStyle = l === selLine ? '#ffffff' : '#ff5a3c';
-      ctx.fill();
+      for (const t of l.trains) {
+        const p = t.headPosition;
+        const on = t === selTrain;
+        ctx.beginPath();
+        ctx.arc(this.wx(p.x), this.wy(p.z), on ? 3.4 : 2.4, 0, Math.PI * 2);
+        ctx.fillStyle = on ? '#ffffff' : '#ff5a3c';
+        ctx.fill();
+      }
     }
 
     // Camera look marker + view direction.

@@ -39,13 +39,15 @@ export class Picker {
     this.ray.setFromCamera(this.ndc, this.camera as THREE.PerspectiveCamera);
 
     // 1) A locomotive under the cursor wins.
-    const trainGroups = this.network.lines.map((l) => l.train.group);
+    const trainGroups = this.network.lines.flatMap((l) => l.trains.map((t) => t.group));
     const hit = this.ray.intersectObjects(trainGroups, true)[0];
     if (hit) {
-      const line = this.network.lines.find((l) => isDescendant(hit.object, l.train.group));
-      if (line) {
-        this.onSelect?.({ kind: 'train', line });
-        return;
+      for (const line of this.network.lines) {
+        const train = line.trains.find((t) => isDescendant(hit.object, t.group));
+        if (train) {
+          this.onSelect?.({ kind: 'train', line, train });
+          return;
+        }
       }
     }
 

@@ -69,10 +69,14 @@ async function boot(): Promise<void> {
 
   // Inspection: minimap + click-to-select + detail panel, all reading live state.
   const minimap = new Minimap(field, network);
-  const inspector = new Inspector(network, () => {
-    inspector.select(null);
-    minimap.setSelection(null);
-  });
+  const inspector = new Inspector(
+    network,
+    () => {
+      inspector.select(null);
+      minimap.setSelection(null);
+    },
+    (line) => network.addTrain(line, selectedLoco)
+  );
   const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());
   picker.onSelect = (sel) => {
     inspector.select(sel);

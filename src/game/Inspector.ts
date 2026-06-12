@@ -1,9 +1,10 @@
 import { Network, GStation, GLine, STOCK_CAP } from './Network';
 import { CARGO, CargoKind } from './Cargo';
+import { Train } from './Train';
 
 export type Selection =
   | { kind: 'station'; station: GStation }
-  | { kind: 'train'; line: GLine }
+  | { kind: 'train'; line: GLine; train: Train }
   | null;
 
 const hex = (c: number): string => '#' + c.toString(16).padStart(6, '0');
@@ -20,7 +21,8 @@ export class Inspector {
 
   constructor(
     private network: Network,
-    private onClose: () => void
+    private onClose: () => void,
+    private onAddTrain: (line: GLine) => void
   ) {
     this.panel = document.createElement('div');
     Object.assign(this.panel.style, {
@@ -55,9 +57,15 @@ export class Inspector {
     this.accum = 0;
     // A selected station/train can be valid only as long as it still exists.
     this.panel.style.display = 'block';
-    this.panel.innerHTML = this.sel.kind === 'station' ? this.stationHtml(this.sel.station) : this.trainHtml(this.sel.line);
+    this.panel.innerHTML =
+      this.sel.kind === 'station' ? this.stationHtml(this.sel.station) : this.trainHtml(this.sel.line, this.sel.train);
     const close = this.panel.querySelector('[data-close]') as HTMLElement | null;
     if (close) close.onclick = () => this.onClose();
+    const add = this.panel.querySelector('[data-addtrain]') as HTMLElement | null;
+    if (add && this.sel.kind === 'train') {
+      const line = this.sel.line;
+      add.onclick = () => this.onAddTrain(line);
+    }
   }
 
   private header(title: string, sub: string): string {
@@ -123,8 +131,7 @@ export class Inspector {
     return html;
   }
 
-  private trainHtml(line: GLine): string {
-    const t = line.train;
+  private trainHtml(line: GLine, t: Train): string {
     const lc = t.locoClass;
     let html = this.header(`${lc.name} ${lc.wheel}`, `${line.a.name} ↔ ${line.b.name}`);
     html += `<div style="display:flex;gap:10px;font-size:11.5px;opacity:0.75;margin:-2px 0 6px">` +
@@ -144,6 +151,10 @@ export class Inspector {
       }
       html += `</div>`;
     }
+
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.12)">`;
+    html += `<span style="opacity:0.7;font-size:11.5px">${line.trains.length} train${line.trains.length > 1 ? 's' : ''} on line</span>`;
+    html += `<span data-addtrain style="cursor:pointer;pointer-events:auto;padding:4px 10px;border-radius:6px;border:1px solid rgba(143,255,168,0.5);color:#8fffa8;font-size:11.5px">+ Add train</span></div>`;
     return html;
   }
 

@@ -28,6 +28,7 @@ export class HUD {
   private qualityBtns = new Map<QualityLevel, HTMLButtonElement>();
   private upkeep!: HTMLDivElement;
   private goalLine!: HTMLDivElement;
+  private debtLine!: HTMLDivElement;
   private engineSel!: HTMLSelectElement;
   private overlay!: HTMLDivElement;
   private selectedLoco: LocoClass;
@@ -74,6 +75,14 @@ export class HUD {
       borderRadius: '6px',
     });
     top.append(this.money, this.year, this.upkeep, this.goalLine);
+
+    // Finance: outstanding debt + bond/repay controls.
+    this.debtLine = el('div', { fontSize: '12px', opacity: '0.7', marginTop: '8px' });
+    const finRow = el('div', { display: 'flex', gap: '4px', marginTop: '4px' });
+    const bond = financeBtn('Bond +$200k', () => this.network.issueBond(200_000));
+    const repay = financeBtn('Repay $100k', () => this.network.repayDebt(100_000));
+    finRow.append(bond, repay);
+    top.append(this.debtLine, finRow);
 
     this.buildBtn = document.createElement('button');
     Object.assign(this.buildBtn.style, {
@@ -325,6 +334,14 @@ export class HUD {
       0
     )}% &middot; worth $${Math.round(this.network.netWorth).toLocaleString()}</span>`;
 
+    const debt = Math.round(this.network.debt);
+    this.debtLine.innerHTML =
+      debt > 0
+        ? `Debt $${debt.toLocaleString()} <span style="opacity:0.6">(−$${Math.round(
+            this.network.interestPerYear
+          ).toLocaleString()}/yr)</span>`
+        : `Debt-free <span style="opacity:0.6">· borrow up to $${Math.round(this.network.creditLimit / 1000)}k</span>`;
+
     if (this.network.status !== 'playing' && this.overlay.style.display === 'none') this.showEnd();
 
     const key = this.network.deliveries.map((d) => d.amount + d.text).join('|');
@@ -392,4 +409,23 @@ function el(tag: string, style: Partial<CSSStyleDeclaration>): HTMLDivElement {
   const e = document.createElement(tag) as HTMLDivElement;
   Object.assign(e.style, style);
   return e;
+}
+
+function financeBtn(label: string, onClick: () => void): HTMLButtonElement {
+  const b = document.createElement('button');
+  Object.assign(b.style, {
+    flex: '1',
+    padding: '5px 4px',
+    pointerEvents: 'auto',
+    cursor: 'pointer',
+    border: '1px solid rgba(255,255,255,0.18)',
+    borderRadius: '6px',
+    background: 'rgba(255,255,255,0.06)',
+    color: '#f4f0e6',
+    fontSize: '11px',
+    fontWeight: '600',
+  } as CSSStyleDeclaration);
+  b.textContent = label;
+  b.onclick = onClick;
+  return b;
 }

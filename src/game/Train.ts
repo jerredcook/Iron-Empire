@@ -72,6 +72,12 @@ export class Train {
     return this.loco.group.position;
   }
 
+  /** Shift this train's starting point along the line (0..1 of its length) so several
+   *  trains on one line stay spaced out instead of stacking. */
+  offsetStart(frac: number): void {
+    this.dist = THREE.MathUtils.clamp(STOP_MARGIN + frac * this.track.length, STOP_MARGIN, this.track.length - STOP_MARGIN);
+  }
+
   /** Total units currently aboard. */
   cargoTotal(): number {
     let t = 0;

@@ -11,7 +11,8 @@ export const STOCK_CAP = 90; // a city can only stockpile so much waiting freigh
 const LOAD_PER_STOP = 40; // units a train can take on in one berth
 export const TRACK_COST_PER_UNIT = 95; // $ per world-unit of rail
 const SECONDS_PER_YEAR = 22; // calendar pace
-const DEBT_LIMIT = -120_000; // sink below this and the railroad is bankrupt
+const DEBT_LIMIT = -120_000; // cash below this and the railroad is bankrupt
+const INTEREST_RATE = 0.07; // annual interest on outstanding bonds
 
 export type GameStatus = 'playing' | 'won' | 'lost';
 
@@ -40,7 +41,8 @@ export interface GLine {
   a: GStation;
   b: GStation;
   track: Track;
-  train: Train;
+  /** One or more trains shuttling the line — add more for throughput. */
+  trains: Train[];
 }
 
 export interface Delivery {
@@ -58,6 +60,8 @@ export class Network {
   readonly stations: GStation[] = [];
   readonly lines: GLine[] = [];
   money = 850_000;
+  /** Outstanding bond principal; accrues interest until repaid. */
+  debt = 0;
   year = 1862;
   status: GameStatus = 'playing';
   readonly goal: Goal = { targetCash: 2_500_000, byYear: 1890 };
@@ -67,18 +71,45 @@ export class Network {
 
   constructor(private scene: THREE.Scene, private field: Heightfield, private seed: number) {}
 
-  /** Cash plus the resale value of the fleet — what the objective is measured against. */
+  /** Cash plus fleet salvage minus debt — what the objective is measured against. */
   get netWorth(): number {
-    let w = this.money;
-    for (const l of this.lines) w += l.train.locoClass.cost * 0.5;
+    let w = this.money - this.debt;
+    for (const l of this.lines) for (const t of l.trains) w += t.locoClass.cost * 0.5;
     return w;
   }
 
   /** Combined annual maintenance of every train in service. */
   get upkeepPerYear(): number {
     let u = 0;
-    for (const l of this.lines) u += l.train.locoClass.upkeep;
+    for (const l of this.lines) for (const t of l.trains) u += t.locoClass.upkeep;
     return u;
+  }
+
+  /** Annual interest the current debt is accruing. */
+  get interestPerYear(): number {
+    return this.debt * INTEREST_RATE;
+  }
+
+  /** How much more the railroad can borrow against its worth. */
+  get creditLimit(): number {
+    return Math.max(0, Math.round(this.netWorth * 1.5 + 300_000 - this.debt));
+  }
+
+  /** Take on a bond: cash now against principal owed (capped by credit). */
+  issueBond(amount: number): boolean {
+    if (amount <= 0 || amount > this.creditLimit) return false;
+    this.money += amount;
+    this.debt += amount;
+    return true;
+  }
+
+  /** Pay down principal from cash. */
+  repayDebt(amount: number): boolean {
+    const pay = Math.min(amount, this.debt, this.money);
+    if (pay <= 0) return false;
+    this.money -= pay;
+    this.debt -= pay;
+    return true;
   }
 
   /** Build the economic node + its town/depot visuals from a generated site. */
@@ -158,19 +189,33 @@ export class Network {
 
     const track = new Track(this.field, waypoints);
     this.scene.add(track.group);
-    const train = new Train(track, this.scene, loco);
-    this.scene.add(train.group);
 
-    const line: GLine = { a, b, track, train };
-    train.onArrive = (end) => this.serviceTrain(line, end === 0 ? a : b);
+    const line: GLine = { a, b, track, trains: [] };
     this.lines.push(line);
+    this.spawnTrain(line, loco);
     return true;
   }
 
-  /** Unload anything the berth demands (paying for the haul), then load what it offers. */
-  private serviceTrain(line: GLine, at: GStation): void {
-    const train = line.train;
+  /** Buy and place an additional train on an existing line for more throughput. */
+  addTrain(line: GLine, loco: LocoClass): boolean {
+    if (loco.cost > this.money) return false;
+    this.money -= loco.cost;
+    this.spawnTrain(line, loco);
+    return true;
+  }
 
+  /** Put a train on a line, staggered so multiple trains don't ride on top of one
+   *  another, and wire its berth servicing. */
+  private spawnTrain(line: GLine, loco: LocoClass): void {
+    const train = new Train(line.track, this.scene, loco);
+    train.offsetStart(line.trains.length * 0.28);
+    this.scene.add(train.group);
+    train.onArrive = (end) => this.serviceTrain(train, end === 0 ? line.a : line.b);
+    line.trains.push(train);
+  }
+
+  /** Unload anything the berth demands (paying for the haul), then load what it offers. */
+  private serviceTrain(train: Train, at: GStation): void {
     for (const [kind, lot] of [...train.cargo]) {
       if (!at.demands.has(kind)) continue;
       const dist = lot.originPos.distanceTo(at.pos);
@@ -234,10 +279,10 @@ export class Network {
       // input is scarcest and by room left in the output stockpile.
       if (s.recipe) this.process(s, dt);
     }
-    for (const l of this.lines) l.train.update(dt);
+    for (const l of this.lines) for (const t of l.trains) t.update(dt);
 
-    // Fleet maintenance bleeds continuously — an idle railroad still costs money.
-    this.money -= (this.upkeepPerYear / SECONDS_PER_YEAR) * dt;
+    // Maintenance and bond interest bleed continuously — an idle railroad still costs.
+    this.money -= ((this.upkeepPerYear + this.interestPerYear) / SECONDS_PER_YEAR) * dt;
 
     this.yearAccum += dt;
     if (this.yearAccum >= SECONDS_PER_YEAR) {
