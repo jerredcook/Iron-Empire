@@ -249,15 +249,16 @@ export function buildStation(): THREE.Group {
   return flattenByMaterial(g);
 }
 
-/** A small town: houses on a jittered grid facing a green, near the station. */
-export function buildTown(seed: number, count: number): THREE.Group {
+/** A small town: houses on a jittered ring (minR..maxR) facing the centre. Growth
+ *  appends fresh outer rings by calling again with larger radii. */
+export function buildTown(seed: number, count: number, minR = 13, maxR = 47): THREE.Group {
   const rng = mulberry32(seed);
   const g = new THREE.Group();
   const taken: { x: number; z: number; r: number }[] = [];
   let placed = 0;
   for (let attempt = 0; attempt < count * 30 && placed < count; attempt++) {
     const ang = rng() * Math.PI * 2;
-    const rad = 13 + rng() * 34;
+    const rad = minR + rng() * (maxR - minR);
     const x = Math.cos(ang) * rad;
     const z = Math.sin(ang) * rad;
     const w = 5 + rng() * 4;

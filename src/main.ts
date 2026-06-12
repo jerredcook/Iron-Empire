@@ -98,6 +98,13 @@ async function boot(): Promise<void> {
     rig.resize();
   });
 
+  // If the player asked to load (the Load button reloads the page), restore the saved
+  // game over this freshly generated world before the first frame.
+  if (sessionStorage.getItem('ie.load') && Network.hasSave()) {
+    network.loadFromStorage();
+    sessionStorage.removeItem('ie.load');
+  }
+
   // Open on a high three-quarter overview so several cities are in frame.
   rig.controls.target.set(0, 20, 0);
   rig.camera.position.set(-620, 640, 820);

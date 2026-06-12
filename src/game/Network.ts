@@ -5,14 +5,17 @@ import { Train } from './Train';
 import { CargoKind, haulRevenue } from './Cargo';
 import { Archetype, CitySite, Recipe } from './Economy';
 import { buildTown, buildStation } from './Buildings';
-import { LocoClass, defaultLoco } from './Locomotives';
+import { LocoClass, defaultLoco, LOCOS } from './Locomotives';
 
 export const STOCK_CAP = 90; // a city can only stockpile so much waiting freight
 const LOAD_PER_STOP = 40; // units a train can take on in one berth
 export const TRACK_COST_PER_UNIT = 95; // $ per world-unit of rail
+const SAVE_KEY = 'ironempire.save.v1';
 const SECONDS_PER_YEAR = 22; // calendar pace
 const DEBT_LIMIT = -120_000; // cash below this and the railroad is bankrupt
 const INTEREST_RATE = 0.07; // annual interest on outstanding bonds
+const SERVE_FULL = 55; // banked service that yields full prosperity
+const GROWTH_TIERS = [1.55, 2.05, 2.55]; // growth thresholds that add a house ring
 
 export type GameStatus = 'playing' | 'won' | 'lost';
 
@@ -35,6 +38,12 @@ export interface GStation {
   /** Inbound: delivered raw materials waiting to be processed (processors only). */
   input: Map<CargoKind, number>;
   recipe?: Recipe;
+  /** Prosperity multiplier (1..~3): rises with sustained service, scaling output. */
+  growth: number;
+  /** Decaying tally of demanded cargo recently received — drives growth. */
+  served: number;
+  /** How many outer house rings have been added (growth milestones reached). */
+  tier: number;
 }
 
 export interface GLine {
@@ -44,6 +53,8 @@ export interface GLine {
   /** One or more trains shuttling the line — add more for throughput. */
   trains: Train[];
   owner: Company;
+  /** The full a→…→b ground route, kept so the line can be re-laid on load. */
+  waypoints: THREE.Vector3[];
 }
 
 export interface Delivery {
@@ -187,6 +198,111 @@ export class Network {
     return this.player.repayDebt(amount);
   }
 
+  // ---- Persistence -------------------------------------------------------
+
+  static hasSave(): boolean {
+    try {
+      return !!localStorage.getItem(SAVE_KEY);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Snapshot the dynamic game state. Cities are deterministic from the seed, so only
+   *  their changing stock/prosperity is stored; lines store their route + roster. */
+  save(): void {
+    const ci = (c: Company): number => this.companies.indexOf(c);
+    const data = {
+      year: this.year,
+      status: this.status,
+      companies: this.companies.map((c) => ({
+        money: c.money,
+        debt: c.debt,
+        defunct: c.defunct,
+        holdings: [...c.holdings].map(([co, q]) => [ci(co), q]),
+      })),
+      stations: this.stations.map((s) => ({
+        stock: [...s.stock],
+        input: [...s.input],
+        served: s.served,
+        tier: s.tier,
+      })),
+      lines: this.lines.map((l) => ({
+        owner: ci(l.owner),
+        a: l.a.id,
+        b: l.b.id,
+        wp: l.waypoints.map((p) => [Math.round(p.x), Math.round(p.z)]),
+        locos: l.trains.map((t) => t.locoClass.id),
+      })),
+    };
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    } catch {
+      /* storage unavailable — ignore */
+    }
+  }
+
+  /** Restore a saved game over a freshly generated world (same seed). */
+  loadFromStorage(): boolean {
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem(SAVE_KEY);
+    } catch {
+      return false;
+    }
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+
+    this.year = data.year;
+    this.status = data.status ?? 'playing';
+    this.clearLines();
+
+    this.companies.forEach((c, i) => {
+      const cd = data.companies[i];
+      if (!cd) return;
+      c.money = cd.money;
+      c.debt = cd.debt;
+      c.defunct = cd.defunct;
+      c.holdings.clear();
+    });
+    // Holdings reference other companies, so wire them after all exist.
+    this.companies.forEach((c, i) => {
+      for (const [idx, q] of data.companies[i]?.holdings ?? []) c.holdings.set(this.companies[idx], q);
+    });
+
+    this.stations.forEach((s, i) => {
+      const sd = data.stations[i];
+      if (!sd) return;
+      s.stock = new Map(sd.stock);
+      s.input = new Map(sd.input);
+      s.served = sd.served ?? 0;
+      s.tier = 0; // re-grown below so the house rings reappear
+      s.growth = 1 + Math.min(2, s.served / SERVE_FULL);
+      this.maybeGrowCity(s);
+    });
+
+    for (const ld of data.lines) {
+      const a = this.stations[ld.a];
+      const b = this.stations[ld.b];
+      const owner = this.companies[ld.owner];
+      if (!a || !b || !owner) continue;
+      const wp: THREE.Vector3[] = ld.wp.map((p: [number, number]) => new THREE.Vector3(p[0], this.field.height(p[0], p[1]), p[1]));
+      const locos = (ld.locos as string[]).map((id) => LOCOS.find((l) => l.id === id) ?? defaultLoco(this.year));
+      this.layLine(owner, a, b, wp, locos);
+    }
+    return true;
+  }
+
+  /** Tear down every line (meshes + trains) — used before restoring a save. */
+  private clearLines(): void {
+    for (const l of this.lines) {
+      this.scene.remove(l.track.group);
+      for (const t of l.trains) this.scene.remove(t.group);
+    }
+    this.lines.length = 0;
+    for (const c of this.companies) c.lines.length = 0;
+  }
+
   /** Player's stake in a company, 0..1. */
   stake(target: Company): number {
     return (this.player.holdings.get(target) ?? 0) / target.shares;
@@ -246,6 +362,9 @@ export class Network {
       stock: new Map(),
       input: new Map(),
       recipe,
+      growth: 1,
+      served: 0,
+      tier: 0,
     };
     this.stations.push(st);
 
@@ -300,21 +419,25 @@ export class Network {
     return this.buildLineFor(this.player, a, mids, b, loco);
   }
 
-  /** Commit a line owned by the given company. */
+  /** Commit a line owned by the given company (charges its treasury). */
   buildLineFor(owner: Company, a: GStation, mids: THREE.Vector3[], b: GStation, loco: LocoClass): boolean {
     const waypoints = [a.pos.clone(), ...mids.map((m) => m.clone()), b.pos.clone()];
     const cost = this.lineCost(waypoints, loco);
     if (cost > owner.money) return false;
     owner.money -= cost;
+    this.layLine(owner, a, b, waypoints, [loco]);
+    return true;
+  }
 
+  /** Lay the rails + trains for a line without charging — shared by build and load. */
+  private layLine(owner: Company, a: GStation, b: GStation, waypoints: THREE.Vector3[], locos: LocoClass[]): GLine {
     const track = new Track(this.field, waypoints);
     this.scene.add(track.group);
-
-    const line: GLine = { a, b, track, trains: [], owner };
+    const line: GLine = { a, b, track, trains: [], owner, waypoints };
     this.lines.push(line);
     owner.lines.push(line);
-    this.spawnTrain(line, loco);
-    return true;
+    for (const loco of locos) this.spawnTrain(line, loco);
+    return line;
   }
 
   /** Buy and place an additional train on an existing line for more throughput. */
@@ -344,9 +467,11 @@ export class Network {
       owner.money += rev;
       if (!owner.isAI) this.pushDelivery(`${Math.floor(lot.amount)} ${kind} → ${at.name}`, rev);
       // Raw delivered to a processor feeds its input inventory; anything else is
-      // consumed on arrival. Either way the haul is paid.
+      // consumed on arrival (and feeds the city's prosperity). Either way it's paid.
       if (at.recipe && kind in at.recipe.inputs) {
         at.input.set(kind, Math.min(STOCK_CAP, (at.input.get(kind) ?? 0) + lot.amount));
+      } else {
+        at.served += lot.amount;
       }
       train.cargo.delete(kind);
     }
@@ -382,6 +507,17 @@ export class Network {
     s.stock.set(rc.output, (s.stock.get(rc.output) ?? 0) + batch);
   }
 
+  /** Add an outer ring of houses each time a city crosses a growth milestone. */
+  private maybeGrowCity(s: GStation): void {
+    while (s.tier < GROWTH_TIERS.length && s.growth >= GROWTH_TIERS[s.tier]) {
+      const t = s.tier;
+      const ring = buildTown(this.seed + s.id * 131 + (t + 1) * 7919, 5 + t, 50 + t * 16, 64 + t * 16);
+      ring.position.copy(s.pos);
+      this.scene.add(ring);
+      s.tier++;
+    }
+  }
+
   private pushDelivery(text: string, amount: number): void {
     this.deliveries.unshift({ text, amount });
     if (this.deliveries.length > 6) this.deliveries.pop();
@@ -391,10 +527,15 @@ export class Network {
     if (this.status !== 'playing') return;
 
     for (const s of this.stations) {
-      // Raw extraction accrues as outbound stock, capped so it can't pile up forever.
+      // Prosperity decays without service and is recomputed into a 1..3 multiplier.
+      s.served = Math.max(0, s.served - s.served * 0.05 * dt);
+      s.growth = 1 + Math.min(2, s.served / SERVE_FULL);
+      this.maybeGrowCity(s);
+
+      // Extraction (scaled by prosperity) accrues as outbound stock, capped.
       for (const kind of Object.keys(s.supplies) as CargoKind[]) {
         const cur = s.stock.get(kind) ?? 0;
-        if (cur < STOCK_CAP) s.stock.set(kind, Math.min(STOCK_CAP, cur + s.supplies[kind]! * dt));
+        if (cur < STOCK_CAP) s.stock.set(kind, Math.min(STOCK_CAP, cur + s.supplies[kind]! * s.growth * dt));
       }
       // Processors convert input inventory into finished goods, throttled by whichever
       // input is scarcest and by room left in the output stockpile.

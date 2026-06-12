@@ -20,6 +20,7 @@ export class HUD {
   private ledger: HTMLDivElement;
   private labelLayer: HTMLDivElement;
   private labels = new Map<number, HTMLDivElement>();
+  private popBars = new Map<number, HTMLDivElement>();
   private v = new THREE.Vector3();
   private lastMoney = NaN;
   private lastYear = NaN;
@@ -102,6 +103,20 @@ export class HUD {
     const sell = financeBtn('Sell 5k', () => this.network.sellShares(this.network.rival, 5000));
     mRow.append(buy, sell);
     top.append(mLabel, this.marketLine, mRow);
+
+    // System: persist / restore the game.
+    const sysRow = el('div', { display: 'flex', gap: '4px', marginTop: '10px' });
+    const saveBtn = financeBtn('Save', () => {
+      this.network.save();
+      saveBtn.textContent = 'Saved ✓';
+      setTimeout(() => (saveBtn.textContent = 'Save'), 1200);
+    });
+    const loadBtn = financeBtn('Load', () => {
+      sessionStorage.setItem('ie.load', '1');
+      location.reload();
+    });
+    sysRow.append(saveBtn, loadBtn);
+    top.append(sysRow);
 
     this.buildBtn = document.createElement('button');
     Object.assign(this.buildBtn.style, {
@@ -403,9 +418,13 @@ export class HUD {
           fontSize: '12px',
           whiteSpace: 'nowrap',
         });
-        label.innerHTML = `<b>${st.name}</b> <span style="opacity:0.6">${st.archetype.kind}</span>` + this.cargoBadges(st);
+        label.innerHTML =
+          `<b>${st.name}</b> <span style="opacity:0.6">${st.archetype.kind}</span>` +
+          this.cargoBadges(st) +
+          `<div style="height:3px;margin-top:2px;background:rgba(255,255,255,0.15);border-radius:2px"><div data-pop style="height:100%;width:0;background:#9bd07a;border-radius:2px"></div></div>`;
         this.labelLayer.append(label);
         this.labels.set(st.id, label);
+        this.popBars.set(st.id, label.querySelector('[data-pop]') as HTMLDivElement);
       }
       this.v.copy(st.pos);
       this.v.y += 14;
@@ -415,6 +434,8 @@ export class HUD {
       if (visible) {
         label.style.left = `${(this.v.x * 0.5 + 0.5) * w}px`;
         label.style.top = `${(-this.v.y * 0.5 + 0.5) * h}px`;
+        const pop = this.popBars.get(st.id);
+        if (pop) pop.style.width = `${Math.min(100, ((st.growth - 1) / 2) * 100)}%`;
       }
     }
   }
