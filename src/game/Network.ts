@@ -6,7 +6,7 @@ import { CargoKind, haulRevenue } from './Cargo';
 import { Archetype, CitySite } from './Economy';
 import { buildTown, buildStation } from './Buildings';
 
-const STOCK_CAP = 90; // a city can only stockpile so much waiting freight
+export const STOCK_CAP = 90; // a city can only stockpile so much waiting freight
 const LOAD_PER_STOP = 40; // units a train can take on in one berth
 export const TRACK_COST_PER_UNIT = 95; // $ per world-unit of rail
 const TRAIN_COST = 42000;
@@ -21,7 +21,7 @@ export interface GStation {
   stock: Map<CargoKind, number>;
 }
 
-interface GLine {
+export interface GLine {
   a: GStation;
   b: GStation;
   track: Track;
@@ -41,7 +41,7 @@ export interface Delivery {
  */
 export class Network {
   readonly stations: GStation[] = [];
-  private lines: GLine[] = [];
+  readonly lines: GLine[] = [];
   money = 850_000;
   year = 1862;
   private yearAccum = 0;

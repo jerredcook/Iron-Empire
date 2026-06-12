@@ -59,6 +59,11 @@ export class Train {
     this.dir = 1;
   }
 
+  /** World position of the locomotive (for minimap dots / camera framing). */
+  get headPosition(): THREE.Vector3 {
+    return this.loco.group.position;
+  }
+
   /** Total units currently aboard. */
   cargoTotal(): number {
     let t = 0;

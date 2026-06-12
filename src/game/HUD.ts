@@ -146,13 +146,14 @@ export class HUD {
     const help = el('div', {
       position: 'absolute',
       bottom: '14px',
-      right: '14px',
+      left: '50%',
+      transform: 'translateX(-50%)',
       padding: '8px 12px',
       background: 'rgba(18,22,28,0.5)',
       borderRadius: '8px',
       fontSize: '11.5px',
       opacity: '0.8',
-      textAlign: 'right',
+      textAlign: 'center',
     });
     help.innerHTML = 'Drag pan · Right-drag orbit · Wheel zoom · WASD<br>B build track · Esc cancel';
     this.root.append(help);

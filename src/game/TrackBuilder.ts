@@ -76,6 +76,11 @@ export class TrackBuilder {
     window.addEventListener('keydown', this.onKey);
   }
 
+  /** Is build mode currently engaged? (Picking should stand down while it is.) */
+  isActive(): boolean {
+    return this.active;
+  }
+
   /** Enter build mode (idempotent). */
   start(): void {
     this.active = true;

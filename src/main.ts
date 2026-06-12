@@ -10,6 +10,9 @@ import { Network } from './game/Network';
 import { placeCities } from './game/Economy';
 import { TrackBuilder } from './game/TrackBuilder';
 import { HUD } from './game/HUD';
+import { Inspector } from './game/Inspector';
+import { Picker } from './game/Picker';
+import { Minimap } from './game/Minimap';
 
 const WORLD = { seed: 20260611, size: 4096, seaLevel: 0 };
 
@@ -58,6 +61,25 @@ async function boot(): Promise<void> {
   builder.onStatus = (s) => hud.setBuildStatus(s);
   renderer.gl.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 
+  // Inspection: minimap + click-to-select + detail panel, all reading live state.
+  const minimap = new Minimap(field, network);
+  const inspector = new Inspector(network, () => {
+    inspector.select(null);
+    minimap.setSelection(null);
+  });
+  const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());
+  picker.onSelect = (sel) => {
+    inspector.select(sel);
+    minimap.setSelection(sel);
+  };
+  minimap.onPan = (x, z) => {
+    const dx = x - rig.controls.target.x;
+    const dz = z - rig.controls.target.z;
+    rig.controls.target.set(x, field.height(x, z), z);
+    rig.camera.position.x += dx;
+    rig.camera.position.z += dz;
+  };
+
   renderer.attach(scene, rig.camera, WORLD.size);
   window.addEventListener('resize', () => {
     renderer.resize();
@@ -69,7 +91,7 @@ async function boot(): Promise<void> {
   rig.camera.position.set(-620, 640, 820);
 
   if (import.meta.env.DEV) {
-    (window as unknown as { __ie: unknown }).__ie = { scene, rig, renderer, field, terrain, water, scatter, network, builder };
+    (window as unknown as { __ie: unknown }).__ie = { scene, rig, renderer, field, terrain, water, scatter, network, builder, inspector, minimap, picker };
   }
 
   const clock = new THREE.Clock();
@@ -82,6 +104,8 @@ async function boot(): Promise<void> {
     network.update(dt);
     renderer.render();
     hud.update(rig.camera, window.innerWidth, window.innerHeight);
+    inspector.update(dt);
+    minimap.update(rig.camera, rig.controls.target);
   };
   loop();
   document.getElementById('loading')?.classList.add('hidden');
