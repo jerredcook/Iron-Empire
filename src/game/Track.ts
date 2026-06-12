@@ -45,6 +45,7 @@ export class Track {
     this.group.add(this.buildTies());
     for (const r of this.buildRails()) this.group.add(r);
     this.buildTrestles();
+    this.buildTunnels();
     this.group.name = 'track';
   }
 
@@ -238,5 +239,68 @@ export class Track {
       }
     }
     if (bents.children.length) this.group.add(bents);
+  }
+
+  /** Where the graded line runs well below the surface (a cut through a ridge), the
+   *  terrain mesh already occludes it — we just frame each mouth with a stone portal so
+   *  it reads as a deliberate tunnel. Hysteresis + a minimum length avoid stray portals
+   *  on noisy ground. */
+  private buildTunnels(): void {
+    const r = terrainSet('rock_face', 4);
+    const stone = new THREE.MeshStandardMaterial({ map: r.map, normalMap: r.normalMap, roughnessMap: r.roughnessMap, roughness: 1 });
+    const portals = new THREE.Group();
+    const n = Math.max(80, Math.floor(this.length / 4));
+    const pos = new THREE.Vector3();
+    const tan = new THREE.Vector3();
+    let inTunnel = false;
+    let startIdx = 0;
+    const startPos = new THREE.Vector3();
+    const startTan = new THREE.Vector3();
+    for (let i = 0; i <= n; i++) {
+      const u = i / n;
+      this.curve.getPointAt(u, pos);
+      const ground = this.field.height(pos.x, pos.z);
+      const depth = ground - pos.y; // how far the railhead sits below the surface
+      if (!inTunnel && depth > 2.5) {
+        inTunnel = true;
+        startIdx = i;
+        startPos.copy(pos);
+        this.curve.getTangentAt(u, startTan);
+      } else if (inTunnel && depth < 0.8) {
+        inTunnel = false;
+        if (i - startIdx >= 3) {
+          this.curve.getTangentAt(u, tan);
+          portals.add(this.makePortal(startPos, startTan, stone));
+          portals.add(this.makePortal(pos, tan, stone));
+        }
+      }
+    }
+    if (portals.children.length) this.group.add(portals);
+  }
+
+  /** A stone arch facade at a tunnel mouth: two jambs and a lintel, framing the bore. */
+  private makePortal(pos: THREE.Vector3, tan: THREE.Vector3, mat: THREE.Material): THREE.Group {
+    const g = new THREE.Group();
+    g.position.set(pos.x, 0, pos.z);
+    g.rotation.y = Math.atan2(tan.x, tan.z);
+    const w = GAUGE * 1.55;
+    const h = 3.6;
+    const th = 1.0;
+    const y0 = pos.y - 0.85; // rail base
+    for (const s of [-1, 1]) {
+      const jamb = new THREE.Mesh(new THREE.BoxGeometry(0.9, h, th), mat);
+      jamb.position.set((s * w) / 2, y0 + h / 2, 0);
+      jamb.castShadow = true;
+      g.add(jamb);
+    }
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(w + 1.7, 1.1, th), mat);
+    lintel.position.set(0, y0 + h + 0.35, 0);
+    lintel.castShadow = true;
+    g.add(lintel);
+    const keystone = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.0, th + 0.15), mat);
+    keystone.position.set(0, y0 + h + 0.2, 0);
+    keystone.castShadow = true;
+    g.add(keystone);
+    return g;
   }
 }
