@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { Heightfield } from '../world/Heightfield';
 import { Track } from './Track';
-import { Train } from './Train';
-import { CargoKind, haulRevenue } from './Cargo';
+import { Train, CAR_CAP } from './Train';
+import { CargoKind, ALL_CARGO, haulRevenue } from './Cargo';
 import { Archetype, CitySite, Recipe, ARCHETYPES } from './Economy';
 import { buildTown, buildStation, buildFactory } from './Buildings';
 import { LocoClass, defaultLoco, LOCOS } from './Locomotives';
@@ -16,6 +16,8 @@ const DEBT_LIMIT = -120_000; // cash below this and the railroad is bankrupt
 const INTEREST_RATE = 0.07; // annual interest on outstanding bonds
 const DIVIDEND_RATE = 0.05; // share of operating value paid out to holders each year
 const INDUSTRY_ROYALTY = 9; // $/unit the industry's owner earns on shipped output
+const STATION_BONUS = 0.18; // extra haul revenue per depot upgrade level
+const MAX_STATION_LEVEL = 3;
 const SERVE_FULL = 55; // banked service that yields full prosperity
 const GROWTH_TIERS = [1.55, 2.05, 2.55]; // growth thresholds that add a house ring
 
@@ -76,6 +78,10 @@ export interface GStation {
   owner: Company | null;
   /** Appraised value of the owned industry — counts toward the owner's net worth. */
   bookValue: number;
+  /** Depot upgrade level (0–3): each level adds a haul-revenue bonus here. */
+  level: number;
+  /** Cumulative revenue earned from deliveries to this station. */
+  revenue: number;
 }
 
 export interface GLine {
@@ -343,12 +349,14 @@ export class Network {
         owner: s.owner ? ci(s.owner) : -1,
         bookValue: s.bookValue,
         hasRecipe: !!s.recipe,
+        level: s.level,
+        revenue: Math.round(s.revenue),
       })),
       lines: this.lines.map((l) => ({
         owner: ci(l.owner),
         stops: l.stops.map((s) => s.id),
         wp: l.waypoints.map((p) => [Math.round(p.x), Math.round(p.z)]),
-        locos: l.trains.map((t) => t.locoClass.id),
+        trains: l.trains.map((t) => ({ loco: t.locoClass.id, cars: t.consist.map((c) => c.kind) })),
       })),
     };
     try {
@@ -412,10 +420,12 @@ export class Network {
         f.rotation.y = s.id * 0.7;
         this.scene.add(f);
       }
-      // Restore industry ownership.
+      // Restore industry ownership + depot level/earnings.
       s.bookValue = sd.bookValue ?? 0;
       s.owner = sd.owner >= 0 ? this.companies[sd.owner] : null;
       if (s.owner) s.owner.industries.push(s);
+      s.level = sd.level ?? 0;
+      s.revenue = sd.revenue ?? 0;
     });
 
     for (const ld of data.lines) {
@@ -423,8 +433,11 @@ export class Network {
       const owner = this.companies[ld.owner];
       if (stops.some((s) => !s) || !owner) continue;
       const wp: THREE.Vector3[] = ld.wp.map((p: [number, number]) => new THREE.Vector3(p[0], this.field.height(p[0], p[1]), p[1]));
-      const locos = (ld.locos as string[]).map((id) => LOCOS.find((l) => l.id === id) ?? defaultLoco(this.year));
-      this.layLine(owner, stops, wp, locos);
+      const trains = (ld.trains as { loco: string; cars: CargoKind[] }[]).map((t) => ({
+        loco: LOCOS.find((l) => l.id === t.loco) ?? defaultLoco(this.year),
+        cars: t.cars,
+      }));
+      this.layLine(owner, stops, wp, trains);
     }
     return true;
   }
@@ -503,6 +516,8 @@ export class Network {
       tier: 0,
       owner: null,
       bookValue: 0,
+      level: 0,
+      revenue: 0,
     };
     this.stations.push(st);
 
@@ -553,8 +568,8 @@ export class Network {
    * staffed by the chosen locomotive. Deducts cost, lays the Track, and puts a train
    * on it. Returns false (building nothing) if the player can't afford it.
    */
-  buildLine(stops: GStation[], segMids: THREE.Vector3[][], loco: LocoClass): boolean {
-    return this.buildLineFor(this.player, stops, segMids, loco);
+  buildLine(stops: GStation[], segMids: THREE.Vector3[][], loco: LocoClass, cars?: CargoKind[]): boolean {
+    return this.buildLineFor(this.player, stops, segMids, loco, cars);
   }
 
   /** Assemble the full ground route from an ordered stop list and the grade points
@@ -568,20 +583,22 @@ export class Network {
     return wp;
   }
 
-  /** Commit a corridor owned by the given company (charges its treasury). */
-  buildLineFor(owner: Company, stops: GStation[], segMids: THREE.Vector3[][], loco: LocoClass): boolean {
+  /** Commit a corridor owned by the given company (charges its treasury). The first
+   *  train's consist is `cars` (defaults to a sensible route-appropriate one). */
+  buildLineFor(owner: Company, stops: GStation[], segMids: THREE.Vector3[][], loco: LocoClass, cars?: CargoKind[]): boolean {
     if (stops.length < 2) return false;
     const waypoints = this.routeWaypoints(stops, segMids);
     const cost = this.lineCost(waypoints, loco);
     if (cost > owner.money) return false;
     owner.money -= cost;
-    this.layLine(owner, stops, waypoints, [loco]);
+    const consist = cars ?? this.defaultConsist(stops, loco);
+    this.layLine(owner, stops, waypoints, [{ loco, cars: consist }]);
     if (owner === this.player) this.onBuilt?.();
     return true;
   }
 
   /** Lay the rails + trains for a corridor without charging — shared by build and load. */
-  private layLine(owner: Company, stops: GStation[], waypoints: THREE.Vector3[], locos: LocoClass[]): GLine {
+  private layLine(owner: Company, stops: GStation[], waypoints: THREE.Vector3[], trains: { loco: LocoClass; cars: CargoKind[] }[]): GLine {
     const track = new Track(this.field, waypoints);
     this.scene.add(track.group);
     const stopFracs = stops.map((s) => track.nearestU(s.pos));
@@ -589,8 +606,23 @@ export class Network {
     const line: GLine = { stops, a: stops[0], b: stops[stops.length - 1], track, stopFracs, trains: [], owner, value, waypoints };
     this.lines.push(line);
     owner.lines.push(line);
-    for (const loco of locos) this.spawnTrain(line, loco);
+    for (const t of trains) this.spawnTrain(line, t.loco, t.cars);
     return line;
+  }
+
+  /** Most cars a locomotive can pull. */
+  maxCars(loco: LocoClass): number {
+    return Math.max(1, Math.min(8, Math.round(loco.capacity / CAR_CAP)));
+  }
+
+  /** A sensible default consist: fill the cars with cargo this route actually trades. */
+  defaultConsist(stops: GStation[], loco: LocoClass): CargoKind[] {
+    const traded = ALL_CARGO.filter(
+      (k) => stops.some((s) => this.offersOf(s).includes(k)) && stops.some((s) => s.demands.has(k))
+    );
+    const pool = traded.length ? traded : (['goods'] as CargoKind[]);
+    const n = this.maxCars(loco);
+    return Array.from({ length: n }, (_, i) => pool[i % pool.length]);
   }
 
   /** Found a factory at a city that has no industry yet: it gains the goods recipe
@@ -640,61 +672,75 @@ export class Network {
     co.industries.push(st);
   }
 
-  /** Buy and place an additional train on an existing line for more throughput. */
-  addTrain(line: GLine, loco: LocoClass): boolean {
+  /** Buy and place an additional train (with the given consist) on an existing line. */
+  addTrain(line: GLine, loco: LocoClass, cars?: CargoKind[]): boolean {
     if (loco.cost > line.owner.money) return false;
     line.owner.money -= loco.cost;
-    this.spawnTrain(line, loco);
+    this.spawnTrain(line, loco, cars ?? this.defaultConsist(line.stops, loco));
     return true;
+  }
+
+  /** Upgrade a city's depot (higher levels add a haul-revenue bonus there). */
+  upgradeStation(st: GStation): boolean {
+    if (st.level >= MAX_STATION_LEVEL || this.status !== 'playing') return false;
+    const cost = this.stationUpgradeCost(st);
+    if (cost > this.player.money) return false;
+    this.player.money -= cost;
+    st.level += 1;
+    this.onBuilt?.();
+    return true;
+  }
+
+  stationUpgradeCost(st: GStation): number {
+    return 90_000 * (st.level + 1);
   }
 
   /** Put a train on a line, staggered so multiple trains don't ride on top of one
    *  another, and wire its stop servicing to the line's owner. */
-  private spawnTrain(line: GLine, loco: LocoClass): void {
-    const train = new Train(line.track, this.scene, loco, line.stopFracs);
+  private spawnTrain(line: GLine, loco: LocoClass, cars: CargoKind[]): void {
+    const train = new Train(line.track, this.scene, loco, line.stopFracs, cars);
     train.offsetStart(line.trains.length * 0.28);
     this.scene.add(train.group);
     train.onStop = (i) => this.serviceTrain(line.owner, train, line.stops[i]);
     line.trains.push(train);
   }
 
-  /** Unload anything the berth demands (paying the owner for the haul), then load. */
+  /** Service each car at a berth: a car whose cargo the city demands unloads (paying
+   *  the owner, scaled by the station's upgrade level), then every car tops up with its
+   *  own assigned cargo from the city's stock. Typed cars only carry their own kind. */
   private serviceTrain(owner: Company, train: Train, at: GStation): void {
-    for (const [kind, lot] of [...train.cargo]) {
-      if (!at.demands.has(kind)) continue;
-      const dist = lot.originPos.distanceTo(at.pos);
-      const rev = haulRevenue(kind, lot.amount, dist);
-      owner.money += rev;
-      if (!owner.isAI) {
-        this.pushDelivery(`${Math.floor(lot.amount)} ${kind} → ${at.name}`, rev);
-        this.onRevenue?.(rev);
+    const bonus = 1 + at.level * STATION_BONUS;
+    for (const car of train.consist) {
+      // Unload.
+      if (car.amount > 0 && at.demands.has(car.kind)) {
+        const dist = car.origin.distanceTo(at.pos);
+        const rev = Math.round(haulRevenue(car.kind, car.amount, dist) * bonus);
+        owner.money += rev;
+        at.revenue += rev; // per-stop earnings tally
+        if (!owner.isAI) {
+          this.pushDelivery(`${Math.floor(car.amount)} ${car.kind} → ${at.name}`, rev);
+          this.onRevenue?.(rev);
+        }
+        if (at.recipe && car.kind in at.recipe.inputs) {
+          at.input.set(car.kind, Math.min(STOCK_CAP, (at.input.get(car.kind) ?? 0) + car.amount));
+        } else {
+          at.served += car.amount;
+        }
+        car.amount = 0;
       }
-      // Raw delivered to a processor feeds its input inventory; anything else is
-      // consumed on arrival (and feeds the city's prosperity). Either way it's paid.
-      if (at.recipe && kind in at.recipe.inputs) {
-        at.input.set(kind, Math.min(STOCK_CAP, (at.input.get(kind) ?? 0) + lot.amount));
-      } else {
-        at.served += lot.amount;
+      // Load this car's assigned cargo from the city's stock.
+      const room = CAR_CAP - car.amount;
+      if (room > 0) {
+        const have = at.stock.get(car.kind) ?? 0;
+        const take = Math.min(room, have, LOAD_PER_STOP);
+        if (take >= 1) {
+          at.stock.set(car.kind, have - take);
+          if (car.amount === 0) car.origin.copy(at.pos);
+          car.amount += take;
+          if (at.owner) at.owner.money += take * INDUSTRY_ROYALTY;
+        }
       }
-      train.cargo.delete(kind);
     }
-
-    // Load anything waiting to be hauled — raw extraction and processed output alike.
-    for (const kind of [...at.stock.keys()]) {
-      const free = train.cargoFree();
-      if (free <= 0) break;
-      const have = at.stock.get(kind) ?? 0;
-      const take = Math.min(have, free, LOAD_PER_STOP);
-      if (take < 1) continue;
-      at.stock.set(kind, have - take);
-      const lot = train.cargo.get(kind);
-      if (lot) lot.amount += take;
-      else train.cargo.set(kind, { amount: take, originPos: at.pos.clone() });
-      // The industry's owner takes a royalty on everything it ships.
-      if (at.owner) at.owner.money += take * INDUSTRY_ROYALTY;
-    }
-
-    train.refreshLivery();
   }
 
   /** Run a processor's recipe for one tick: make as many output units as inputs and

@@ -17,6 +17,7 @@ import { LocoClass, defaultLoco } from './game/Locomotives';
 import { AudioBus } from './game/Audio';
 import { chooseScenario, DIFFICULTIES, SCENARIOS, Difficulty } from './game/Scenarios';
 import { Auctioneer } from './game/Auction';
+import { configureConsist } from './game/ConsistConfig';
 
 const SIZE = 4096;
 const SEA = 0;
@@ -118,9 +119,10 @@ async function boot(cfg: BootCfg): Promise<void> {
       minimap.setSelection(null);
     },
     (line) => {
-      if (!line.owner.isAI) network.addTrain(line, selectedLoco);
+      if (!line.owner.isAI) configureConsist(network, line, selectedLoco);
     },
-    (st) => network.buildIndustry(st)
+    (st) => network.buildIndustry(st),
+    (st) => network.upgradeStation(st)
   );
   const auctioneer = new Auctioneer(network);
   const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());

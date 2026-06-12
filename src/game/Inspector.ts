@@ -23,7 +23,8 @@ export class Inspector {
     private network: Network,
     private onClose: () => void,
     private onAddTrain: (line: GLine) => void,
-    private onBuildIndustry: (st: GStation) => void
+    private onBuildIndustry: (st: GStation) => void,
+    private onUpgrade: (st: GStation) => void
   ) {
     this.panel = document.createElement('div');
     Object.assign(this.panel.style, {
@@ -72,6 +73,11 @@ export class Inspector {
       const st = this.sel.station;
       ind.onclick = () => this.onBuildIndustry(st);
     }
+    const upg = this.panel.querySelector('[data-upgrade]') as HTMLElement | null;
+    if (upg && this.sel.kind === 'station') {
+      const st = this.sel.station;
+      upg.onclick = () => this.onUpgrade(st);
+    }
   }
 
   private header(title: string, sub: string): string {
@@ -98,8 +104,15 @@ export class Inspector {
 
     if (st.owner) {
       const c = '#' + st.owner.color.toString(16).padStart(6, '0');
-      html += `<div style="font-size:12px;margin:-4px 0 6px">Industry owned by <span style="color:${c}">${st.owner.name}</span></div>`;
+      html += `<div style="font-size:12px;margin:-4px 0 4px">Industry owned by <span style="color:${c}">${st.owner.name}</span></div>`;
     }
+
+    // Depot level, its revenue bonus, and earnings booked here so far.
+    const stars = '★'.repeat(st.level) + '☆'.repeat(3 - st.level);
+    html += `<div style="display:flex;justify-content:space-between;font-size:12px;margin:2px 0 6px">` +
+      `<span style="color:#ffe28a">Depot ${stars}</span>` +
+      `<span style="opacity:0.75">+${Math.round(st.level * 18)}% haul</span></div>`;
+    html += `<div style="font-size:12px;opacity:0.75;margin-bottom:4px">Earned here: $${Math.round(st.revenue).toLocaleString()}</div>`;
 
     // Processors: what they consume, with current input inventory, and the recipe.
     if (st.recipe) {
@@ -139,9 +152,15 @@ export class Inspector {
       ? `<div style="margin-top:3px">${links.map((n) => `→ ${n}`).join('<br>')}</div>`
       : `<div style="opacity:0.5;margin-top:3px">Unconnected — build a line here.</div>`;
 
-    // Found a factory here if the city has no industry of its own.
+    // Upgrade the depot for a haul bonus, or found a factory.
+    if (st.level < 3) {
+      html += `<div data-upgrade style="margin-top:12px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,226,138,0.5);color:#ffe28a;font-size:12px">⬆ Upgrade Depot — $${(
+        90 *
+        (st.level + 1)
+      ).toFixed(0)}k</div>`;
+    }
     if (!st.recipe) {
-      html += `<div data-industry style="margin-top:12px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,226,138,0.5);color:#ffe28a;font-size:12px">🏭 Build Factory — $160k</div>`;
+      html += `<div data-industry style="margin-top:6px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,226,138,0.5);color:#ffe28a;font-size:12px">🏭 Build Factory — $160k</div>`;
     }
 
     return html;
@@ -156,18 +175,17 @@ export class Inspector {
     const total = t.cargoTotal();
     html += this.bar('Load', '#8fffa8', total / t.capacity, `${Math.floor(total)} / ${t.capacity}`);
 
-    html += `<div style="opacity:0.55;font-size:10.5px;text-transform:uppercase;letter-spacing:0.5px;margin-top:10px">Manifest</div>`;
-    if (t.cargo.size === 0) {
-      html += `<div style="opacity:0.5;margin-top:3px">Running empty.</div>`;
-    } else {
-      html += `<div style="margin-top:4px">`;
-      for (const [k, lot] of t.cargo) {
-        html += `<div style="display:flex;align-items:center;gap:6px;margin:3px 0">${this.dot(hex(CARGO[k].color))}<span>${Math.floor(
-          lot.amount
-        )} ${CARGO[k].label}</span></div>`;
-      }
-      html += `</div>`;
-    }
+    html += `<div style="opacity:0.55;font-size:10.5px;text-transform:uppercase;letter-spacing:0.5px;margin-top:10px">Consist (${t.consist.length} cars)</div>`;
+    html += `<div style="margin-top:4px">`;
+    const routeWants = new Set(line.stops.flatMap((s) => [...s.demands]));
+    t.consist.forEach((car, i) => {
+      const warn = !routeWants.has(car.kind);
+      html += `<div style="display:flex;align-items:center;gap:6px;margin:3px 0">${this.dot(hex(CARGO[car.kind].color))}` +
+        `<span>Car ${i + 1}: ${CARGO[car.kind].label} — ${Math.floor(car.amount)} units</span>` +
+        (warn ? `<span title="No stop on this line demands this cargo" style="color:#ffb454">⚠</span>` : '') +
+        `</div>`;
+    });
+    html += `</div>`;
 
     html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.12)">`;
     html += `<span style="opacity:0.7;font-size:11.5px">${line.trains.length} train${line.trains.length > 1 ? 's' : ''} on line</span>`;

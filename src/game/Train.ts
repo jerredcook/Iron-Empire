@@ -9,12 +9,14 @@ const FORWARD = new THREE.Vector3(0, 0, 1);
 const UP = new THREE.Vector3(0, 1, 0);
 const STOP_MARGIN = 9; // how close to the line's end the train berths
 const BLOCK_GAP = 16; // safe separation a following train keeps behind its leader
+export const CAR_CAP = 24; // units one freight car holds
 
-/** A single cargo lot riding the train, tagged with where it was picked up so the
- *  delivering station can be paid for the distance it travelled. */
-export interface CargoLot {
+/** One car in a consist: a fixed cargo type and what it's currently carrying. */
+export interface Car {
+  kind: CargoKind;
   amount: number;
-  originPos: THREE.Vector3;
+  /** Where the current load was picked up (for the distance-based haul payment). */
+  origin: THREE.Vector3;
 }
 
 /**
@@ -26,7 +28,8 @@ export interface CargoLot {
  */
 export class Train {
   readonly group = new THREE.Group();
-  readonly cargo = new Map<CargoKind, CargoLot>();
+  /** The ordered consist: one entry per car, each a fixed cargo type. */
+  readonly consist: Car[] = [];
   readonly capacity: number;
   /** Fired when the train berths at a stop, with that stop's index along the line. */
   onStop?: (stopIndex: number) => void;
@@ -56,23 +59,24 @@ export class Train {
   /** Arc-length the train ahead on this rail occupies — it may not advance past it. */
   private block: number | null = null;
 
-  constructor(private track: Track, scene: THREE.Scene, locoClass: LocoClass, stopFracs: number[]) {
+  constructor(private track: Track, scene: THREE.Scene, locoClass: LocoClass, stopFracs: number[], carKinds: CargoKind[]) {
     this.locoClass = locoClass;
-    this.capacity = locoClass.capacity;
+    this.capacity = carKinds.length * CAR_CAP;
     this.maxSpeed = locoClass.speed;
     const len = track.length;
     // Stops at their arc positions, ends pulled in to the berth margin, ascending.
     this.stopDist = stopFracs
       .map((f) => THREE.MathUtils.clamp(f * len, STOP_MARGIN, len - STOP_MARGIN))
       .sort((a, b) => a - b);
-    // One boxcar per ~35 units of capacity, kept within a sensible consist length.
-    const carCount = THREE.MathUtils.clamp(Math.round(locoClass.capacity / 35), 2, 5);
     this.loco = buildLocomotive();
     this.group.add(this.loco.group);
-    for (let i = 0; i < carCount; i++) {
+    // One car per configured slot, permanently liveried to its cargo type.
+    for (const kind of carKinds) {
       const car = buildBoxcar();
+      car.setLivery(CARGO[kind].color);
       this.cars.push(car);
       this.group.add(car.group);
+      this.consist.push({ kind, amount: 0, origin: new THREE.Vector3() });
     }
     this.smoke = new Smoke(220);
     scene.add(this.smoke.points);
@@ -118,24 +122,8 @@ export class Train {
   /** Total units currently aboard. */
   cargoTotal(): number {
     let t = 0;
-    for (const lot of this.cargo.values()) t += lot.amount;
+    for (const car of this.consist) t += car.amount;
     return t;
-  }
-
-  cargoFree(): number {
-    return this.capacity - this.cargoTotal();
-  }
-
-  /** Re-livery cars to the dominant cargo aboard (called by the network after a load). */
-  refreshLivery(): void {
-    const kinds: CargoKind[] = [];
-    for (const [k, lot] of this.cargo) {
-      const cars = Math.max(1, Math.round((lot.amount / this.capacity) * this.cars.length));
-      for (let i = 0; i < cars; i++) kinds.push(k);
-    }
-    for (let i = 0; i < this.cars.length; i++) {
-      this.cars[i].setLivery(i < kinds.length ? CARGO[kinds[i]].color : null);
-    }
   }
 
   update(dt: number): void {
