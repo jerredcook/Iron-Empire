@@ -15,7 +15,7 @@ import { Picker } from './game/Picker';
 import { Minimap } from './game/Minimap';
 import { LocoClass, defaultLoco } from './game/Locomotives';
 import { AudioBus } from './game/Audio';
-import { chooseScenario, DIFFICULTIES, Difficulty } from './game/Scenarios';
+import { chooseScenario, DIFFICULTIES, SCENARIOS, Difficulty } from './game/Scenarios';
 import { Auctioneer } from './game/Auction';
 
 const SIZE = 4096;
@@ -83,8 +83,17 @@ async function boot(cfg: BootCfg): Promise<void> {
   const builder = new TrackBuilder(rig.camera, renderer.gl.domElement, terrain.mesh, network, scene, () => selectedLoco);
   // Synthesized sound — unlocked on the first interaction, chimes on deliveries.
   const audio = new AudioBus();
-  network.onRevenue = () => audio.chime();
-  network.onBuilt = () => audio.build();
+  // Dev diagnostics: count deliveries/revenue so a headless run can confirm the loop.
+  const diag = { revenue: 0, deliveries: 0, builds: 0 };
+  network.onRevenue = (amt) => {
+    audio.chime();
+    diag.revenue += amt;
+    diag.deliveries += 1;
+  };
+  network.onBuilt = () => {
+    audio.build();
+    diag.builds += 1;
+  };
   window.addEventListener('pointerdown', () => audio.unlock(), { once: true });
 
   const hud = new HUD(
@@ -151,6 +160,46 @@ async function boot(cfg: BootCfg): Promise<void> {
     (window as unknown as { __ie: unknown }).__ie = { scene, rig, renderer, field, terrain, water, scatter, network, builder, inspector, minimap, picker };
   }
 
+  // Dev diagnostics element (read by a headless verification run via ?diag).
+  const diagEl = location.search.includes('diag') ? document.createElement('pre') : null;
+  if (diagEl) {
+    diagEl.id = 'ie-diag';
+    diagEl.style.cssText = 'position:fixed;bottom:0;left:0;z-index:99;font-size:10px;color:#0f0;background:#000;margin:0;padding:2px';
+    document.body.append(diagEl);
+  }
+  const writeDiag = (): void => {
+    if (!diagEl) return;
+    let goods = 0;
+    let maxGrowth = 1;
+    for (const s of network.stations) {
+      goods += s.stock.get('goods') ?? 0;
+      maxGrowth = Math.max(maxGrowth, s.growth);
+    }
+    diagEl.textContent = JSON.stringify({
+      year: network.year,
+      money: Math.round(network.money),
+      netWorth: Math.round(network.netWorth),
+      status: network.status,
+      playerLines: network.player.lines.length,
+      aiLines: network.lines.filter((l) => l.owner.isAI).length,
+      trains: network.lines.reduce((a, l) => a + l.trains.length, 0),
+      deliveries: diag.deliveries,
+      revenue: Math.round(diag.revenue),
+      goodsWaiting: Math.round(goods),
+      maxGrowth: +maxGrowth.toFixed(2),
+      rivalNetWorth: Math.round(network.rivals[0]?.netWorth ?? 0),
+    });
+  };
+
+  // Headless verification: run the real simulation synchronously for N ticks, then
+  // report — exercises trains, deliveries, the AI, growth, and the calendar.
+  const simticks = Number(new URLSearchParams(location.search).get('simticks') ?? 0);
+  for (let i = 0; i < simticks; i++) {
+    network.update(1 / 30);
+    auctioneer.update(1 / 30);
+  }
+  writeDiag();
+
   const clock = new THREE.Clock();
   const loop = (): void => {
     requestAnimationFrame(loop);
@@ -164,6 +213,7 @@ async function boot(cfg: BootCfg): Promise<void> {
     hud.update(rig.camera, window.innerWidth, window.innerHeight);
     inspector.update(dt);
     minimap.update(rig.camera, rig.controls.target);
+    writeDiag();
   };
   loop();
   document.getElementById('loading')?.classList.add('hidden');
@@ -205,6 +255,22 @@ const FALLBACK_GOAL = { targetCash: 2_500_000, byYear: 1890 };
 /** Show the start menu, then boot the chosen setup — or regenerate the saved world and
  *  restore it when the player chooses Continue. */
 async function start(): Promise<void> {
+  // Headless verification: ?autostart skips the menu and boots a default game.
+  if (location.search.includes('autostart')) {
+    const s = SCENARIOS[0];
+    await boot({
+      seed: s.seed,
+      year: s.year,
+      startMoney: s.startMoney,
+      cities: s.cities,
+      goal: s.goal,
+      difficulty: DIFFICULTIES[1],
+      player: { name: 'Iron Empire', color: 0x8fffa8 },
+      ais: [{ name: 'Atlas & Pacific', color: 0xff8a4d }],
+      load: false,
+    });
+    return;
+  }
   const choice = await chooseScenario();
   if (choice.kind === 'continue') {
     const w = Network.savedWorld();

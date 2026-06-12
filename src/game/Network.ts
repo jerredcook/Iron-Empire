@@ -7,11 +7,11 @@ import { Archetype, CitySite, Recipe, ARCHETYPES } from './Economy';
 import { buildTown, buildStation, buildFactory } from './Buildings';
 import { LocoClass, defaultLoco, LOCOS } from './Locomotives';
 
-export const STOCK_CAP = 90; // a city can only stockpile so much waiting freight
-const LOAD_PER_STOP = 40; // units a train can take on in one berth
+export const STOCK_CAP = 120; // a city can only stockpile so much waiting freight
+const LOAD_PER_STOP = 80; // units a train can take on in one berth
 export const TRACK_COST_PER_UNIT = 95; // $ per world-unit of rail
 const SAVE_KEY = 'ironempire.save.v1';
-const SECONDS_PER_YEAR = 22; // calendar pace
+const SECONDS_PER_YEAR = 40; // calendar pace — slow enough that a route runs many trips/year
 const DEBT_LIMIT = -120_000; // cash below this and the railroad is bankrupt
 const INTEREST_RATE = 0.07; // annual interest on outstanding bonds
 const DIVIDEND_RATE = 0.05; // share of operating value paid out to holders each year
@@ -89,6 +89,8 @@ export interface GLine {
   /** One or more trains shuttling the corridor — add more for throughput. */
   trains: Train[];
   owner: Company;
+  /** Grading cost of the route — its value as infrastructure. */
+  value: number;
   /** The full ground route through every stop, kept so the line can be re-laid on load. */
   waypoints: THREE.Vector3[];
 }
@@ -132,7 +134,11 @@ export class Company {
    *  price (deliberately excludes the share portfolio so prices can't feed back). */
   get assetWorth(): number {
     let w = this.money - this.debt;
-    for (const l of this.lines) for (const t of l.trains) w += t.locoClass.cost * 0.5;
+    // Rail infrastructure and rolling stock are assets — building shouldn't sink worth.
+    for (const l of this.lines) {
+      w += l.value * 0.8;
+      for (const t of l.trains) w += t.locoClass.cost * 0.5;
+    }
     for (const ind of this.industries) w += ind.bookValue;
     return w;
   }
@@ -579,7 +585,8 @@ export class Network {
     const track = new Track(this.field, waypoints);
     this.scene.add(track.group);
     const stopFracs = stops.map((s) => track.nearestU(s.pos));
-    const line: GLine = { stops, a: stops[0], b: stops[stops.length - 1], track, stopFracs, trains: [], owner, waypoints };
+    const value = this.routeCost(waypoints);
+    const line: GLine = { stops, a: stops[0], b: stops[stops.length - 1], track, stopFracs, trains: [], owner, value, waypoints };
     this.lines.push(line);
     owner.lines.push(line);
     for (const loco of locos) this.spawnTrain(line, loco);
@@ -813,8 +820,10 @@ export class Network {
    */
   private planAI(c: Company, dt: number): void {
     c.aiTimer -= dt;
-    if (c.aiTimer > 0 || c.lines.length >= 7) return;
+    if (c.aiTimer > 0 || c.lines.length >= 4) return;
     c.aiTimer = this.aiInterval;
+    // Don't expand into insolvency: only build while the existing fleet is sustainable.
+    if (c.money < this.aiReserve * 1.5) return;
 
     const loco = defaultLoco(this.year);
     const reserve = this.aiReserve;

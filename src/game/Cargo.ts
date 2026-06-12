@@ -32,6 +32,6 @@ export const ALL_CARGO = Object.keys(CARGO) as CargoKind[];
  * clamped so neither a yard-shunt nor a transcontinental run breaks the economy.
  */
 export function haulRevenue(kind: CargoKind, amount: number, distance: number): number {
-  const distFactor = Math.min(3.0, Math.max(0.35, distance / 360));
-  return Math.round(CARGO[kind].basePrice * amount * distFactor);
+  const distFactor = Math.min(4.0, Math.max(0.6, distance / 260));
+  return Math.round(CARGO[kind].basePrice * amount * distFactor * 2.0);
 }
