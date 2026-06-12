@@ -96,6 +96,11 @@ export class Inspector {
   private stationHtml(st: GStation): string {
     let html = this.header(st.name, st.archetype.kind);
 
+    if (st.owner) {
+      const c = '#' + st.owner.color.toString(16).padStart(6, '0');
+      html += `<div style="font-size:12px;margin:-4px 0 6px">Industry owned by <span style="color:${c}">${st.owner.name}</span></div>`;
+    }
+
     // Processors: what they consume, with current input inventory, and the recipe.
     if (st.recipe) {
       const ins = Object.keys(st.recipe.inputs) as CargoKind[];

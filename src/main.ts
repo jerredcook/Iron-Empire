@@ -16,6 +16,7 @@ import { Minimap } from './game/Minimap';
 import { LocoClass, defaultLoco } from './game/Locomotives';
 import { AudioBus } from './game/Audio';
 import { chooseScenario } from './game/Scenarios';
+import { Auctioneer } from './game/Auction';
 
 const SIZE = 4096;
 const SEA = 0;
@@ -106,6 +107,7 @@ async function boot(cfg: BootCfg): Promise<void> {
     },
     (st) => network.buildIndustry(st)
   );
+  const auctioneer = new Auctioneer(network);
   const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());
   picker.onSelect = (sel) => {
     inspector.select(sel);
@@ -151,6 +153,7 @@ async function boot(cfg: BootCfg): Promise<void> {
     water.update(dt);
     scatter.update(dt);
     network.update(dt);
+    auctioneer.update(dt);
     renderer.render();
     hud.update(rig.camera, window.innerWidth, window.innerHeight);
     inspector.update(dt);

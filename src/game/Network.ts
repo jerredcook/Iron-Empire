@@ -15,6 +15,7 @@ const SECONDS_PER_YEAR = 22; // calendar pace
 const DEBT_LIMIT = -120_000; // cash below this and the railroad is bankrupt
 const INTEREST_RATE = 0.07; // annual interest on outstanding bonds
 const DIVIDEND_RATE = 0.05; // share of operating value paid out to holders each year
+const INDUSTRY_ROYALTY = 9; // $/unit the industry's owner earns on shipped output
 const SERVE_FULL = 55; // banked service that yields full prosperity
 const GROWTH_TIERS = [1.55, 2.05, 2.55]; // growth thresholds that add a house ring
 
@@ -45,6 +46,10 @@ export interface GStation {
   served: number;
   /** How many outer house rings have been added (growth milestones reached). */
   tier: number;
+  /** The company that owns this city's industry (earns a royalty on its output), or null. */
+  owner: Company | null;
+  /** Appraised value of the owned industry — counts toward the owner's net worth. */
+  bookValue: number;
 }
 
 export interface GLine {
@@ -79,6 +84,8 @@ export class Company {
   debt = 0;
   readonly lines: GLine[] = [];
   readonly shares = SHARES_OUTSTANDING;
+  /** Industries (city factories/resources) this company owns. */
+  readonly industries: GStation[] = [];
   /** Shares this company holds in others (an investable asset / path to takeover). */
   readonly holdings = new Map<Company, number>();
   /** Set when absorbed by a takeover. */
@@ -100,6 +107,7 @@ export class Company {
   get assetWorth(): number {
     let w = this.money - this.debt;
     for (const l of this.lines) for (const t of l.trains) w += t.locoClass.cost * 0.5;
+    for (const ind of this.industries) w += ind.bookValue;
     return w;
   }
 
@@ -270,6 +278,9 @@ export class Network {
         input: [...s.input],
         served: s.served,
         tier: s.tier,
+        owner: s.owner ? ci(s.owner) : -1,
+        bookValue: s.bookValue,
+        hasRecipe: !!s.recipe,
       })),
       lines: this.lines.map((l) => ({
         owner: ci(l.owner),
@@ -311,6 +322,7 @@ export class Network {
       c.debt = cd.debt;
       c.defunct = cd.defunct;
       c.holdings.clear();
+      c.industries.length = 0;
     });
     // Holdings reference other companies, so wire them after all exist.
     this.companies.forEach((c, i) => {
@@ -326,6 +338,22 @@ export class Network {
       s.tier = 0; // re-grown below so the house rings reappear
       s.growth = 1 + Math.min(2, s.served / SERVE_FULL);
       this.maybeGrowCity(s);
+
+      // A factory founded by the player at runtime isn't in the seed — re-add it.
+      if (sd.hasRecipe && !s.recipe) {
+        s.recipe = ARCHETYPES.factory.recipe;
+        for (const k of Object.keys(s.recipe!.inputs) as CargoKind[]) s.demands.add(k);
+        const f = buildFactory();
+        const fx = s.pos.x - 28;
+        const fz = s.pos.z + 22;
+        f.position.set(fx, this.field.height(fx, fz), fz);
+        f.rotation.y = s.id * 0.7;
+        this.scene.add(f);
+      }
+      // Restore industry ownership.
+      s.bookValue = sd.bookValue ?? 0;
+      s.owner = sd.owner >= 0 ? this.companies[sd.owner] : null;
+      if (s.owner) s.owner.industries.push(s);
     });
 
     for (const ld of data.lines) {
@@ -411,6 +439,8 @@ export class Network {
       growth: 1,
       served: 0,
       tier: 0,
+      owner: null,
+      bookValue: 0,
     };
     this.stations.push(st);
 
@@ -510,6 +540,10 @@ export class Network {
 
     st.recipe = ARCHETYPES.factory.recipe;
     for (const k of Object.keys(st.recipe!.inputs) as CargoKind[]) st.demands.add(k);
+    // You own what you build.
+    st.owner = this.player;
+    st.bookValue = cost;
+    this.player.industries.push(st);
 
     const f = buildFactory();
     const fx = st.pos.x - 28;
@@ -519,6 +553,28 @@ export class Network {
     this.scene.add(f);
     this.onBuilt?.();
     return true;
+  }
+
+  /** Producing cities whose industry isn't owned yet — the pool auctions draw from. */
+  ownableIndustries(): GStation[] {
+    return this.stations.filter((s) => !s.owner && this.offersOf(s).length > 0);
+  }
+
+  /** Appraised value of a city's industry, from its output potential and prosperity. */
+  appraiseIndustry(st: GStation): number {
+    let rate = 0;
+    for (const k of Object.keys(st.supplies) as CargoKind[]) rate += st.supplies[k]!;
+    if (st.recipe) rate += st.recipe.rate * 1.5;
+    return Math.round((70_000 + rate * st.growth * 130_000) / 1000) * 1000;
+  }
+
+  /** Transfer an industry to a company at the agreed price. */
+  awardIndustry(st: GStation, co: Company, price: number): void {
+    if (st.owner) return;
+    co.money -= price;
+    st.owner = co;
+    st.bookValue = this.appraiseIndustry(st);
+    co.industries.push(st);
   }
 
   /** Buy and place an additional train on an existing line for more throughput. */
@@ -560,7 +616,8 @@ export class Network {
       train.cargo.delete(kind);
     }
 
-    for (const kind of Object.keys(at.supplies) as CargoKind[]) {
+    // Load anything waiting to be hauled — raw extraction and processed output alike.
+    for (const kind of [...at.stock.keys()]) {
       const free = train.cargoFree();
       if (free <= 0) break;
       const have = at.stock.get(kind) ?? 0;
@@ -570,6 +627,8 @@ export class Network {
       const lot = train.cargo.get(kind);
       if (lot) lot.amount += take;
       else train.cargo.set(kind, { amount: take, originPos: at.pos.clone() });
+      // The industry's owner takes a royalty on everything it ships.
+      if (at.owner) at.owner.money += take * INDUSTRY_ROYALTY;
     }
 
     train.refreshLivery();
