@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { terrainSet } from '../engine/Assets';
 import { mulberry32 } from '../world/Heightfield';
 
@@ -174,6 +175,49 @@ export function buildHouse(o: HouseOpts): THREE.Group {
   return g;
 }
 
+/**
+ * Collapse a static building group into one merged mesh per material. Every house
+ * here is built from dozens of little meshes that all share the same handful of
+ * material instances, so a whole town goes from hundreds of draw calls to ~6 — a big
+ * saving in both the main and shadow passes — with no visual change. Geometry is
+ * baked relative to the group root, so the caller can still position/rotate it.
+ */
+function flattenByMaterial(src: THREE.Group): THREE.Group {
+  src.updateMatrixWorld(true);
+  const rootInv = src.matrixWorld.clone().invert();
+  const mtx = new THREE.Matrix4();
+  const byMat = new Map<THREE.Material, { geos: THREE.BufferGeometry[]; cast: boolean; recv: boolean }>();
+  src.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const mat = mesh.material as THREE.Material;
+    let bucket = byMat.get(mat);
+    if (!bucket) {
+      bucket = { geos: [], cast: false, recv: false };
+      byMat.set(mat, bucket);
+    }
+    const geo = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone();
+    // Keep attributes consistent across the merge — positions, normals, uvs only.
+    for (const name of Object.keys(geo.attributes)) {
+      if (name !== 'position' && name !== 'normal' && name !== 'uv') geo.deleteAttribute(name);
+    }
+    geo.applyMatrix4(mtx.multiplyMatrices(rootInv, mesh.matrixWorld));
+    bucket.geos.push(geo);
+    bucket.cast = bucket.cast || mesh.castShadow;
+    bucket.recv = bucket.recv || mesh.receiveShadow;
+  });
+  const out = new THREE.Group();
+  for (const [mat, bucket] of byMat) {
+    const merged = mergeGeometries(bucket.geos, false);
+    if (!merged) continue;
+    const mesh = new THREE.Mesh(merged, mat);
+    mesh.castShadow = bucket.cast;
+    mesh.receiveShadow = bucket.recv;
+    out.add(mesh);
+  }
+  return out;
+}
+
 /** The railroad station: depot house, plank platform along the track, canopy. */
 export function buildStation(): THREE.Group {
   const m = mats();
@@ -202,7 +246,7 @@ export function buildStation(): THREE.Group {
     post.castShadow = true;
     g.add(post);
   }
-  return g;
+  return flattenByMaterial(g);
 }
 
 /** A small town: houses on a jittered grid facing a green, near the station. */
@@ -233,5 +277,6 @@ export function buildTown(seed: number, count: number): THREE.Group {
     g.add(house);
     placed++;
   }
-  return g;
+  // Bake the whole town into one mesh per material — hundreds of draw calls become ~6.
+  return flattenByMaterial(g);
 }
