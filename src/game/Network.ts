@@ -14,6 +14,7 @@ const SAVE_KEY = 'ironempire.save.v1';
 const SECONDS_PER_YEAR = 22; // calendar pace
 const DEBT_LIMIT = -120_000; // cash below this and the railroad is bankrupt
 const INTEREST_RATE = 0.07; // annual interest on outstanding bonds
+const DIVIDEND_RATE = 0.05; // share of operating value paid out to holders each year
 const SERVE_FULL = 55; // banked service that yields full prosperity
 const GROWTH_TIERS = [1.55, 2.05, 2.55]; // growth thresholds that add a house ring
 
@@ -655,12 +656,32 @@ export class Network {
     if (this.yearAccum >= SECONDS_PER_YEAR) {
       this.yearAccum -= SECONDS_PER_YEAR;
       this.year += 1;
+      this.payDividends();
     }
 
     // Resolve the player's objective.
     if (this.player.money < DEBT_LIMIT) this.status = 'lost';
     else if (this.player.netWorth >= this.goal.targetCash) this.status = 'won';
     else if (this.year > this.goal.byYear) this.status = 'lost';
+  }
+
+  /** Annual dividend: each solvent company pays a slice of its operating value to its
+   *  shareholders, drawn from its own cash — so holding a rival's stock is an income
+   *  stream (and a drain on them), not just a bet on the price. */
+  private payDividends(): void {
+    for (const c of this.companies) {
+      if (c.defunct) continue;
+      const pool = Math.max(0, c.assetWorth) * DIVIDEND_RATE;
+      if (pool < 1) continue;
+      for (const holder of this.companies) {
+        const held = holder.holdings.get(c) ?? 0;
+        if (held <= 0) continue;
+        const cut = pool * (held / c.shares);
+        c.money -= cut;
+        holder.money += cut;
+        if (holder === this.player) this.pushDelivery(`${c.name} dividend`, Math.round(cut));
+      }
+    }
   }
 
   /** What a station puts on the market: raw extraction plus any processed output. */
