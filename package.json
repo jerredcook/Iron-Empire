@@ -1,0 +1,22 @@
+{
+  "name": "iron-empire",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Iron Empire — Sid Meier's Railroads!, but so much better. High-fidelity 3D railroad empire game.",
+  "scripts": {
+    "dev": ".toolchain/node-v20.18.0-darwin-arm64/bin/node ./node_modules/vite/bin/vite.js",
+    "build": ".toolchain/node-v20.18.0-darwin-arm64/bin/node ./node_modules/vite/bin/vite.js build",
+    "preview": ".toolchain/node-v20.18.0-darwin-arm64/bin/node ./node_modules/vite/bin/vite.js preview",
+    "typecheck": ".toolchain/node-v20.18.0-darwin-arm64/bin/node ./node_modules/typescript/bin/tsc --noEmit"
+  },
+  "dependencies": {
+    "simplex-noise": "^4.0.3",
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.169.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}
