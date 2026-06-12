@@ -624,7 +624,26 @@ export class Network {
       // input is scarcest and by room left in the output stockpile.
       if (s.recipe) this.process(s, dt);
     }
-    for (const l of this.lines) for (const t of l.trains) t.update(dt);
+    // Block signalling: each train may not advance past the nearest train ahead of it
+    // on the same rail (same direction). Opposing trains ride the other track, so this
+    // only guards against same-direction telescoping — it can't deadlock.
+    for (const l of this.lines) {
+      const ts = l.trains;
+      for (const t of ts) {
+        let leader: number | null = null;
+        let bestGap = Infinity;
+        for (const o of ts) {
+          if (o === t || o.heading !== t.heading) continue;
+          const gap = (o.railDist - t.railDist) * t.heading;
+          if (gap > 0 && gap < bestGap) {
+            bestGap = gap;
+            leader = o.railDist;
+          }
+        }
+        t.setBlock(leader);
+      }
+      for (const t of ts) t.update(dt);
+    }
 
     // Maintenance and bond interest bleed every company's books continuously.
     for (const c of this.companies) {

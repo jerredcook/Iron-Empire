@@ -3,7 +3,10 @@ import { Heightfield } from '../world/Heightfield';
 import { terrainSet } from '../engine/Assets';
 
 const UP = new THREE.Vector3(0, 1, 0);
-const GAUGE = 2.6; // rail centre-to-centre
+const GAUGE = 2.6; // rail centre-to-centre within one track
+/** Lateral offset of each running line from the corridor centreline — the mainline is
+ *  double-tracked, one direction per side, so opposing trains never meet head-on. */
+export const TRACK_SIDE = 2.4;
 const RAIL_R = 0.16;
 const RAIL_HEAD = 0.85; // deck height above ground
 const TIE_SPACING = 2.2;
@@ -94,8 +97,8 @@ export class Track {
    *  where the trestle carries bare ties + rails instead. */
   private buildBallast(): THREE.Mesh {
     const n = Math.max(60, Math.floor(this.length / 3));
-    const topW = GAUGE * 1.1;
-    const botW = GAUGE * 1.75;
+    const topW = TRACK_SIDE + GAUGE * 0.65;
+    const botW = TRACK_SIDE + GAUGE * 1.0;
     const depth = 0.55;
     const pos = new THREE.Vector3();
     const tan = new THREE.Vector3();
@@ -149,7 +152,7 @@ export class Track {
 
   private buildTies(): THREE.InstancedMesh {
     const count = Math.max(4, Math.floor(this.length / TIE_SPACING));
-    const geo = new THREE.BoxGeometry(GAUGE + 1.0, 0.18, 0.5);
+    const geo = new THREE.BoxGeometry(2 * TRACK_SIDE + GAUGE + 1.0, 0.18, 0.5);
     const w = terrainSet('weathered_planks', 8);
     const mat = new THREE.MeshStandardMaterial({ map: w.map, normalMap: w.normalMap, roughness: 0.92 });
     const mesh = new THREE.InstancedMesh(geo, mat, count);
@@ -175,7 +178,10 @@ export class Track {
     const n = Math.max(80, Math.floor(this.length / 2));
     const mat = new THREE.MeshStandardMaterial({ color: 0xb8bdc4, metalness: 0.92, roughness: 0.32 });
     const out: THREE.Mesh[] = [];
-    for (const side of [-1, 1]) {
+    // Four rails: two running lines (±TRACK_SIDE), each a pair at ±GAUGE/2.
+    const offsets: number[] = [];
+    for (const c of [-TRACK_SIDE, TRACK_SIDE]) for (const s of [-1, 1]) offsets.push(c + s * GAUGE * 0.5);
+    for (const off of offsets) {
       const line: THREE.Vector3[] = [];
       const pos = new THREE.Vector3();
       const tan = new THREE.Vector3();
@@ -185,7 +191,7 @@ export class Track {
         this.curve.getPointAt(u, pos);
         this.curve.getTangentAt(u, tan);
         perp.crossVectors(tan, UP).normalize();
-        line.push(new THREE.Vector3(pos.x + perp.x * GAUGE * 0.5 * side, pos.y - 0.08, pos.z + perp.z * GAUGE * 0.5 * side));
+        line.push(new THREE.Vector3(pos.x + perp.x * off, pos.y - 0.08, pos.z + perp.z * off));
       }
       const c = new THREE.CatmullRomCurve3(line, false, 'catmullrom', 0.5);
       const mesh = new THREE.Mesh(new THREE.TubeGeometry(c, n, RAIL_R, 8, false), mat);
@@ -217,21 +223,22 @@ export class Track {
       this.curve.getTangentAt(u, tan);
       perp.crossVectors(tan, UP).normalize();
       const yaw = Math.atan2(tan.x, tan.z);
+      const legOff = TRACK_SIDE + GAUGE * 0.5;
       for (const s of [-1, 1]) {
         const leg = new THREE.Mesh(new THREE.BoxGeometry(0.5, clear, 0.5), timber);
-        leg.position.set(pos.x + perp.x * GAUGE * 0.62 * s, base + clear / 2, pos.z + perp.z * GAUGE * 0.62 * s);
+        leg.position.set(pos.x + perp.x * legOff * s, base + clear / 2, pos.z + perp.z * legOff * s);
         leg.rotation.y = yaw;
         leg.castShadow = true;
         bents.add(leg);
       }
       // Cap under the deck + a horizontal cross-girt at mid-height on taller bents.
-      const cap = new THREE.Mesh(new THREE.BoxGeometry(GAUGE * 2.0, 0.4, 0.7), timber);
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(2 * TRACK_SIDE + GAUGE + 0.8, 0.4, 0.7), timber);
       cap.position.set(pos.x, deckUnder - 0.18, pos.z);
       cap.rotation.y = yaw;
       cap.castShadow = true;
       bents.add(cap);
       if (clear > 5) {
-        const girt = new THREE.Mesh(new THREE.BoxGeometry(GAUGE * 1.7, 0.3, 0.4), timber);
+        const girt = new THREE.Mesh(new THREE.BoxGeometry(2 * TRACK_SIDE + GAUGE * 0.5, 0.3, 0.4), timber);
         girt.position.set(pos.x, base + clear * 0.5, pos.z);
         girt.rotation.y = yaw;
         girt.castShadow = true;
@@ -283,7 +290,7 @@ export class Track {
     const g = new THREE.Group();
     g.position.set(pos.x, 0, pos.z);
     g.rotation.y = Math.atan2(tan.x, tan.z);
-    const w = GAUGE * 1.55;
+    const w = (2 * TRACK_SIDE + GAUGE) * 0.92;
     const h = 3.6;
     const th = 1.0;
     const y0 = pos.y - 0.85; // rail base

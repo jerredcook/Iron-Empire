@@ -1,12 +1,14 @@
 import * as THREE from 'three';
-import { Track } from './Track';
+import { Track, TRACK_SIDE } from './Track';
 import { buildLocomotive, LocomotiveRig } from './Locomotive';
 import { buildBoxcar, FreightCar } from './Cars';
 import { CargoKind, CARGO } from './Cargo';
 import { LocoClass } from './Locomotives';
 
 const FORWARD = new THREE.Vector3(0, 0, 1);
+const UP = new THREE.Vector3(0, 1, 0);
 const STOP_MARGIN = 9; // how close to the line's end the train berths
+const BLOCK_GAP = 16; // safe separation a following train keeps behind its leader
 
 /** A single cargo lot riding the train, tagged with where it was picked up so the
  *  delivering station can be paid for the distance it travelled. */
@@ -47,9 +49,12 @@ export class Train {
 
   private _pos = new THREE.Vector3();
   private _tan = new THREE.Vector3();
+  private _perp = new THREE.Vector3();
   private _quat = new THREE.Quaternion();
   private _head = new THREE.Vector3();
   private _tip = new THREE.Vector3();
+  /** Arc-length the train ahead on this rail occupies — it may not advance past it. */
+  private block: number | null = null;
 
   constructor(private track: Track, scene: THREE.Scene, locoClass: LocoClass, stopFracs: number[]) {
     this.locoClass = locoClass;
@@ -79,6 +84,20 @@ export class Train {
   /** World position of the locomotive (for minimap dots / camera framing). */
   get headPosition(): THREE.Vector3 {
     return this.loco.group.position;
+  }
+
+  /** Current arc-length position and heading — read by the block-signal pass. */
+  get railDist(): number {
+    return this.dist;
+  }
+  get heading(): 1 | -1 {
+    return this.dir;
+  }
+
+  /** The arc-length a leader occupies ahead on this rail (same direction), or null
+   *  if the line is clear. The train holds short of it. */
+  setBlock(d: number | null): void {
+    this.block = d;
   }
 
   /** Shift this train's start along the line (0..1) so several trains on one corridor
@@ -126,16 +145,27 @@ export class Train {
       this.dwell -= dt;
       this.speed = 0;
     } else {
-      // Glide toward the next scheduled stop, easing down as it approaches.
-      const targetDist = this.stopDist[this.target];
-      const remaining = Math.abs(targetDist - this.dist);
-      const target = Math.min(this.maxSpeed, Math.max(3, remaining * 0.9));
+      // Aim for the next scheduled stop, but never past the block a leader holds ahead
+      // on this rail — so a following train eases to a stand behind it instead of
+      // telescoping into it.
+      const stop = this.stopDist[this.target];
+      let limit = stop;
+      if (this.block !== null) {
+        const hold = this.block - BLOCK_GAP;
+        limit = this.dir > 0 ? Math.min(stop, hold) : Math.max(stop, this.block + BLOCK_GAP);
+      }
+      const remaining = Math.max(0, (limit - this.dist) * this.dir);
+      const target = Math.min(this.maxSpeed, Math.max(0, remaining * 0.9));
       this.speed += THREE.MathUtils.clamp(target - this.speed, -28 * dt, 12 * dt);
+      this.speed = Math.max(0, this.speed);
       this.dist += this.dir * this.speed * dt;
+      // Don't overshoot the limit (the held block or the stop).
+      if (this.dir > 0) this.dist = Math.min(this.dist, limit);
+      else this.dist = Math.max(this.dist, limit);
 
-      const reached = this.dir > 0 ? this.dist >= targetDist : this.dist <= targetDist;
+      const reached = this.dir > 0 ? this.dist >= stop - 0.01 : this.dist <= stop + 0.01;
       if (reached) {
-        this.dist = targetDist;
+        this.dist = stop;
         this.dwell = 2.2;
         const stopped = this.target;
         // Advance to the next stop, reversing at either end of the corridor.
@@ -175,6 +205,11 @@ export class Train {
     this._head.copy(this._tan).multiplyScalar(dir);
     this._quat.setFromUnitVectors(FORWARD, this._head);
     obj.position.copy(this._pos);
+    // Keep to one running line per direction (double track), so opposing trains pass
+    // on separate rails rather than through each other.
+    this._perp.crossVectors(this._tan, UP).normalize();
+    const side = dir > 0 ? -TRACK_SIDE : TRACK_SIDE;
+    obj.position.addScaledVector(this._perp, side);
     obj.position.y += yOff;
     obj.quaternion.copy(this._quat);
   }
