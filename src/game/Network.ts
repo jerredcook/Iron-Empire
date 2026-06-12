@@ -3,7 +3,7 @@ import { Heightfield } from '../world/Heightfield';
 import { Track } from './Track';
 import { Train } from './Train';
 import { CargoKind, haulRevenue } from './Cargo';
-import { Archetype, CitySite } from './Economy';
+import { Archetype, CitySite, Recipe } from './Economy';
 import { buildTown, buildStation } from './Buildings';
 
 export const STOCK_CAP = 90; // a city can only stockpile so much waiting freight
@@ -16,9 +16,15 @@ export interface GStation {
   name: string;
   archetype: Archetype;
   pos: THREE.Vector3;
+  /** Raw extraction rates (units/sec), catchment-scaled. */
   supplies: Partial<Record<CargoKind, number>>;
+  /** Everything it pays to receive — final consumption plus any recipe inputs. */
   demands: Set<CargoKind>;
+  /** Outbound: produced/extracted cargo waiting to be hauled away. */
   stock: Map<CargoKind, number>;
+  /** Inbound: delivered raw materials waiting to be processed (processors only). */
+  input: Map<CargoKind, number>;
+  recipe?: Recipe;
 }
 
 export interface GLine {
@@ -55,14 +61,20 @@ export class Network {
     const pos = site.pos.clone();
     pos.y = this.field.height(pos.x, pos.z);
 
+    const recipe = site.archetype.recipe;
+    const demands = new Set<CargoKind>(site.archetype.demands);
+    if (recipe) for (const k of Object.keys(recipe.inputs) as CargoKind[]) demands.add(k);
+
     const st: GStation = {
       id: this.stations.length,
       name: site.name,
       archetype: site.archetype,
       pos,
-      supplies: site.archetype.supplies,
-      demands: new Set(site.archetype.demands),
+      supplies: site.supplies,
+      demands,
       stock: new Map(),
+      input: new Map(),
+      recipe,
     };
     this.stations.push(st);
 
@@ -134,7 +146,12 @@ export class Network {
       const dist = lot.originPos.distanceTo(at.pos);
       const rev = haulRevenue(kind, lot.amount, dist);
       this.money += rev;
-      this.pushDelivery(`${lot.amount} ${kind} → ${at.name}`, rev);
+      this.pushDelivery(`${Math.floor(lot.amount)} ${kind} → ${at.name}`, rev);
+      // Raw delivered to a processor feeds its input inventory; anything else is
+      // consumed on arrival. Either way the haul is paid.
+      if (at.recipe && kind in at.recipe.inputs) {
+        at.input.set(kind, Math.min(STOCK_CAP, (at.input.get(kind) ?? 0) + lot.amount));
+      }
       train.cargo.delete(kind);
     }
 
@@ -153,19 +170,37 @@ export class Network {
     train.refreshLivery();
   }
 
+  /** Run a processor's recipe for one tick: make as many output units as inputs and
+   *  stockpile room allow, consuming the inputs proportionally. */
+  private process(s: GStation, dt: number): void {
+    const rc = s.recipe!;
+    let batch = rc.rate * dt;
+    for (const k of Object.keys(rc.inputs) as CargoKind[]) {
+      batch = Math.min(batch, (s.input.get(k) ?? 0) / rc.inputs[k]!);
+    }
+    batch = Math.min(batch, STOCK_CAP - (s.stock.get(rc.output) ?? 0));
+    if (batch <= 0) return;
+    for (const k of Object.keys(rc.inputs) as CargoKind[]) {
+      s.input.set(k, (s.input.get(k) ?? 0) - rc.inputs[k]! * batch);
+    }
+    s.stock.set(rc.output, (s.stock.get(rc.output) ?? 0) + batch);
+  }
+
   private pushDelivery(text: string, amount: number): void {
     this.deliveries.unshift({ text, amount });
     if (this.deliveries.length > 6) this.deliveries.pop();
   }
 
   update(dt: number): void {
-    // Production accrues as waiting stock, capped so it can't pile up forever.
     for (const s of this.stations) {
+      // Raw extraction accrues as outbound stock, capped so it can't pile up forever.
       for (const kind of Object.keys(s.supplies) as CargoKind[]) {
-        const rate = s.supplies[kind]!;
         const cur = s.stock.get(kind) ?? 0;
-        if (cur < STOCK_CAP) s.stock.set(kind, Math.min(STOCK_CAP, cur + rate * dt));
+        if (cur < STOCK_CAP) s.stock.set(kind, Math.min(STOCK_CAP, cur + s.supplies[kind]! * dt));
       }
+      // Processors convert input inventory into finished goods, throttled by whichever
+      // input is scarcest and by room left in the output stockpile.
+      if (s.recipe) this.process(s, dt);
     }
     for (const l of this.lines) l.train.update(dt);
 

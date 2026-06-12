@@ -242,16 +242,22 @@ export class HUD {
   }
 
   /** Small coloured dots: what the city offers (filled) and wants (ringed). */
-  private cargoBadges(st: { supplies: Partial<Record<CargoKind, number>>; demands: Set<CargoKind> }): string {
+  private cargoBadges(st: {
+    supplies: Partial<Record<CargoKind, number>>;
+    demands: Set<CargoKind>;
+    recipe?: { output: CargoKind };
+  }): string {
     const dot = (k: CargoKind, filled: boolean): string => {
       const c = '#' + CARGO[k].color.toString(16).padStart(6, '0');
       return `<span title="${CARGO[k].label}" style="display:inline-block;width:9px;height:9px;border-radius:50%;margin-left:3px;vertical-align:middle;${
         filled ? `background:${c}` : `border:1.5px solid ${c}`
       }"></span>`;
     };
+    const offers = new Set<CargoKind>(Object.keys(st.supplies) as CargoKind[]);
+    if (st.recipe) offers.add(st.recipe.output);
     let out = '<span style="margin-left:6px">';
-    for (const k of Object.keys(st.supplies) as CargoKind[]) out += dot(k, true);
-    for (const k of st.demands) if (!(k in st.supplies)) out += dot(k, false);
+    for (const k of offers) out += dot(k, true);
+    for (const k of st.demands) if (!offers.has(k)) out += dot(k, false);
     return out + '</span>';
   }
 }

@@ -82,16 +82,30 @@ export class Inspector {
   private stationHtml(st: GStation): string {
     let html = this.header(st.name, st.archetype.kind);
 
-    const supplied = Object.keys(st.supplies) as CargoKind[];
-    if (supplied.length) {
+    // Processors: what they consume, with current input inventory, and the recipe.
+    if (st.recipe) {
+      const ins = Object.keys(st.recipe.inputs) as CargoKind[];
+      html += `<div style="opacity:0.55;font-size:10.5px;text-transform:uppercase;letter-spacing:0.5px;margin-top:8px">Consumes</div>`;
+      for (const k of ins) {
+        const amt = st.input.get(k) ?? 0;
+        html += this.bar(CARGO[k].label, hex(CARGO[k].color), amt / STOCK_CAP, `${Math.floor(amt)}`);
+      }
+      html += `<div style="opacity:0.6;font-size:11px;margin-top:3px">${ins.map((k) => CARGO[k].label).join(' + ')} → ${
+        CARGO[st.recipe.output].label
+      }</div>`;
+    }
+
+    const produced = [...(Object.keys(st.supplies) as CargoKind[]), ...(st.recipe ? [st.recipe.output] : [])];
+    if (produced.length) {
       html += `<div style="opacity:0.55;font-size:10.5px;text-transform:uppercase;letter-spacing:0.5px;margin-top:8px">Produces</div>`;
-      for (const k of supplied) {
+      for (const k of produced) {
         const amt = st.stock.get(k) ?? 0;
         html += this.bar(CARGO[k].label, hex(CARGO[k].color), amt / STOCK_CAP, `${Math.floor(amt)}`);
       }
     }
 
-    const wants = [...st.demands].filter((k) => !(k in st.supplies));
+    const recipeIn = st.recipe ? st.recipe.inputs : {};
+    const wants = [...st.demands].filter((k) => !(k in st.supplies) && !(k in recipeIn));
     if (wants.length) {
       html += `<div style="opacity:0.55;font-size:10.5px;text-transform:uppercase;letter-spacing:0.5px;margin-top:10px">Wants</div><div style="margin-top:4px">`;
       for (const k of wants) html += this.chip(CARGO[k].label, hex(CARGO[k].color));
