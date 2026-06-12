@@ -15,7 +15,7 @@ import { Picker } from './game/Picker';
 import { Minimap } from './game/Minimap';
 import { LocoClass, defaultLoco } from './game/Locomotives';
 import { AudioBus } from './game/Audio';
-import { chooseScenario } from './game/Scenarios';
+import { chooseScenario, DIFFICULTIES, Difficulty } from './game/Scenarios';
 import { Auctioneer } from './game/Auction';
 
 const SIZE = 4096;
@@ -27,6 +27,8 @@ interface BootCfg {
   startMoney: number;
   cities: number;
   goal: { targetCash: number; byYear: number };
+  aiCount: number;
+  difficulty: Difficulty;
   /** Restore the saved game over this world instead of seeding a starter line. */
   load: boolean;
 }
@@ -58,6 +60,8 @@ async function boot(cfg: BootCfg): Promise<void> {
     year: cfg.year,
     cities: cfg.cities,
     goal: cfg.goal,
+    aiCount: cfg.aiCount,
+    difficulty: cfg.difficulty,
   });
   for (const site of sites) network.addStation(site);
 
@@ -196,24 +200,35 @@ function starterPair(network: Network): [GStation, GStation] | null {
 
 const FALLBACK_GOAL = { targetCash: 2_500_000, byYear: 1890 };
 
-/** Show the start menu, then boot the chosen scenario — or regenerate the saved
- *  world and restore it when the player chooses Continue. */
+/** Show the start menu, then boot the chosen setup — or regenerate the saved world and
+ *  restore it when the player chooses Continue. */
 async function start(): Promise<void> {
   const choice = await chooseScenario();
-  if (choice === 'continue') {
+  if (choice.kind === 'continue') {
     const w = Network.savedWorld();
-    if (w) {
-      await boot({ seed: w.seed, cities: w.cities, year: 1862, startMoney: 0, goal: FALLBACK_GOAL, load: true });
-      return;
-    }
+    if (!w) return; // no save after all — shouldn't happen
+    const difficulty = DIFFICULTIES.find((d) => d.id === w.difficulty) ?? DIFFICULTIES[1];
+    await boot({
+      seed: w.seed,
+      cities: w.cities,
+      aiCount: w.aiCount,
+      difficulty,
+      year: 1862,
+      startMoney: 0,
+      goal: FALLBACK_GOAL,
+      load: true,
+    });
+    return;
   }
-  if (choice === 'continue') return; // no save after all — shouldn't happen
+  const { scenario, aiCount, difficulty } = choice.setup;
   await boot({
-    seed: choice.seed,
-    year: choice.year,
-    startMoney: choice.startMoney,
-    cities: choice.cities,
-    goal: choice.goal,
+    seed: scenario.seed,
+    year: scenario.year,
+    startMoney: scenario.startMoney,
+    cities: scenario.cities,
+    goal: scenario.goal,
+    aiCount,
+    difficulty,
     load: false,
   });
 }

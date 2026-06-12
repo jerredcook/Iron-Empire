@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Network } from './Network';
+import { Network, Company } from './Network';
 import { BuildStatus } from './TrackBuilder';
 import { CARGO, CargoKind } from './Cargo';
 import { QUALITY, QualityLevel } from '../engine/Renderer';
@@ -29,9 +29,12 @@ export class HUD {
   private qualityBtns = new Map<QualityLevel, HTMLButtonElement>();
   private upkeep!: HTMLDivElement;
   private goalLine!: HTMLDivElement;
-  private rivalLine!: HTMLDivElement;
+  private standings!: HTMLDivElement;
   private debtLine!: HTMLDivElement;
   private marketLine!: HTMLDivElement;
+  private marketSel!: HTMLSelectElement;
+  private marketWrap!: HTMLDivElement;
+  private lastRivalCount = -1;
   private engineSel!: HTMLSelectElement;
   private overlay!: HTMLDivElement;
   private selectedLoco: LocoClass;
@@ -78,8 +81,9 @@ export class HUD {
       border: '1px solid rgba(143,255,168,0.25)',
       borderRadius: '6px',
     });
-    this.rivalLine = el('div', { fontSize: '12px', opacity: '0.75', marginTop: '6px' });
-    top.append(this.money, this.year, this.upkeep, this.goalLine, this.rivalLine);
+    // Standings: every railroad ranked by net worth.
+    this.standings = el('div', { fontSize: '12px', marginTop: '8px', lineHeight: '1.5' });
+    top.append(this.money, this.year, this.upkeep, this.goalLine, this.standings);
 
     // Finance: outstanding debt + bond/repay controls.
     this.debtLine = el('div', { fontSize: '12px', opacity: '0.7', marginTop: '8px' });
@@ -89,21 +93,37 @@ export class HUD {
     finRow.append(bond, repay);
     top.append(this.debtLine, finRow);
 
-    // Stock market: build a stake in the rival; cross 50% to absorb them.
-    const mLabel = el('div', {
-      marginTop: '10px',
-      fontSize: '10.5px',
-      textTransform: 'uppercase',
-      letterSpacing: '0.6px',
-      opacity: '0.55',
-    });
-    mLabel.textContent = 'Market';
-    this.marketLine = el('div', { fontSize: '12px', opacity: '0.8', marginTop: '3px' });
+    // Stock market: pick a rival, build a stake, cross 50% to absorb them.
+    const mLabel = groupLabelEl('Market');
+    this.marketSel = document.createElement('select');
+    Object.assign(this.marketSel.style, {
+      marginTop: '4px',
+      width: '100%',
+      padding: '5px',
+      pointerEvents: 'auto',
+      cursor: 'pointer',
+      borderRadius: '6px',
+      border: '1px solid rgba(255,255,255,0.18)',
+      background: 'rgba(12,16,20,0.9)',
+      color: '#f4f0e6',
+      fontSize: '12px',
+    } as CSSStyleDeclaration);
+    this.marketLine = el('div', { fontSize: '12px', opacity: '0.8', marginTop: '4px' });
     const mRow = el('div', { display: 'flex', gap: '4px', marginTop: '4px' });
-    const buy = financeBtn('Buy 5k shares', () => this.network.buyShares(this.network.rival, 5000));
-    const sell = financeBtn('Sell 5k', () => this.network.sellShares(this.network.rival, 5000));
+    const target = (): Company | undefined => this.network.companies.find((c) => c.name === this.marketSel.value);
+    const buy = financeBtn('Buy 5k shares', () => {
+      const t = target();
+      if (t) this.network.buyShares(t, 5000);
+    });
+    const sell = financeBtn('Sell 5k', () => {
+      const t = target();
+      if (t) this.network.sellShares(t, 5000);
+    });
     mRow.append(buy, sell);
-    top.append(mLabel, this.marketLine, mRow);
+    // Solo games have no market.
+    this.marketWrap = el('div', {});
+    if (this.network.rivals.length > 0) this.marketWrap.append(mLabel, this.marketSel, this.marketLine, mRow);
+    top.append(this.marketWrap);
 
     // System: persist / restore the game.
     const sysRow = el('div', { display: 'flex', gap: '4px', marginTop: '10px' });
@@ -378,20 +398,37 @@ export class HUD {
           ).toLocaleString()}/yr)</span>`
         : `Debt-free <span style="opacity:0.6">· borrow up to $${Math.round(this.network.creditLimit / 1000)}k</span>`;
 
-    const rival = this.network.rival;
-    const rc = `#${rival.color.toString(16).padStart(6, '0')}`;
-    if (rival.defunct) {
-      this.rivalLine.innerHTML = `<span style="color:${rc}">${rival.name}</span> <span style="opacity:0.6">— acquired</span>`;
-      this.marketLine.textContent = 'Rival absorbed into your empire.';
-    } else {
-      const lead = this.network.netWorth - rival.netWorth;
-      this.rivalLine.innerHTML =
-        `<span style="color:${rc}">${rival.name}</span> $${Math.round(rival.netWorth).toLocaleString()} ` +
-        `<span style="opacity:0.6">(${lead >= 0 ? 'lead' : 'behind'} $${Math.round(Math.abs(lead)).toLocaleString()})</span>`;
-      const stake = this.network.stake(rival) * 100;
-      this.marketLine.innerHTML = `${rival.name} $${rival.sharePrice.toFixed(2)}/sh · <span style="color:${rc}">${stake.toFixed(
-        1
-      )}% owned</span>`;
+    // Standings: rank all railroads by net worth, highlighting the player.
+    const ranked = [...this.network.companies].sort((a, b) => b.netWorth - a.netWorth);
+    this.standings.innerHTML = ranked
+      .map((c, i) => {
+        const cc = `#${c.color.toString(16).padStart(6, '0')}`;
+        const me = c === this.network.player;
+        const tag = c.defunct ? ' <span style="opacity:0.5">— acquired</span>' : '';
+        return `<div style="${me ? 'font-weight:700' : 'opacity:0.85'}">${i + 1}. <span style="color:${cc}">${
+          c.name
+        }</span> $${Math.round(c.netWorth).toLocaleString()}${tag}</div>`;
+      })
+      .join('');
+
+    // Market: keep the rival dropdown in sync and show the selected stake.
+    const rivals = this.network.rivals;
+    if (rivals.length !== this.lastRivalCount) {
+      this.lastRivalCount = rivals.length;
+      this.marketWrap.style.display = rivals.length ? 'block' : 'none';
+      this.marketSel.innerHTML = '';
+      for (const r of rivals) {
+        const o = document.createElement('option');
+        o.value = r.name;
+        o.textContent = r.name;
+        this.marketSel.append(o);
+      }
+    }
+    const sel = this.network.companies.find((c) => c.name === this.marketSel.value && !c.defunct);
+    if (sel) {
+      const stake = this.network.stake(sel) * 100;
+      const sc = `#${sel.color.toString(16).padStart(6, '0')}`;
+      this.marketLine.innerHTML = `$${sel.sharePrice.toFixed(2)}/sh · <span style="color:${sc}">${stake.toFixed(1)}% owned</span>`;
     }
 
     if (this.network.status !== 'playing' && this.overlay.style.display === 'none') this.showEnd();
@@ -467,6 +504,18 @@ function el(tag: string, style: Partial<CSSStyleDeclaration>): HTMLDivElement {
   const e = document.createElement(tag) as HTMLDivElement;
   Object.assign(e.style, style);
   return e;
+}
+
+function groupLabelEl(text: string): HTMLDivElement {
+  const d = el('div', {
+    marginTop: '10px',
+    fontSize: '10.5px',
+    textTransform: 'uppercase',
+    letterSpacing: '0.6px',
+    opacity: '0.55',
+  });
+  d.textContent = text;
+  return d;
 }
 
 function financeBtn(label: string, onClick: () => void): HTMLButtonElement {

@@ -29,9 +29,11 @@ export class Auctioneer {
   private openModal(st: GStation): void {
     this.open = true;
     const player = this.network.player;
-    const rival = this.network.rival;
+    // The wealthiest active rival competes for the lot (none in a solo game).
+    const rivals = this.network.rivals;
+    const rival = rivals.length ? rivals.reduce((a, b) => (b.money > a.money ? b : a)) : null;
     const appraised = this.network.appraiseIndustry(st);
-    const rivalMax = rival.defunct ? 0 : Math.min(rival.money * 0.6, appraised * 1.5);
+    const rivalMax = rival ? Math.min(rival.money * 0.6, appraised * 1.5) : 0;
     const inc = Math.max(10_000, Math.round((appraised * 0.12) / 1000) * 1000);
     let price = Math.round((appraised * 0.4) / 1000) * 1000;
     let leader: 'none' | 'player' | 'rival' = 'none';
@@ -65,7 +67,7 @@ export class Auctioneer {
       if (bid > player.money) return;
       price = bid;
       leader = 'player';
-      if (!rival.defunct && price + inc <= rivalMax) {
+      if (rival && price + inc <= rivalMax) {
         price += inc;
         leader = 'rival';
       }
@@ -76,7 +78,7 @@ export class Auctioneer {
       close();
     };
     const pass = (): void => {
-      if (!rival.defunct && leader !== 'player' && rival.money >= price && rivalMax >= price) {
+      if (rival && leader !== 'player' && rival.money >= price && rivalMax >= price) {
         this.network.awardIndustry(st, rival, price);
       }
       close();
@@ -86,11 +88,12 @@ export class Auctioneer {
       const kind = st.archetype.kind;
       const nextBid = leader === 'none' ? price : price + inc;
       const canBid = nextBid <= player.money;
+      const rivalName = rival ? rival.name : 'The rival';
       const status =
         leader === 'player'
-          ? `<span style="color:#8fffa8">${rival.name} dropped out — it's yours to claim.</span>`
+          ? `<span style="color:#8fffa8">${rival ? `${rivalName} dropped out — ` : ''}it's yours to claim.</span>`
           : leader === 'rival'
-            ? `<span style="color:#ff8a4d">${rival.name} bids $${price.toLocaleString()}</span>`
+            ? `<span style="color:#ff8a4d">${rivalName} bids $${price.toLocaleString()}</span>`
             : `Opening bid $${price.toLocaleString()}`;
       panel.innerHTML =
         `<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.6px;opacity:0.55;margin-bottom:4px">Industry Auction</div>` +

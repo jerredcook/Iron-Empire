@@ -26,6 +26,32 @@ export interface Goal {
   byYear: number;
 }
 
+/** Difficulty knobs the Network actually consumes (structurally a Scenarios.Difficulty). */
+export interface DifficultyParams {
+  id: string;
+  playerMult: number;
+  aiMult: number;
+  aiInterval: number;
+  aiReserve: number;
+}
+
+export interface NetworkConfig {
+  startMoney: number;
+  year: number;
+  cities: number;
+  goal: Goal;
+  /** Number of AI companies (0–3). */
+  aiCount: number;
+  difficulty: DifficultyParams;
+}
+
+/** Names and liveries for the AI railroads, used in order. */
+const AI_ROSTER = [
+  { name: 'Atlas & Pacific', color: 0xff8a4d },
+  { name: 'Great Northern', color: 0x6db4d6 },
+  { name: 'Union Central', color: 0xc792ea },
+];
+
 export interface GStation {
   id: number;
   name: string;
@@ -173,14 +199,18 @@ export class Network {
   readonly stations: GStation[] = [];
   /** Every line in the world, both companies'. */
   readonly lines: GLine[] = [];
-  readonly player = new Company('Iron Empire', 0x8fffa8, false, 850_000);
-  readonly rival = new Company('Atlas & Pacific', 0xff8a4d, true, 850_000);
-  readonly companies = [this.player, this.rival];
+  readonly player: Company;
+  /** Player first, then 0–3 AI companies. */
+  readonly companies: Company[];
   year = 1862;
   status: GameStatus = 'playing';
   readonly goal: Goal = { targetCash: 2_500_000, byYear: 1890 };
-  /** City count this world was generated with — stored so a save reloads identically. */
+  /** Generation parameters, stored so a save reloads an identical world. */
   cities = 0;
+  aiCount = 1;
+  difficultyId = 'financier';
+  private aiInterval = 6;
+  private aiReserve = 160_000;
   private yearAccum = 0;
   /** Newest first; the HUD shows the head of this list. */
   readonly deliveries: Delivery[] = [];
@@ -192,16 +222,28 @@ export class Network {
     private scene: THREE.Scene,
     private field: Heightfield,
     private seed: number,
-    cfg?: { startMoney: number; year: number; cities: number; goal: Goal }
+    cfg: NetworkConfig
   ) {
-    if (cfg) {
-      this.player.money = cfg.startMoney;
-      this.rival.money = cfg.startMoney;
-      this.year = cfg.year;
-      this.cities = cfg.cities;
-      this.goal.targetCash = cfg.goal.targetCash;
-      this.goal.byYear = cfg.goal.byYear;
+    const diff = cfg.difficulty;
+    this.player = new Company('Iron Empire', 0x8fffa8, false, Math.round(cfg.startMoney * diff.playerMult));
+    this.companies = [this.player];
+    for (let i = 0; i < cfg.aiCount; i++) {
+      const r = AI_ROSTER[i % AI_ROSTER.length];
+      this.companies.push(new Company(r.name, r.color, true, Math.round(cfg.startMoney * diff.aiMult)));
     }
+    this.year = cfg.year;
+    this.cities = cfg.cities;
+    this.aiCount = cfg.aiCount;
+    this.difficultyId = diff.id;
+    this.aiInterval = diff.aiInterval;
+    this.aiReserve = diff.aiReserve;
+    this.goal.targetCash = cfg.goal.targetCash;
+    this.goal.byYear = cfg.goal.byYear;
+  }
+
+  /** The AI companies still in play. */
+  get rivals(): Company[] {
+    return this.companies.filter((c) => c.isAI && !c.defunct);
   }
 
   get worldSeed(): number {
@@ -246,12 +288,12 @@ export class Network {
 
   /** The world parameters (seed + city count) a save was made in, so it can be
    *  regenerated identically before the dynamic state is restored. */
-  static savedWorld(): { seed: number; cities: number } | null {
+  static savedWorld(): { seed: number; cities: number; aiCount: number; difficulty: string } | null {
     try {
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return null;
       const d = JSON.parse(raw);
-      return { seed: d.seed, cities: d.cities };
+      return { seed: d.seed, cities: d.cities, aiCount: d.aiCount ?? 1, difficulty: d.difficulty ?? 'financier' };
     } catch {
       return null;
     }
@@ -264,6 +306,8 @@ export class Network {
     const data = {
       seed: this.seed,
       cities: this.cities,
+      aiCount: this.aiCount,
+      difficulty: this.difficultyId,
       year: this.year,
       goal: { targetCash: this.goal.targetCash, byYear: this.goal.byYear },
       status: this.status,
@@ -758,10 +802,10 @@ export class Network {
   private planAI(c: Company, dt: number): void {
     c.aiTimer -= dt;
     if (c.aiTimer > 0 || c.lines.length >= 7) return;
-    c.aiTimer = 6;
+    c.aiTimer = this.aiInterval;
 
     const loco = defaultLoco(this.year);
-    const reserve = 160_000;
+    const reserve = this.aiReserve;
     let best: { a: GStation; b: GStation; cost: number } | null = null;
     for (let i = 0; i < this.stations.length; i++) {
       for (let j = i + 1; j < this.stations.length; j++) {
