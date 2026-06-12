@@ -35,22 +35,22 @@ export interface DifficultyParams {
   aiReserve: number;
 }
 
+export interface CompanySetup {
+  name: string;
+  color: number;
+}
+
 export interface NetworkConfig {
   startMoney: number;
   year: number;
   cities: number;
   goal: Goal;
-  /** Number of AI companies (0–3). */
-  aiCount: number;
   difficulty: DifficultyParams;
+  /** The player's railroad identity. */
+  player: CompanySetup;
+  /** The AI railroads (0–3), in order. */
+  ais: CompanySetup[];
 }
-
-/** Names and liveries for the AI railroads, used in order. */
-const AI_ROSTER = [
-  { name: 'Atlas & Pacific', color: 0xff8a4d },
-  { name: 'Great Northern', color: 0x6db4d6 },
-  { name: 'Union Central', color: 0xc792ea },
-];
 
 export interface GStation {
   id: number;
@@ -225,15 +225,14 @@ export class Network {
     cfg: NetworkConfig
   ) {
     const diff = cfg.difficulty;
-    this.player = new Company('Iron Empire', 0x8fffa8, false, Math.round(cfg.startMoney * diff.playerMult));
+    this.player = new Company(cfg.player.name, cfg.player.color, false, Math.round(cfg.startMoney * diff.playerMult));
     this.companies = [this.player];
-    for (let i = 0; i < cfg.aiCount; i++) {
-      const r = AI_ROSTER[i % AI_ROSTER.length];
-      this.companies.push(new Company(r.name, r.color, true, Math.round(cfg.startMoney * diff.aiMult)));
+    for (const a of cfg.ais) {
+      this.companies.push(new Company(a.name, a.color, true, Math.round(cfg.startMoney * diff.aiMult)));
     }
     this.year = cfg.year;
     this.cities = cfg.cities;
-    this.aiCount = cfg.aiCount;
+    this.aiCount = cfg.ais.length;
     this.difficultyId = diff.id;
     this.aiInterval = diff.aiInterval;
     this.aiReserve = diff.aiReserve;
@@ -288,12 +287,24 @@ export class Network {
 
   /** The world parameters (seed + city count) a save was made in, so it can be
    *  regenerated identically before the dynamic state is restored. */
-  static savedWorld(): { seed: number; cities: number; aiCount: number; difficulty: string } | null {
+  static savedWorld(): {
+    seed: number;
+    cities: number;
+    difficulty: string;
+    player: CompanySetup;
+    ais: CompanySetup[];
+  } | null {
     try {
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return null;
       const d = JSON.parse(raw);
-      return { seed: d.seed, cities: d.cities, aiCount: d.aiCount ?? 1, difficulty: d.difficulty ?? 'financier' };
+      return {
+        seed: d.seed,
+        cities: d.cities,
+        difficulty: d.difficulty ?? 'financier',
+        player: d.player ?? { name: 'Iron Empire', color: 0x8fffa8 },
+        ais: d.ais ?? [{ name: 'Atlas & Pacific', color: 0xff8a4d }],
+      };
     } catch {
       return null;
     }
@@ -306,8 +317,9 @@ export class Network {
     const data = {
       seed: this.seed,
       cities: this.cities,
-      aiCount: this.aiCount,
       difficulty: this.difficultyId,
+      player: { name: this.player.name, color: this.player.color },
+      ais: this.companies.filter((c) => c.isAI).map((c) => ({ name: c.name, color: c.color })),
       year: this.year,
       goal: { targetCash: this.goal.targetCash, byYear: this.goal.byYear },
       status: this.status,

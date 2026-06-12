@@ -1,10 +1,9 @@
-import { Network } from './Network';
+import { Network, CompanySetup } from './Network';
 
 /**
- * A starting situation: which world is generated and the terms of victory. The start
- * menu offers a handful; each varies the seed (so the terrain and city layout differ),
- * the era you begin in (which gates the locomotives available), your opening capital,
- * the number of cities, and the net-worth target and deadline.
+ * A starting situation: the world that's generated and the default terms of victory.
+ * The setup screen seeds its fields from the chosen scenario, then lets the player
+ * override map size, victory terms, their own identity, and the AI field.
  */
 export interface Scenario {
   id: string;
@@ -22,10 +21,8 @@ export interface Difficulty {
   id: string;
   name: string;
   blurb: string;
-  /** Multiplier on the scenario's starting capital for the player / for each AI. */
   playerMult: number;
   aiMult: number;
-  /** Seconds between an AI's expansion attempts, and the cash reserve it keeps. */
   aiInterval: number;
   aiReserve: number;
 }
@@ -39,63 +36,44 @@ export const DIFFICULTIES: Difficulty[] = [
 
 export interface GameSetup {
   scenario: Scenario;
-  /** Number of AI companies (0–3), so 1–4 railroads in total. */
-  aiCount: number;
+  player: CompanySetup;
+  ais: CompanySetup[];
+  cities: number;
+  seed: number;
+  goal: { targetCash: number; byYear: number };
   difficulty: Difficulty;
 }
 
 export type StartChoice = { kind: 'new'; setup: GameSetup } | { kind: 'continue' };
 
 export const SCENARIOS: Scenario[] = [
-  {
-    id: 'pioneer',
-    name: 'Pioneer Valley',
-    blurb: 'A temperate frontier of farms and forests. A gentle place to learn the trade.',
-    seed: 20260611,
-    year: 1862,
-    startMoney: 850_000,
-    cities: 9,
-    goal: { targetCash: 2_500_000, byYear: 1890 },
-  },
-  {
-    id: 'coal',
-    name: 'Coal Country',
-    blurb: 'A rugged mining belt. Feed the factories and beat the deadline on lean capital.',
-    seed: 7771234,
-    year: 1855,
-    startMoney: 700_000,
-    cities: 10,
-    goal: { targetCash: 3_000_000, byYear: 1888 },
-  },
-  {
-    id: 'golden',
-    name: 'Golden State',
-    blurb: 'A booming coast in the steam age. Big cities, bigger ambitions.',
-    seed: 5550987,
-    year: 1872,
-    startMoney: 1_100_000,
-    cities: 11,
-    goal: { targetCash: 4_000_000, byYear: 1898 },
-  },
-  {
-    id: 'gambit',
-    name: "Tycoon's Gambit",
-    blurb: 'Thin capital and hungry rivals. Outbuild them — or buy them out.',
-    seed: 9123456,
-    year: 1860,
-    startMoney: 500_000,
-    cities: 8,
-    goal: { targetCash: 3_500_000, byYear: 1885 },
-  },
+  { id: 'pioneer', name: 'Pioneer Valley', blurb: 'A temperate frontier of farms and forests.', seed: 20260611, year: 1862, startMoney: 850_000, cities: 9, goal: { targetCash: 2_500_000, byYear: 1890 } },
+  { id: 'coal', name: 'Coal Country', blurb: 'A rugged mining belt — feed the factories.', seed: 7771234, year: 1855, startMoney: 700_000, cities: 10, goal: { targetCash: 3_000_000, byYear: 1888 } },
+  { id: 'golden', name: 'Golden State', blurb: 'A booming coast. Big cities, bigger ambitions.', seed: 5550987, year: 1872, startMoney: 1_100_000, cities: 11, goal: { targetCash: 4_000_000, byYear: 1898 } },
+  { id: 'gambit', name: "Tycoon's Gambit", blurb: 'Thin capital and hungry rivals.', seed: 9123456, year: 1860, startMoney: 500_000, cities: 8, goal: { targetCash: 3_500_000, byYear: 1885 } },
 ];
 
-/** Show the start menu (scenario + opponents + difficulty) and resolve with the chosen
- *  setup, or 'continue' to resume the saved game. */
+const LIVERIES = [0x8fffa8, 0x6db4d6, 0xffe28a, 0xff8a4d, 0xff7766, 0xc792ea, 0x9bd07a, 0xb89a7a];
+const AI_NAMES = ['Atlas & Pacific', 'Great Northern', 'Union Central'];
+const AI_COLORS = [0xff8a4d, 0x6db4d6, 0xc792ea];
+const SANDBOX_YEAR = 9999;
+const CITY_OPTIONS = [6, 9, 12, 16];
+const TARGET_OPTIONS = [1_500_000, 2_500_000, 4_000_000, 6_000_000];
+
+/** Show the setup screen and resolve with the chosen setup, or 'continue' to resume. */
 export function chooseScenario(): Promise<StartChoice> {
   return new Promise((resolve) => {
-    let scenario: Scenario = SCENARIOS[0];
-    let aiCount = 1;
-    let difficulty: Difficulty = DIFFICULTIES[1];
+    const setup: GameSetup = {
+      scenario: SCENARIOS[0],
+      player: { name: 'Iron Empire', color: 0x8fffa8 },
+      ais: [{ name: AI_NAMES[0], color: AI_COLORS[0] }],
+      cities: SCENARIOS[0].cities,
+      seed: SCENARIOS[0].seed,
+      goal: { ...SCENARIOS[0].goal },
+      difficulty: DIFFICULTIES[1],
+    };
+    let sandbox = false;
+    let randomMap = false;
 
     const overlay = el('div', {
       position: 'fixed',
@@ -104,113 +82,239 @@ export function chooseScenario(): Promise<StartChoice> {
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
-      justifyContent: 'center',
-      gap: '6px',
-      background: 'radial-gradient(circle at 50% 25%, #1b2733, #0a0e13)',
+      gap: '4px',
+      padding: '24px 0',
+      background: 'radial-gradient(circle at 50% 18%, #1b2733, #0a0e13)',
       color: '#f4f0e6',
-      font: '15px/1.5 -apple-system, Segoe UI, Roboto, sans-serif',
+      font: '14px/1.5 -apple-system, Segoe UI, Roboto, sans-serif',
       overflow: 'auto',
     });
-
-    const title = el('div', { fontSize: '48px', fontWeight: '800', letterSpacing: '3px' });
+    const title = el('div', { fontSize: '44px', fontWeight: '800', letterSpacing: '3px' });
     title.textContent = 'IRON EMPIRE';
-    const sub = el('div', { opacity: '0.7', marginBottom: '14px' });
-    sub.textContent = 'Set up your venture';
-    overlay.append(title, sub);
+    overlay.append(title);
 
     const finish = (choice: StartChoice): void => {
       overlay.remove();
       resolve(choice);
     };
-
     if (Network.hasSave()) {
       const cont = button('▶  Continue saved game', '#8fffa8', () => finish({ kind: 'continue' }));
-      cont.style.marginBottom = '14px';
+      cont.style.margin = '6px 0';
       overlay.append(cont);
     }
 
-    const cols = el('div', { display: 'flex', gap: '18px', alignItems: 'flex-start' });
+    const grid = el('div', { display: 'grid', gridTemplateColumns: 'repeat(2, 330px)', gap: '14px', marginTop: '8px' });
+    overlay.append(grid);
 
-    // Left: scenario cards.
-    const left = el('div', { display: 'flex', flexDirection: 'column', gap: '10px', width: '300px' });
-    const cards: { card: HTMLElement; s: Scenario }[] = [];
-    const markCards = (): void => {
-      for (const { card, s } of cards) {
-        const on = s === scenario;
+    // --- Scenario panel ---
+    const scenarioBody = el('div', { display: 'flex', flexDirection: 'column', gap: '8px' });
+    const scenarioCards: { card: HTMLElement; s: Scenario }[] = [];
+    for (const s of SCENARIOS) {
+      const card = el('button', cardStyle());
+      card.innerHTML = `<div style="font-weight:700">${s.name}</div><div style="font-size:11.5px;opacity:0.7">${s.blurb}</div>`;
+      card.onclick = () => {
+        setup.scenario = s;
+        if (!randomMap) setup.seed = s.seed;
+        setup.cities = s.cities;
+        if (!sandbox) setup.goal = { ...s.goal };
+        refresh();
+      };
+      scenarioCards.push({ card, s });
+      scenarioBody.append(card);
+    }
+    grid.append(panel('Scenario', scenarioBody));
+
+    // --- Company identity panel ---
+    const nameInput = textInput(setup.player.name, (v) => (setup.player.name = v || 'Iron Empire'));
+    const playerSwatches = swatchRow(LIVERIES, setup.player.color, (c) => {
+      setup.player.color = c;
+      refresh();
+    });
+    const idBody = el('div', { display: 'flex', flexDirection: 'column', gap: '8px' });
+    idBody.append(sub('Railroad name'), nameInput, sub('Livery'), playerSwatches.row);
+    grid.append(panel('Your Company', idBody));
+
+    // --- Map panel ---
+    const mapBody = el('div', { display: 'flex', flexDirection: 'column', gap: '8px' });
+    const citiesSeg = segmented(CITY_OPTIONS.map(String), CITY_OPTIONS.indexOf(setup.cities), (i) => (setup.cities = CITY_OPTIONS[i]));
+    const seedSeg = segmented(['Scenario map', '↻ Random map'], 0, (i) => {
+      randomMap = i === 1;
+      setup.seed = randomMap ? Math.floor(Math.random() * 1e9) : setup.scenario.seed;
+      refresh();
+    });
+    mapBody.append(sub('Cities'), citiesSeg, sub('Terrain'), seedSeg);
+    grid.append(panel('Map', mapBody));
+
+    // --- Victory panel ---
+    const victoryBody = el('div', { display: 'flex', flexDirection: 'column', gap: '8px' });
+    grid.append(panel('Victory', victoryBody));
+
+    // --- Opponents panel ---
+    const oppBody = el('div', { display: 'flex', flexDirection: 'column', gap: '8px' });
+    grid.append(panel('Opponents', oppBody));
+
+    // --- Difficulty panel ---
+    const diffBody = el('div', { display: 'flex', flexDirection: 'column', gap: '6px' });
+    const diffSeg = segmented(DIFFICULTIES.map((d) => d.name), 1, (i) => {
+      setup.difficulty = DIFFICULTIES[i];
+      diffBlurb.textContent = DIFFICULTIES[i].blurb;
+    });
+    const diffBlurb = el('div', { fontSize: '11.5px', opacity: '0.65' });
+    diffBlurb.textContent = setup.difficulty.blurb;
+    diffBody.append(diffSeg, diffBlurb);
+    grid.append(panel('Difficulty', diffBody));
+
+    const startBtn = button('Start Empire  ▶', '#ffe28a', () => finish({ kind: 'new', setup }));
+    startBtn.style.cssText += ';margin-top:12px;font-size:17px;padding:13px 30px';
+    overlay.append(startBtn);
+
+    // Dynamic sections that depend on current state.
+    const refresh = (): void => {
+      for (const { card, s } of scenarioCards) {
+        const on = s === setup.scenario;
         card.style.borderColor = on ? 'rgba(143,255,168,0.7)' : 'rgba(255,255,255,0.16)';
         card.style.background = on ? 'rgba(143,255,168,0.1)' : 'rgba(255,255,255,0.05)';
       }
-    };
-    for (const s of SCENARIOS) {
-      const card = el('button', {
-        textAlign: 'left',
-        padding: '12px 14px',
-        cursor: 'pointer',
-        border: '1px solid rgba(255,255,255,0.16)',
-        borderRadius: '10px',
-        background: 'rgba(255,255,255,0.05)',
-        color: '#f4f0e6',
+      playerSwatches.mark(setup.player.color);
+
+      // Victory.
+      victoryBody.innerHTML = '';
+      const sandboxSeg = segmented(['Net-worth goal', 'Sandbox'], sandbox ? 1 : 0, (i) => {
+        sandbox = i === 1;
+        if (sandbox) setup.goal = { targetCash: 1e12, byYear: SANDBOX_YEAR };
+        else setup.goal = { ...setup.scenario.goal };
+        refresh();
       });
-      card.innerHTML =
-        `<div style="font-size:17px;font-weight:700;margin-bottom:2px">${s.name}</div>` +
-        `<div style="font-size:12px;opacity:0.7;margin-bottom:6px">${s.blurb}</div>` +
-        `<div style="font-size:11px;opacity:0.85">Start ${s.year} · $${(s.startMoney / 1000).toFixed(0)}k · ` +
-        `Goal $${(s.goal.targetCash / 1e6).toFixed(1)}M by ${s.goal.byYear}</div>`;
-      card.onclick = () => {
-        scenario = s;
-        markCards();
-      };
-      cards.push({ card, s });
-      left.append(card);
-    }
-    markCards();
+      victoryBody.append(sandboxSeg);
+      if (!sandbox) {
+        const targetSeg = segmented(
+          TARGET_OPTIONS.map((t) => `$${(t / 1e6).toFixed(1)}M`),
+          Math.max(0, TARGET_OPTIONS.indexOf(setup.goal.targetCash)),
+          (i) => (setup.goal.targetCash = TARGET_OPTIONS[i])
+        );
+        const minYear = setup.scenario.year + 10;
+        if (setup.goal.byYear < minYear || setup.goal.byYear === SANDBOX_YEAR) setup.goal.byYear = setup.scenario.goal.byYear;
+        const yearStep = stepper(
+          () => `by ${setup.goal.byYear}`,
+          () => (setup.goal.byYear = Math.max(minYear, setup.goal.byYear - 5)),
+          () => (setup.goal.byYear = Math.min(setup.scenario.year + 80, setup.goal.byYear + 5))
+        );
+        victoryBody.append(sub('Target'), targetSeg, sub('Deadline'), yearStep);
+      } else {
+        victoryBody.append(hint('Build freely — no deadline. (You can still go bankrupt.)'));
+      }
 
-    // Right: opponents + difficulty + start.
-    const right = el('div', { display: 'flex', flexDirection: 'column', gap: '14px', width: '300px' });
+      // Opponents.
+      oppBody.innerHTML = '';
+      const countSeg = segmented(['Solo', '2', '3', '4'], setup.ais.length, (i) => {
+        while (setup.ais.length < i) {
+          const k = setup.ais.length;
+          setup.ais.push({ name: AI_NAMES[k % AI_NAMES.length], color: AI_COLORS[k % AI_COLORS.length] });
+        }
+        setup.ais.length = i;
+        refresh();
+      });
+      oppBody.append(sub('Railroads (you + rivals)'), countSeg);
+      setup.ais.forEach((ai, idx) => {
+        const row = el('div', { display: 'flex', gap: '6px', alignItems: 'center' });
+        const nm = textInput(ai.name, (v) => (ai.name = v || `Rival ${idx + 1}`));
+        nm.style.flex = '1';
+        const sw = swatchRow(LIVERIES, ai.color, (c) => {
+          ai.color = c;
+          refresh();
+        }, true);
+        row.append(nm, sw.row);
+        oppBody.append(row);
+      });
+    };
+    refresh();
 
-    right.append(
-      groupLabel('Railroads'),
-      segmented(
-        ['Solo', '2', '3', '4'],
-        1,
-        (i) => {
-          aiCount = i; // index 0→solo(0 AI), 1→1 AI … matches "total railroads = aiCount+1"
-        },
-        ['1 railroad — you alone', '2 railroads — 1 rival', '3 railroads — 2 rivals', '4 railroads — 3 rivals']
-      )
-    );
-
-    right.append(
-      groupLabel('Difficulty'),
-      segmented(
-        DIFFICULTIES.map((d) => d.name),
-        1,
-        (i) => {
-          difficulty = DIFFICULTIES[i];
-          diffBlurb.textContent = difficulty.blurb;
-        },
-        DIFFICULTIES.map((d) => d.blurb)
-      )
-    );
-    const diffBlurb = el('div', { fontSize: '12px', opacity: '0.65', marginTop: '-6px' });
-    diffBlurb.textContent = difficulty.blurb;
-    right.append(diffBlurb);
-
-    const startBtn = button('Start Empire  ▶', '#ffe28a', () =>
-      finish({ kind: 'new', setup: { scenario, aiCount, difficulty } })
-    );
-    startBtn.style.marginTop = '8px';
-    startBtn.style.fontSize = '16px';
-    right.append(startBtn);
-
-    cols.append(left, right);
-    overlay.append(cols);
     document.body.append(overlay);
   });
 }
 
-/** A row of mutually-exclusive buttons; calls onPick with the selected index. */
-function segmented(labels: string[], initial: number, onPick: (i: number) => void, titles?: string[]): HTMLElement {
+// ---- small DOM builders ----
+
+function panel(titleText: string, body: HTMLElement): HTMLElement {
+  const p = el('div', {
+    padding: '12px 14px',
+    background: 'rgba(18,22,28,0.6)',
+    borderRadius: '10px',
+    border: '1px solid rgba(255,255,255,0.1)',
+  });
+  const t = el('div', { fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.6px', opacity: '0.55', marginBottom: '8px' });
+  t.textContent = titleText;
+  p.append(t, body);
+  return p;
+}
+
+function cardStyle(): Partial<CSSStyleDeclaration> {
+  return {
+    textAlign: 'left',
+    padding: '9px 11px',
+    cursor: 'pointer',
+    border: '1px solid rgba(255,255,255,0.16)',
+    borderRadius: '8px',
+    background: 'rgba(255,255,255,0.05)',
+    color: '#f4f0e6',
+  };
+}
+
+function sub(text: string): HTMLElement {
+  return Object.assign(el('div', { fontSize: '11px', opacity: '0.55', marginTop: '2px' }), { textContent: text });
+}
+function hint(text: string): HTMLElement {
+  return Object.assign(el('div', { fontSize: '12px', opacity: '0.7' }), { textContent: text });
+}
+
+function textInput(value: string, onChange: (v: string) => void): HTMLInputElement {
+  const i = document.createElement('input');
+  i.value = value;
+  Object.assign(i.style, {
+    padding: '7px 9px',
+    borderRadius: '6px',
+    border: '1px solid rgba(255,255,255,0.2)',
+    background: 'rgba(12,16,20,0.9)',
+    color: '#f4f0e6',
+    fontSize: '13px',
+  } as CSSStyleDeclaration);
+  i.oninput = () => onChange(i.value);
+  return i;
+}
+
+function swatchRow(
+  colors: number[],
+  initial: number,
+  onPick: (c: number) => void,
+  compact = false
+): { row: HTMLElement; mark: (c: number) => void } {
+  const row = el('div', { display: 'flex', gap: '4px', flexWrap: 'wrap' });
+  const sz = compact ? '16px' : '22px';
+  const cells: { el: HTMLElement; c: number }[] = [];
+  const mark = (sel: number): void => {
+    for (const cell of cells) cell.el.style.outline = cell.c === sel ? '2px solid #fff' : '2px solid transparent';
+  };
+  for (const c of colors) {
+    const cell = el('div', {
+      width: sz,
+      height: sz,
+      borderRadius: '5px',
+      cursor: 'pointer',
+      background: '#' + c.toString(16).padStart(6, '0'),
+      outlineOffset: '1px',
+    });
+    cell.onclick = () => {
+      onPick(c);
+      mark(c);
+    };
+    cells.push({ el: cell, c });
+    row.append(cell);
+  }
+  mark(initial);
+  return { row, mark };
+}
+
+function segmented(labels: string[], initial: number, onPick: (i: number) => void): HTMLElement {
   const row = el('div', { display: 'flex', gap: '5px' });
   const btns: HTMLElement[] = [];
   const mark = (sel: number): void => {
@@ -224,17 +328,17 @@ function segmented(labels: string[], initial: number, onPick: (i: number) => voi
   labels.forEach((label, i) => {
     const b = el('button', {
       flex: '1',
-      padding: '8px 4px',
+      padding: '7px 4px',
       cursor: 'pointer',
-      borderRadius: '7px',
+      borderRadius: '6px',
       border: '1px solid rgba(255,255,255,0.18)',
       background: 'rgba(255,255,255,0.05)',
       color: '#f4f0e6',
-      fontSize: '13px',
+      fontSize: '12.5px',
       fontWeight: '600',
+      whiteSpace: 'nowrap',
     });
     b.textContent = label;
-    if (titles) b.title = titles[i];
     b.onclick = () => {
       mark(i);
       onPick(i);
@@ -246,10 +350,30 @@ function segmented(labels: string[], initial: number, onPick: (i: number) => voi
   return row;
 }
 
-function groupLabel(text: string): HTMLElement {
-  const d = el('div', { fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.6px', opacity: '0.55' });
-  d.textContent = text;
-  return d;
+function stepper(label: () => string, dec: () => void, inc: () => void): HTMLElement {
+  const row = el('div', { display: 'flex', gap: '5px', alignItems: 'center' });
+  const val = el('div', { flex: '1', textAlign: 'center', fontSize: '13px' });
+  val.textContent = label();
+  const mk = (t: string, fn: () => void): HTMLElement => {
+    const b = el('button', {
+      width: '34px',
+      padding: '6px 0',
+      cursor: 'pointer',
+      borderRadius: '6px',
+      border: '1px solid rgba(255,255,255,0.18)',
+      background: 'rgba(255,255,255,0.05)',
+      color: '#f4f0e6',
+      fontWeight: '700',
+    });
+    b.textContent = t;
+    b.onclick = () => {
+      fn();
+      val.textContent = label();
+    };
+    return b;
+  };
+  row.append(mk('−', dec), val, mk('+', inc));
+  return row;
 }
 
 function button(label: string, color: string, onClick: () => void): HTMLButtonElement {

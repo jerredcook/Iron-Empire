@@ -27,8 +27,9 @@ interface BootCfg {
   startMoney: number;
   cities: number;
   goal: { targetCash: number; byYear: number };
-  aiCount: number;
   difficulty: Difficulty;
+  player: { name: string; color: number };
+  ais: { name: string; color: number }[];
   /** Restore the saved game over this world instead of seeding a starter line. */
   load: boolean;
 }
@@ -60,8 +61,9 @@ async function boot(cfg: BootCfg): Promise<void> {
     year: cfg.year,
     cities: cfg.cities,
     goal: cfg.goal,
-    aiCount: cfg.aiCount,
     difficulty: cfg.difficulty,
+    player: cfg.player,
+    ais: cfg.ais,
   });
   for (const site of sites) network.addStation(site);
 
@@ -211,8 +213,9 @@ async function start(): Promise<void> {
     await boot({
       seed: w.seed,
       cities: w.cities,
-      aiCount: w.aiCount,
       difficulty,
+      player: w.player,
+      ais: w.ais,
       year: 1862,
       startMoney: 0,
       goal: FALLBACK_GOAL,
@@ -220,15 +223,16 @@ async function start(): Promise<void> {
     });
     return;
   }
-  const { scenario, aiCount, difficulty } = choice.setup;
+  const s = choice.setup;
   await boot({
-    seed: scenario.seed,
-    year: scenario.year,
-    startMoney: scenario.startMoney,
-    cities: scenario.cities,
-    goal: scenario.goal,
-    aiCount,
-    difficulty,
+    seed: s.seed,
+    year: s.scenario.year,
+    startMoney: s.scenario.startMoney,
+    cities: s.cities,
+    goal: s.goal,
+    difficulty: s.difficulty,
+    player: s.player,
+    ais: s.ais,
     load: false,
   });
 }
