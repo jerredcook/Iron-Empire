@@ -56,10 +56,17 @@ export interface Delivery {
  * one, each rival tycoon another. They share the world's cities (and so compete for the
  * same waiting cargo), but their books are separate.
  */
+const SHARES_OUTSTANDING = 100_000; // per company
+
 export class Company {
   money: number;
   debt = 0;
   readonly lines: GLine[] = [];
+  readonly shares = SHARES_OUTSTANDING;
+  /** Shares this company holds in others (an investable asset / path to takeover). */
+  readonly holdings = new Map<Company, number>();
+  /** Set when absorbed by a takeover. */
+  defunct = false;
   /** AI build cadence accumulator. */
   aiTimer = 4;
 
@@ -72,11 +79,29 @@ export class Company {
     this.money = startMoney;
   }
 
-  /** Cash plus fleet salvage minus debt. */
-  get netWorth(): number {
+  /** Cash plus fleet salvage minus debt — the operating value that backs the share
+   *  price (deliberately excludes the share portfolio so prices can't feed back). */
+  get assetWorth(): number {
     let w = this.money - this.debt;
     for (const l of this.lines) for (const t of l.trains) w += t.locoClass.cost * 0.5;
     return w;
+  }
+
+  /** Market value of one share. */
+  get sharePrice(): number {
+    return Math.max(1, this.assetWorth / this.shares);
+  }
+
+  /** Value of shares held in other companies. */
+  get portfolioValue(): number {
+    let v = 0;
+    for (const [co, qty] of this.holdings) v += qty * co.sharePrice;
+    return v;
+  }
+
+  /** Total worth the objective is judged on: operating value plus investments. */
+  get netWorth(): number {
+    return this.assetWorth + this.portfolioValue;
   }
 
   get upkeepPerYear(): number {
@@ -160,6 +185,46 @@ export class Network {
   }
   repayDebt(amount: number): boolean {
     return this.player.repayDebt(amount);
+  }
+
+  /** Player's stake in a company, 0..1. */
+  stake(target: Company): number {
+    return (this.player.holdings.get(target) ?? 0) / target.shares;
+  }
+
+  /** Player buys shares of a company; crossing 50% triggers a takeover. */
+  buyShares(target: Company, qty: number): boolean {
+    if (target.defunct || qty <= 0) return false;
+    const cost = qty * target.sharePrice;
+    if (cost > this.player.money) return false;
+    this.player.money -= cost;
+    this.player.holdings.set(target, (this.player.holdings.get(target) ?? 0) + qty);
+    if (target !== this.player && this.stake(target) > 0.5) this.takeover(this.player, target);
+    return true;
+  }
+
+  /** Player sells shares back to the market at the current price. */
+  sellShares(target: Company, qty: number): boolean {
+    const held = this.player.holdings.get(target) ?? 0;
+    const q = Math.min(qty, held);
+    if (q <= 0) return false;
+    this.player.money += q * target.sharePrice;
+    this.player.holdings.set(target, held - q);
+    return true;
+  }
+
+  /** Absorb a company: its lines and cash transfer to the acquirer; it goes defunct. */
+  private takeover(buyer: Company, target: Company): void {
+    for (const l of target.lines) {
+      l.owner = buyer;
+      buyer.lines.push(l);
+    }
+    target.lines.length = 0;
+    buyer.money += target.money;
+    target.money = 0;
+    target.defunct = true;
+    buyer.holdings.delete(target);
+    this.pushDelivery(`Acquired ${target.name}`, 0);
   }
 
   /** Build the economic node + its town/depot visuals from a generated site. */
@@ -340,7 +405,7 @@ export class Network {
     // Maintenance and bond interest bleed every company's books continuously.
     for (const c of this.companies) {
       c.money -= ((c.upkeepPerYear + c.interestPerYear) / SECONDS_PER_YEAR) * dt;
-      if (c.isAI) this.planAI(c, dt);
+      if (c.isAI && !c.defunct) this.planAI(c, dt);
     }
 
     this.yearAccum += dt;

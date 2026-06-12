@@ -30,6 +30,7 @@ export class HUD {
   private goalLine!: HTMLDivElement;
   private rivalLine!: HTMLDivElement;
   private debtLine!: HTMLDivElement;
+  private marketLine!: HTMLDivElement;
   private engineSel!: HTMLSelectElement;
   private overlay!: HTMLDivElement;
   private selectedLoco: LocoClass;
@@ -85,6 +86,22 @@ export class HUD {
     const repay = financeBtn('Repay $100k', () => this.network.repayDebt(100_000));
     finRow.append(bond, repay);
     top.append(this.debtLine, finRow);
+
+    // Stock market: build a stake in the rival; cross 50% to absorb them.
+    const mLabel = el('div', {
+      marginTop: '10px',
+      fontSize: '10.5px',
+      textTransform: 'uppercase',
+      letterSpacing: '0.6px',
+      opacity: '0.55',
+    });
+    mLabel.textContent = 'Market';
+    this.marketLine = el('div', { fontSize: '12px', opacity: '0.8', marginTop: '3px' });
+    const mRow = el('div', { display: 'flex', gap: '4px', marginTop: '4px' });
+    const buy = financeBtn('Buy 5k shares', () => this.network.buyShares(this.network.rival, 5000));
+    const sell = financeBtn('Sell 5k', () => this.network.sellShares(this.network.rival, 5000));
+    mRow.append(buy, sell);
+    top.append(mLabel, this.marketLine, mRow);
 
     this.buildBtn = document.createElement('button');
     Object.assign(this.buildBtn.style, {
@@ -345,11 +362,20 @@ export class HUD {
         : `Debt-free <span style="opacity:0.6">· borrow up to $${Math.round(this.network.creditLimit / 1000)}k</span>`;
 
     const rival = this.network.rival;
-    const lead = this.network.netWorth - rival.netWorth;
-    this.rivalLine.innerHTML =
-      `<span style="color:#${rival.color.toString(16).padStart(6, '0')}">${rival.name}</span> ` +
-      `$${Math.round(rival.netWorth).toLocaleString()} ` +
-      `<span style="opacity:0.6">(${lead >= 0 ? 'lead' : 'behind'} $${Math.round(Math.abs(lead)).toLocaleString()})</span>`;
+    const rc = `#${rival.color.toString(16).padStart(6, '0')}`;
+    if (rival.defunct) {
+      this.rivalLine.innerHTML = `<span style="color:${rc}">${rival.name}</span> <span style="opacity:0.6">— acquired</span>`;
+      this.marketLine.textContent = 'Rival absorbed into your empire.';
+    } else {
+      const lead = this.network.netWorth - rival.netWorth;
+      this.rivalLine.innerHTML =
+        `<span style="color:${rc}">${rival.name}</span> $${Math.round(rival.netWorth).toLocaleString()} ` +
+        `<span style="opacity:0.6">(${lead >= 0 ? 'lead' : 'behind'} $${Math.round(Math.abs(lead)).toLocaleString()})</span>`;
+      const stake = this.network.stake(rival) * 100;
+      this.marketLine.innerHTML = `${rival.name} $${rival.sharePrice.toFixed(2)}/sh · <span style="color:${rc}">${stake.toFixed(
+        1
+      )}% owned</span>`;
+    }
 
     if (this.network.status !== 'playing' && this.overlay.style.display === 'none') this.showEnd();
 
