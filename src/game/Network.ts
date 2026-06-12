@@ -173,6 +173,9 @@ export class Network {
   private yearAccum = 0;
   /** Newest first; the HUD shows the head of this list. */
   readonly deliveries: Delivery[] = [];
+  /** Fired when the player earns a delivery / completes a build (for audio). */
+  onRevenue?: (amount: number) => void;
+  onBuilt?: () => void;
 
   constructor(private scene: THREE.Scene, private field: Heightfield, private seed: number) {}
 
@@ -440,6 +443,7 @@ export class Network {
     if (cost > owner.money) return false;
     owner.money -= cost;
     this.layLine(owner, stops, waypoints, [loco]);
+    if (owner === this.player) this.onBuilt?.();
     return true;
   }
 
@@ -480,7 +484,10 @@ export class Network {
       const dist = lot.originPos.distanceTo(at.pos);
       const rev = haulRevenue(kind, lot.amount, dist);
       owner.money += rev;
-      if (!owner.isAI) this.pushDelivery(`${Math.floor(lot.amount)} ${kind} → ${at.name}`, rev);
+      if (!owner.isAI) {
+        this.pushDelivery(`${Math.floor(lot.amount)} ${kind} → ${at.name}`, rev);
+        this.onRevenue?.(rev);
+      }
       // Raw delivered to a processor feeds its input inventory; anything else is
       // consumed on arrival (and feeds the city's prosperity). Either way it's paid.
       if (at.recipe && kind in at.recipe.inputs) {

@@ -42,7 +42,8 @@ export class HUD {
     onBuildToggle: () => void,
     quality: QualityLevel,
     onQuality: (q: QualityLevel) => void,
-    private onLoco: (l: LocoClass) => void
+    private onLoco: (l: LocoClass) => void,
+    onToggleSound: () => boolean
   ) {
     this.selectedLoco = defaultLoco(network.year);
     this.root = el('div', {
@@ -115,7 +116,11 @@ export class HUD {
       sessionStorage.setItem('ie.load', '1');
       location.reload();
     });
-    sysRow.append(saveBtn, loadBtn);
+    const soundBtn = financeBtn('🔊', () => {
+      soundBtn.textContent = onToggleSound() ? '🔊' : '🔇';
+    });
+    soundBtn.style.flex = '0 0 36px';
+    sysRow.append(saveBtn, loadBtn, soundBtn);
     top.append(sysRow);
 
     this.buildBtn = document.createElement('button');

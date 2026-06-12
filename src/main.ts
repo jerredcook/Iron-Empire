@@ -14,6 +14,7 @@ import { Inspector } from './game/Inspector';
 import { Picker } from './game/Picker';
 import { Minimap } from './game/Minimap';
 import { LocoClass, defaultLoco } from './game/Locomotives';
+import { AudioBus } from './game/Audio';
 
 const WORLD = { seed: 20260611, size: 4096, seaLevel: 0 };
 
@@ -61,9 +62,22 @@ async function boot(): Promise<void> {
 
   // Interactive track laying + HUD.
   const builder = new TrackBuilder(rig.camera, renderer.gl.domElement, terrain.mesh, network, scene, () => selectedLoco);
-  const hud = new HUD(network, () => builder.toggle(), renderer.quality, applyQuality, (loco) => {
-    selectedLoco = loco;
-  });
+  // Synthesized sound — unlocked on the first interaction, chimes on deliveries.
+  const audio = new AudioBus();
+  network.onRevenue = () => audio.chime();
+  network.onBuilt = () => audio.build();
+  window.addEventListener('pointerdown', () => audio.unlock(), { once: true });
+
+  const hud = new HUD(
+    network,
+    () => builder.toggle(),
+    renderer.quality,
+    applyQuality,
+    (loco) => {
+      selectedLoco = loco;
+    },
+    () => audio.toggle()
+  );
   builder.onStatus = (s) => hud.setBuildStatus(s);
   renderer.gl.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 
