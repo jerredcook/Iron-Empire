@@ -528,6 +528,35 @@ function runUiTest(
     serviceHasTrain: (tsLine?.trains.length ?? 0) >= 1,
   };
 
+  // L) Signalling: two trains on one isolated line, both moving the same way, hold an
+  //    arc-length gap and never telescope (measured by rail position — robust on curves).
+  //    A dedicated line (away from the through-service rails) isolates same-line spacing.
+  const P = network.stations[6];
+  const Q = network.stations[9];
+  network.buildStationAt(P);
+  network.buildStationAt(Q);
+  network.buildLine([P.pos, Q.pos], [P, Q], loco);
+  const sigLine = network.lines[network.lines.length - 1];
+  network.addTrain(sigLine, loco);
+  for (let i = 0; i < 150; i++) network.update(1 / 30); // warm up — let trains separate
+  let minGap = Infinity;
+  let sameDirTicks = 0;
+  for (let i = 0; i < 600; i++) {
+    network.update(1 / 30);
+    const ts = sigLine.trains;
+    if (ts.length < 2 || ts[0].heading !== ts[1].heading) continue;
+    sameDirTicks++;
+    // The arc block holds the follower a safe gap behind, so the rail-distance gap
+    // never collapses (a telescope would drive it toward 0).
+    minGap = Math.min(minGap, Math.abs(ts[0].railDist - ts[1].railDist));
+  }
+  result.signalling = {
+    minGap: Number.isFinite(minGap) ? +minGap.toFixed(1) : -1,
+    sameDirTicks,
+    noTelescope: minGap > 6,
+    measured: sameDirTicks > 50,
+  };
+
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
   el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px;max-width:100vw;white-space:pre-wrap';

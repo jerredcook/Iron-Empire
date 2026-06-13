@@ -23,9 +23,20 @@ export class Track {
   readonly curve: THREE.CatmullRomCurve3;
   readonly length: number;
 
-  /** When false, only the geometry/curve is built (no rails/ballast) — used by a
-   *  through-service that rides along already-rendered track across junctions. */
-  constructor(private field: Heightfield, waypoints: THREE.Vector3[], visual = true) {
+  /**
+   * `visual=false` builds only the geometry/curve (no rails/ballast) — used by a
+   * through-service that rides already-rendered track across junctions. `raw=true`
+   * (movement-only) takes the given points as the exact curve, skipping the
+   * densify+grade pass, so a through-service sits precisely on the rails it traces.
+   */
+  constructor(private field: Heightfield, waypoints: THREE.Vector3[], visual = true, raw = false) {
+    if (raw) {
+      this.curve = new THREE.CatmullRomCurve3(waypoints.map((p) => p.clone()), false, 'catmullrom', 0.5);
+      this.curve.arcLengthDivisions = waypoints.length * 6;
+      this.length = this.curve.getLength();
+      this.group.name = 'route';
+      return;
+    }
     const pts: THREE.Vector3[] = [];
     for (let w = 0; w < waypoints.length - 1; w++) {
       const a = waypoints[w];

@@ -104,6 +104,7 @@ async function main() {
       ui?.throughService?.legsAtoC === 2 && ui?.throughService?.twoDifferentLines && ui?.throughService?.built && ui?.throughService?.serviceHasTrain,
       ui?.throughService
     );
+    check('ui: signalling keeps same-line trains spaced (no telescope)', ui?.signalling?.measured && ui?.signalling?.noTelescope, ui?.signalling);
 
     console.log('• Render-loop test…');
     const fr = extract(chromeDump('autostart&frames=240'), 'ie-frames');

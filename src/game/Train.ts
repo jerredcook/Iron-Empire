@@ -56,8 +56,12 @@ export class Train {
   private _quat = new THREE.Quaternion();
   private _head = new THREE.Vector3();
   private _tip = new THREE.Vector3();
-  /** Arc-length the train ahead on this rail occupies — it may not advance past it. */
+  /** Arc-length a same-line leader occupies ahead (precise same-line spacing), or null. */
   private block: number | null = null;
+  /** Loco world heading (unit, x/z meaningful) — read by cross-line signalling. */
+  readonly worldForward = new THREE.Vector3();
+  /** Set by the network each tick: a train on another line is ahead on this rail — hold. */
+  worldHold = false;
 
   constructor(private track: Track, scene: THREE.Scene, locoClass: LocoClass, stopFracs: number[], carKinds: CargoKind[]) {
     this.locoClass = locoClass;
@@ -103,9 +107,11 @@ export class Train {
   get heading(): 1 | -1 {
     return this.dir;
   }
+  get groundSpeed(): number {
+    return this.speed;
+  }
 
-  /** The arc-length a leader occupies ahead on this rail (same direction), or null
-   *  if the line is clear. The train holds short of it. */
+  /** Same-line block: the arc position of the leader ahead on this rail, or null. */
   setBlock(d: number | null): void {
     this.block = d;
   }
@@ -139,15 +145,15 @@ export class Train {
       this.dwell -= dt;
       this.speed = 0;
     } else {
-      // Aim for the next scheduled stop, but never past the block a leader holds ahead
-      // on this rail — so a following train eases to a stand behind it instead of
-      // telescoping into it.
+      // Aim for the next scheduled stop, but never past a same-line leader (precise
+      // arc block) or a cross-line train holding this rail (world signalling) — so a
+      // follower eases to a stand behind it rather than telescoping into it.
       const stop = this.stopDist[this.target];
       let limit = stop;
       if (this.block !== null) {
-        const hold = this.block - BLOCK_GAP;
-        limit = this.dir > 0 ? Math.min(stop, hold) : Math.max(stop, this.block + BLOCK_GAP);
+        limit = this.dir > 0 ? Math.min(stop, this.block - BLOCK_GAP) : Math.max(stop, this.block + BLOCK_GAP);
       }
+      if (this.worldHold) limit = this.dist; // cross-line hold pins it in place
       const remaining = Math.max(0, (limit - this.dist) * this.dir);
       const target = Math.min(this.maxSpeed, Math.max(0, remaining * 0.9));
       this.speed += THREE.MathUtils.clamp(target - this.speed, -28 * dt, 12 * dt);
@@ -177,6 +183,7 @@ export class Train {
     }
 
     this.placeBody(this.dist, this.dir, this.loco.group, -0.78);
+    this.worldForward.copy(this._head); // _head = tangent × dir, set in placeBody
     this.wheelAngle += (this.dir * this.speed * dt) / this.loco.driverRadius;
     this.loco.setWheelAngle(this.wheelAngle);
 

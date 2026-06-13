@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Heightfield } from '../world/Heightfield';
-import { Track } from './Track';
+import { Track, TRACK_SIDE } from './Track';
 import { Train, CAR_CAP } from './Train';
 import { CargoKind, ALL_CARGO, haulRevenue } from './Cargo';
 import { Archetype, CitySite, Recipe, ARCHETYPES } from './Economy';
@@ -724,7 +724,7 @@ export class Network {
     }
 
     this.player.money -= loco.cost;
-    const track = new Track(this.field, pts, false); // movement-only — rides existing rails
+    const track = new Track(this.field, pts, false, true); // movement-only, exact rail trace
     const stopFracs = stops.map((s) => track.nearestU(s.pos));
     const line: GLine = { stops, track, stopFracs, trains: [], owner: this.player, value: 0, waypoints: pts };
     this.lines.push(line);
@@ -1015,9 +1015,9 @@ export class Network {
         if (s.recipe) this.process(s, dt);
       }
     }
-    // Block signalling: each train may not advance past the nearest train ahead of it
-    // on the same rail (same direction). Opposing trains ride the other track, so this
-    // only guards against same-direction telescoping — it can't deadlock.
+    // Same-line spacing: a train holds short of the nearest same-direction leader on
+    // its own line (precise arc-length — robust on curves). Opposing trains ride the
+    // offset rail, so this can't deadlock.
     for (const l of this.lines) {
       const ts = l.trains;
       for (const t of ts) {
@@ -1033,8 +1033,12 @@ export class Network {
         }
         t.setBlock(leader);
       }
-      for (const t of ts) t.update(dt);
     }
+    // Cross-line junctions: a train also holds if a train on ANOTHER line is close
+    // ahead on the same physical rail (world space), so services that share rails at
+    // junctions don't telescope.
+    this.signal();
+    for (const l of this.lines) for (const t of l.trains) t.update(dt);
 
     // Maintenance and bond interest bleed every company's books continuously.
     for (const c of this.companies) {
@@ -1053,6 +1057,35 @@ export class Network {
     if (this.player.money < DEBT_LIMIT) this.status = 'lost';
     else if (this.player.netWorth >= this.goal.targetCash) this.status = 'won';
     else if (this.year > this.goal.byYear) this.status = 'lost';
+  }
+
+  /** Cross-line collision signalling in world space: a train holds when another train
+   *  is close ahead of it on the same physical rail. Same-direction trains share a rail
+   *  (so a follower holds behind a leader); opposing trains ride the offset rail (so
+   *  they pass) — hence no head-on deadlock, and it works across junctions where lines
+   *  share track, not just within a single line. */
+  private signal(): void {
+    const SAME_RAIL = TRACK_SIDE * 1.5; // lateral tolerance: within one rail
+    const AHEAD_GAP = 16; // hold this far behind the train in front
+    const entries: { t: Train; line: GLine }[] = [];
+    for (const l of this.lines) for (const t of l.trains) entries.push({ t, line: l });
+    for (const e of entries) e.t.worldHold = false;
+    for (const e of entries) {
+      const p = e.t.headPosition;
+      const f = e.t.worldForward;
+      if (f.lengthSq() < 0.1) continue;
+      for (const o of entries) {
+        if (o.line === e.line) continue; // same-line spacing is the arc block's job
+        const dx = o.t.headPosition.x - p.x;
+        const dz = o.t.headPosition.z - p.z;
+        const ahead = dx * f.x + dz * f.z; // distance ahead along the heading
+        if (ahead <= 0 || ahead > AHEAD_GAP) continue;
+        const lateral = Math.abs(dx * -f.z + dz * f.x); // perpendicular distance
+        if (lateral > SAME_RAIL) continue;
+        e.t.worldHold = true;
+        break;
+      }
+    }
   }
 
   /** Annual dividend: each solvent company pays a slice of its operating value to its
