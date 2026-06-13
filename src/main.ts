@@ -149,7 +149,8 @@ async function boot(cfg: BootCfg): Promise<void> {
       if (line.trains.includes(followTrain as Train)) followTrain = null;
       network.demolishLine(line);
       clearSelection();
-    }
+    },
+    (st) => network.buildStationAt(st)
   );
   const auctioneer = new Auctioneer(network);
   const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());
@@ -182,7 +183,11 @@ async function boot(cfg: BootCfg): Promise<void> {
     // Seed one productive line so the world opens in motion and the cargo loop is
     // legible from the first frame — the closest pair that actually trades.
     const pair = starterPair(network);
-    if (pair) network.buildLine([pair[0].pos, pair[1].pos], [pair[0], pair[1]], selectedLoco);
+    if (pair) {
+      network.buildStationAt(pair[0]);
+      network.buildStationAt(pair[1]);
+      network.buildLine([pair[0].pos, pair[1].pos], [pair[0], pair[1]], selectedLoco);
+    }
   }
 
   // Open on a high three-quarter overview so several cities are in frame.
@@ -410,8 +415,9 @@ function runUiTest(
     hasPassengerCar: newLine?.trains[0]?.consist.some((c) => c.kind === 'passengers') ?? false,
   };
 
-  // C) Depot upgrade via the inspector station panel button.
+  // C) Depot upgrade via the inspector station panel button (needs a depot first).
   const upStation = network.stations[0];
+  network.buildStationAt(upStation);
   const lvlBefore = upStation.level;
   inspector.select({ kind: 'station', station: upStation });
   inspector.update(1); // force a render so the panel + handlers exist
@@ -448,6 +454,15 @@ function runUiTest(
     inspector.update(1);
     (document.querySelector('[data-demolish]') as HTMLElement | null)?.click();
     result.demolishLine = { before: beforeL, after: network.lines.length, removed: !network.lines.includes(demoLine) };
+  }
+
+  // H0) Build a station at a city that has none, via the inspector button.
+  const bareCity = network.stations.find((s) => !s.hasStation);
+  if (bareCity) {
+    inspector.select({ kind: 'station', station: bareCity });
+    inspector.update(1);
+    (document.querySelector('[data-buildstation]') as HTMLElement | null)?.click();
+    result.buildStation = { hadDepot: false, nowHasDepot: bareCity.hasStation };
   }
 
   // H) Free-form track with no city stops → rail is laid, but no train (no route yet).
@@ -508,6 +523,10 @@ function layTrackTest(
   };
   const sa = screen(a.pos);
   const sb = screen(b.pos);
+
+  // A route can only stop at cities with depots — build them first.
+  network.buildStationAt(a);
+  network.buildStationAt(b);
 
   const linesBefore = network.lines.length;
   builder.start();

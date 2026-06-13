@@ -96,6 +96,7 @@ async function main() {
     check('ui: sell train removes it from the line', ui?.sellTrain?.sold, ui?.sellTrain);
     check('ui: demolish line removes it', ui?.demolishLine?.removed, ui?.demolishLine);
     check('ui: free track lays rail with no stations (no train)', ui?.freeTrack?.trackLaidWithoutStops && ui?.freeTrack?.noStops && ui?.freeTrack?.noTrain, ui?.freeTrack);
+    check('ui: build station at a city adds a depot', ui?.buildStation?.nowHasDepot, ui?.buildStation);
 
     console.log('• Render-loop test…');
     const fr = extract(chromeDump('autostart&frames=240'), 'ie-frames');

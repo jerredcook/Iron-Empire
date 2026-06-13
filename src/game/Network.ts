@@ -17,6 +17,7 @@ const INTEREST_RATE = 0.07; // annual interest on outstanding bonds
 const DIVIDEND_RATE = 0.05; // share of operating value paid out to holders each year
 const INDUSTRY_ROYALTY = 9; // $/unit the industry's owner earns on shipped output
 const STATION_BONUS = 0.18; // extra haul revenue per depot upgrade level
+const STATION_COST = 70_000; // price to build a depot at a city
 const MAX_STATION_LEVEL = 3;
 const SERVE_FULL = 55; // banked service that yields full prosperity
 const GROWTH_TIERS = [1.55, 2.05, 2.55]; // growth thresholds that add a house ring
@@ -82,6 +83,8 @@ export interface GStation {
   level: number;
   /** Cumulative revenue earned from deliveries to this station. */
   revenue: number;
+  /** Whether a depot has been built here — a route can only stop at built stations. */
+  hasStation: boolean;
 }
 
 export interface GLine {
@@ -349,6 +352,7 @@ export class Network {
         hasRecipe: !!s.recipe,
         level: s.level,
         revenue: Math.round(s.revenue),
+        hasStation: s.hasStation,
       })),
       lines: this.lines.map((l) => ({
         owner: ci(l.owner),
@@ -424,6 +428,7 @@ export class Network {
       if (s.owner) s.owner.industries.push(s);
       s.level = sd.level ?? 0;
       s.revenue = sd.revenue ?? 0;
+      if (sd.hasStation) this.placeDepot(s);
     });
 
     for (const ld of data.lines) {
@@ -516,25 +521,62 @@ export class Network {
       bookValue: 0,
       level: 0,
       revenue: 0,
+      hasStation: false,
     };
     this.stations.push(st);
 
+    // The town exists from the start; the depot is built (and paid for) by a railroad.
     const town = buildTown(this.seed + st.id * 131, site.archetype.houses);
     town.position.copy(pos);
     this.scene.add(town);
 
-    const depot = buildStation();
-    depot.position.set(pos.x + 16, this.field.height(pos.x + 16, pos.z), pos.z);
-    depot.rotation.y = Math.atan2(pos.x - depot.position.x, pos.z - depot.position.z);
-    this.scene.add(depot);
-
     return st;
   }
 
+  /** What it costs to put a depot at a city — required before a route can stop there. */
+  stationCost(): number {
+    return STATION_COST;
+  }
+
+  /** Build a depot at a city so trains can serve it. Charged to the player. */
+  buildStationAt(st: GStation): boolean {
+    if (st.hasStation || this.status !== 'playing') return false;
+    if (STATION_COST > this.player.money) return false;
+    this.player.money -= STATION_COST;
+    this.placeDepot(st);
+    this.onBuilt?.();
+    return true;
+  }
+
+  /** The depot building + flag at a city's station (also used on load). */
+  private placeDepot(st: GStation): void {
+    st.hasStation = true;
+    const depot = buildStation();
+    depot.position.set(st.pos.x + 16, this.field.height(st.pos.x + 16, st.pos.z), st.pos.z);
+    depot.rotation.y = Math.atan2(st.pos.x - depot.position.x, st.pos.z - depot.position.z);
+    this.scene.add(depot);
+  }
+
+  /** Nearest city to a point (built or not) — for selection/inspection. */
+  nearestCity(point: THREE.Vector3, maxDist: number): GStation | null {
+    let best: GStation | null = null;
+    let bd = maxDist;
+    for (const s of this.stations) {
+      const d = Math.hypot(s.pos.x - point.x, s.pos.z - point.z);
+      if (d < bd) {
+        bd = d;
+        best = s;
+      }
+    }
+    return best;
+  }
+
+  /** Nearest city that has a depot — for track-laying stop snapping. */
   nearestStation(point: THREE.Vector3, maxDist: number): GStation | null {
     let best: GStation | null = null;
     let bd = maxDist;
     for (const s of this.stations) {
+      if (!s.hasStation) continue;
       const d = Math.hypot(s.pos.x - point.x, s.pos.z - point.z);
       if (d < bd) {
         bd = d;
@@ -896,11 +938,21 @@ export class Network {
         const trades =
           this.offersOf(a).some((k) => b.demands.has(k)) || this.offersOf(b).some((k) => a.demands.has(k));
         if (!trades) continue;
-        const cost = this.lineCost([a.pos, b.pos], loco);
+        // A line needs a depot at each end — factor any missing ones into the cost.
+        const depots = (a.hasStation ? 0 : STATION_COST) + (b.hasStation ? 0 : STATION_COST);
+        const cost = this.lineCost([a.pos, b.pos], loco) + depots;
         if (cost > c.money - reserve) continue;
         if (!best || cost < best.cost) best = { a, b, cost };
       }
     }
-    if (best) this.buildLineFor(c, [best.a.pos, best.b.pos], [best.a, best.b], loco);
+    if (best) {
+      for (const st of [best.a, best.b]) {
+        if (!st.hasStation) {
+          c.money -= STATION_COST;
+          this.placeDepot(st);
+        }
+      }
+      this.buildLineFor(c, [best.a.pos, best.b.pos], [best.a, best.b], loco);
+    }
   }
 }

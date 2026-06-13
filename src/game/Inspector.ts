@@ -27,7 +27,8 @@ export class Inspector {
     private onUpgrade: (st: GStation) => void,
     private onFollow: (train: Train) => void,
     private onSellTrain: (line: GLine, train: Train) => void,
-    private onDemolishLine: (line: GLine) => void
+    private onDemolishLine: (line: GLine) => void,
+    private onBuildStation: (st: GStation) => void
   ) {
     this.panel = document.createElement('div');
     Object.assign(this.panel.style, {
@@ -87,6 +88,11 @@ export class Inspector {
       const st = this.sel.station;
       upg.onclick = () => this.onUpgrade(st);
     }
+    const bs = this.panel.querySelector('[data-buildstation]') as HTMLElement | null;
+    if (bs && this.sel.kind === 'station') {
+      const st = this.sel.station;
+      bs.onclick = () => this.onBuildStation(st);
+    }
   }
 
   private header(title: string, sub: string): string {
@@ -116,12 +122,16 @@ export class Inspector {
       html += `<div style="font-size:12px;margin:-4px 0 4px">Industry owned by <span style="color:${c}">${st.owner.name}</span></div>`;
     }
 
-    // Depot level, its revenue bonus, and earnings booked here so far.
-    const stars = '★'.repeat(st.level) + '☆'.repeat(3 - st.level);
-    html += `<div style="display:flex;justify-content:space-between;font-size:12px;margin:2px 0 6px">` +
-      `<span style="color:#ffe28a">Depot ${stars}</span>` +
-      `<span style="opacity:0.75">+${Math.round(st.level * 18)}% haul</span></div>`;
-    html += `<div style="font-size:12px;opacity:0.75;margin-bottom:4px">Earned here: $${Math.round(st.revenue).toLocaleString()}</div>`;
+    if (st.hasStation) {
+      // Depot level, its revenue bonus, and earnings booked here so far.
+      const stars = '★'.repeat(st.level) + '☆'.repeat(3 - st.level);
+      html += `<div style="display:flex;justify-content:space-between;font-size:12px;margin:2px 0 6px">` +
+        `<span style="color:#ffe28a">Depot ${stars}</span>` +
+        `<span style="opacity:0.75">+${Math.round(st.level * 18)}% haul</span></div>`;
+      html += `<div style="font-size:12px;opacity:0.75;margin-bottom:4px">Earned here: $${Math.round(st.revenue).toLocaleString()}</div>`;
+    } else {
+      html += `<div style="font-size:12px;opacity:0.7;margin:2px 0 6px">No depot — build one to route trains here.</div>`;
+    }
 
     // Processors: what they consume, with current input inventory, and the recipe.
     if (st.recipe) {
@@ -161,16 +171,13 @@ export class Inspector {
       ? `<div style="margin-top:3px">${links.map((n) => `→ ${n}`).join('<br>')}</div>`
       : `<div style="opacity:0.5;margin-top:3px">Unconnected — build a line here.</div>`;
 
-    // Upgrade the depot for a haul bonus, or found a factory.
-    if (st.level < 3) {
-      html += `<div data-upgrade style="margin-top:12px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,226,138,0.5);color:#ffe28a;font-size:12px">⬆ Upgrade Depot — $${(
-        90 *
-        (st.level + 1)
-      ).toFixed(0)}k</div>`;
-    }
-    if (!st.recipe) {
-      html += `<div data-industry style="margin-top:6px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,226,138,0.5);color:#ffe28a;font-size:12px">🏭 Build Factory — $160k</div>`;
-    }
+    const btn = (attr: string, label: string): string =>
+      `<div ${attr} style="margin-top:8px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,226,138,0.5);color:#ffe28a;font-size:12px">${label}</div>`;
+    // The core station-first step: a city can't be routed to without a depot.
+    if (!st.hasStation) html += btn('data-buildstation', '🚉 Build Station — $70k');
+    // A depot can be upgraded; an industry can be founded regardless of a depot.
+    if (st.hasStation && st.level < 3) html += btn('data-upgrade', `⬆ Upgrade Depot — $${(90 * (st.level + 1)).toFixed(0)}k`);
+    if (!st.recipe) html += btn('data-industry', '🏭 Build Factory — $160k');
 
     return html;
   }

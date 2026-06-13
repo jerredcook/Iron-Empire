@@ -51,10 +51,10 @@ export class Picker {
       }
     }
 
-    // 2) Otherwise project to the ground and grab the nearest city.
+    // 2) Otherwise project to the ground and grab the nearest city (built or not).
     const ground = this.ray.intersectObject(this.terrain, true)[0];
     if (ground) {
-      const st = this.network.nearestStation(ground.point, STATION_PICK);
+      const st = this.network.nearestCity(ground.point, STATION_PICK);
       this.onSelect?.(st ? { kind: 'station', station: st } : null);
     }
   };
