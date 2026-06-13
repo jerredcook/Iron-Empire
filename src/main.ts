@@ -18,6 +18,7 @@ import { AudioBus } from './game/Audio';
 import { chooseScenario, DIFFICULTIES, SCENARIOS, Difficulty } from './game/Scenarios';
 import { Auctioneer } from './game/Auction';
 import { configureConsist } from './game/ConsistConfig';
+import { CargoKind } from './game/Cargo';
 
 const SIZE = 4096;
 const SEA = 0;
@@ -108,6 +109,9 @@ async function boot(cfg: BootCfg): Promise<void> {
     () => audio.toggle()
   );
   builder.onStatus = (s) => hud.setBuildStatus(s);
+  // Finishing a corridor opens the consist dialog, then builds it with the chosen cars.
+  builder.onCommit = (stops, segMids) =>
+    configureConsist(network, stops, selectedLoco, (cars) => network.buildLine(stops, segMids, selectedLoco, cars));
   renderer.gl.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 
   // Inspection: minimap + click-to-select + detail panel, all reading live state.
@@ -119,7 +123,7 @@ async function boot(cfg: BootCfg): Promise<void> {
       minimap.setSelection(null);
     },
     (line) => {
-      if (!line.owner.isAI) configureConsist(network, line, selectedLoco);
+      if (!line.owner.isAI) configureConsist(network, line.stops, selectedLoco, (cars) => network.addTrain(line, selectedLoco, cars));
     },
     (st) => network.buildIndustry(st),
     (st) => network.upgradeStation(st)
@@ -202,6 +206,12 @@ async function boot(cfg: BootCfg): Promise<void> {
   }
   writeDiag();
 
+  // Headless UI test: drive the real consist modal DOM for both the add-train and
+  // build-line paths, then report what actually happened in the model.
+  if (location.search.includes('uitest')) {
+    runUiTest(network, builder, selectedLoco);
+  }
+
   const clock = new THREE.Clock();
   const loop = (): void => {
     requestAnimationFrame(loop);
@@ -250,6 +260,62 @@ function starterPair(network: Network): [GStation, GStation] | null {
     }
   }
   return best ?? bestAny;
+}
+
+/** Drive the open consist modal: trim a car, set the first car's cargo, hit Buy.
+ *  Returns true if the modal committed and closed. Re-queries after each step because
+ *  the modal re-renders its own DOM. */
+function driveConsistModal(cargo: CargoKind): boolean {
+  const panel = (): HTMLElement | null => document.querySelector('[data-consist]');
+  if (!panel()) return false;
+  (panel()!.querySelector('[data-dec]') as HTMLElement | null)?.click();
+  const sel = panel()!.querySelector('select') as HTMLSelectElement | null;
+  if (sel) {
+    sel.value = cargo;
+    sel.dispatchEvent(new Event('change'));
+  }
+  const buy = [...panel()!.querySelectorAll('button')].find((b) => (b.textContent ?? '').startsWith('Buy')) as
+    | HTMLButtonElement
+    | undefined;
+  buy?.click();
+  return !panel();
+}
+
+function runUiTest(network: Network, builder: TrackBuilder, loco: LocoClass): void {
+  const result: Record<string, unknown> = {};
+  const maxCars = network.maxCars(loco);
+
+  // A) Add a configured train to the existing starter line.
+  const line = network.lines[0];
+  const before = line.trains.length;
+  configureConsist(network, line.stops, loco, (cars) => network.addTrain(line, loco, cars));
+  const aClosed = driveConsistModal('coal');
+  const added = line.trains[line.trains.length - 1];
+  result.addTrain = {
+    committed: aClosed,
+    trainAdded: line.trains.length === before + 1,
+    carCount: added?.consist.length ?? 0,
+    expectedCars: maxCars - 1,
+    hasCoalCar: added?.consist.some((c) => c.kind === 'coal') ?? false,
+  };
+
+  // B) Build a new line through the builder's commit path (same stops as the starter).
+  const linesBefore = network.lines.length;
+  builder.onCommit?.(line.stops.slice(), [[]]);
+  const bClosed = driveConsistModal('passengers');
+  const newLine = network.lines[network.lines.length - 1];
+  result.buildLine = {
+    committed: bClosed,
+    lineBuilt: network.lines.length === linesBefore + 1,
+    firstTrainCars: newLine?.trains[0]?.consist.length ?? 0,
+    hasPassengerCar: newLine?.trains[0]?.consist.some((c) => c.kind === 'passengers') ?? false,
+  };
+
+  const el = document.createElement('pre');
+  el.id = 'ie-uitest';
+  el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px';
+  el.textContent = JSON.stringify(result);
+  document.body.append(el);
 }
 
 const FALLBACK_GOAL = { targetCash: 2_500_000, byYear: 1890 };

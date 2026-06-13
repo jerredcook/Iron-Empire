@@ -23,6 +23,8 @@ export interface BuildStatus {
  */
 export class TrackBuilder {
   onStatus?: (s: BuildStatus) => void;
+  /** Fired when a corridor is finished — the listener configures + commits it. */
+  onCommit?: (stops: GStation[], segMids: THREE.Vector3[][]) => void;
 
   private active = false;
   /** Ordered stations clicked so far (the corridor's stops). */
@@ -185,10 +187,10 @@ export class TrackBuilder {
     this.emit();
   }
 
-  /** Commit the corridor (≥2 stops) and reset for the next one. */
+  /** Hand the finished corridor (≥2 stops) to the listener to configure + commit. */
   private finish(): void {
     if (this.stops.length < 2) return;
-    this.network.buildLine(this.stops, this.segMids, this.getLoco());
+    this.onCommit?.(this.stops.slice(), this.segMids.map((a) => a.slice()));
     this.stops = [];
     this.segMids = [];
     this.mids = [];

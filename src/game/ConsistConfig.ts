@@ -1,20 +1,27 @@
-import { Network, GLine } from './Network';
+import { Network, GStation } from './Network';
 import { LocoClass } from './Locomotives';
 import { ALL_CARGO, CARGO, CargoKind } from './Cargo';
 
 /**
- * Modal for configuring a new train's consist: how many cars (up to what the chosen
+ * Modal for configuring a train's consist: how many cars (up to what the chosen
  * locomotive can pull) and the cargo type each car hauls. You may assign a car a cargo
- * no stop on the line demands — it's allowed, but flagged with a warning, since that
- * car will ride empty of revenue.
+ * no stop on the route demands — it's allowed, but flagged with a warning, since that
+ * car will ride empty of revenue. On confirm it hands back the chosen car list, so the
+ * same dialog serves both building a new line and adding a train to an existing one.
  */
-export function configureConsist(network: Network, line: GLine, loco: LocoClass): void {
+export function configureConsist(
+  network: Network,
+  stops: GStation[],
+  loco: LocoClass,
+  onConfirm: (cars: CargoKind[]) => void
+): void {
   const maxCars = network.maxCars(loco);
-  const routeWants = new Set<CargoKind>(line.stops.flatMap((s) => [...s.demands]));
-  let cars = network.defaultConsist(line.stops, loco).slice(0, maxCars);
+  const routeWants = new Set<CargoKind>(stops.flatMap((s) => [...s.demands]));
+  let cars = network.defaultConsist(stops, loco).slice(0, maxCars);
   if (cars.length === 0) cars = ['goods'];
 
   const panel = document.createElement('div');
+  panel.setAttribute('data-consist', '1');
   Object.assign(panel.style, {
     position: 'fixed',
     top: '50%',
@@ -41,7 +48,7 @@ export function configureConsist(network: Network, line: GLine, loco: LocoClass)
     panel.innerHTML =
       `<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.6px;opacity:0.55;margin-bottom:3px">New Train</div>` +
       `<div style="font-size:18px;font-weight:700">${loco.name} ${loco.wheel}</div>` +
-      `<div style="font-size:12px;opacity:0.7;margin:3px 0 10px">Cost $${loco.cost.toLocaleString()} · pulls up to ${maxCars} cars · ${line.stops
+      `<div style="font-size:12px;opacity:0.7;margin:3px 0 10px">Cost $${loco.cost.toLocaleString()} · pulls up to ${maxCars} cars · ${stops
         .map((s) => s.name)
         .join(' → ')}</div>` +
       `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="opacity:0.6;font-size:11px">CARS</span><span data-dec style="cursor:pointer;padding:1px 9px;border:1px solid rgba(255,255,255,0.25);border-radius:5px">−</span><b>${cars.length}</b><span data-inc style="cursor:pointer;padding:1px 8px;border:1px solid rgba(255,255,255,0.25);border-radius:5px">+</span></div>` +
@@ -98,7 +105,7 @@ export function configureConsist(network: Network, line: GLine, loco: LocoClass)
     const row = panel.lastElementChild as HTMLElement;
     row.append(
       btn(`Buy $${Math.round(loco.cost / 1000)}k`, '#8fffa8', affordable, () => {
-        network.addTrain(line, loco, cars.slice());
+        onConfirm(cars.slice());
         close();
       }),
       btn('Cancel', '#f4f0e6', true, close)
