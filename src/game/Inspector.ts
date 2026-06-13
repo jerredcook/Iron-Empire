@@ -129,6 +129,11 @@ export class Inspector {
         `<span style="color:#ffe28a">Depot ${stars}</span>` +
         `<span style="opacity:0.75">+${Math.round(st.level * 18)}% haul</span></div>`;
       html += `<div style="font-size:12px;opacity:0.75;margin-bottom:4px">Earned here: $${Math.round(st.revenue).toLocaleString()}</div>`;
+      if (st.catchment.length) {
+        html += `<div style="font-size:11.5px;opacity:0.7;margin-bottom:4px">Catchment serves: ${st.catchment
+          .map((c) => c.name)
+          .join(', ')}</div>`;
+      }
     } else {
       html += `<div style="font-size:12px;opacity:0.7;margin:2px 0 6px">No depot — build one to route trains here.</div>`;
     }

@@ -18,6 +18,7 @@ const DIVIDEND_RATE = 0.05; // share of operating value paid out to holders each
 const INDUSTRY_ROYALTY = 9; // $/unit the industry's owner earns on shipped output
 const STATION_BONUS = 0.18; // extra haul revenue per depot upgrade level
 const STATION_COST = 70_000; // price to build a depot at a city
+const CATCHMENT_RADIUS = 700; // a depot gathers cargo from cities within this range
 const MAX_STATION_LEVEL = 3;
 const SERVE_FULL = 55; // banked service that yields full prosperity
 const GROWTH_TIERS = [1.55, 2.05, 2.55]; // growth thresholds that add a house ring
@@ -85,6 +86,8 @@ export interface GStation {
   revenue: number;
   /** Whether a depot has been built here — a route can only stop at built stations. */
   hasStation: boolean;
+  /** Nearby depot-less cities this station gathers cargo from (its catchment). */
+  catchment: GStation[];
 }
 
 export interface GLine {
@@ -522,6 +525,7 @@ export class Network {
       level: 0,
       revenue: 0,
       hasStation: false,
+      catchment: [],
     };
     this.stations.push(st);
 
@@ -536,6 +540,10 @@ export class Network {
   /** What it costs to put a depot at a city — required before a route can stop there. */
   stationCost(): number {
     return STATION_COST;
+  }
+
+  get catchmentRange(): number {
+    return CATCHMENT_RADIUS;
   }
 
   /** Build a depot at a city so trains can serve it. Charged to the player. */
@@ -555,6 +563,46 @@ export class Network {
     depot.position.set(st.pos.x + 16, this.field.height(st.pos.x + 16, st.pos.z), st.pos.z);
     depot.rotation.y = Math.atan2(st.pos.x - depot.position.x, st.pos.z - depot.position.z);
     this.scene.add(depot);
+    this.assignCatchment();
+  }
+
+  /** Assign each depot-less city to its nearest depot within range — that depot then
+   *  gathers (and sells to) its cargo. A city with its own depot is its own node. */
+  assignCatchment(): void {
+    for (const s of this.stations) s.catchment = [];
+    for (const city of this.stations) {
+      if (city.hasStation) continue;
+      let best: GStation | null = null;
+      let bd = CATCHMENT_RADIUS;
+      for (const dep of this.stations) {
+        if (!dep.hasStation) continue;
+        const d = Math.hypot(dep.pos.x - city.pos.x, dep.pos.z - city.pos.z);
+        if (d < bd) {
+          bd = d;
+          best = dep;
+        }
+      }
+      if (best) best.catchment.push(city);
+    }
+  }
+
+  /** Cargo a station can ship: its own extraction plus every catchment city's, each
+   *  scaled by that city's prosperity. */
+  private effectiveSupplies(st: GStation): Map<CargoKind, number> {
+    const m = new Map<CargoKind, number>();
+    const add = (c: GStation): void => {
+      for (const k of Object.keys(c.supplies) as CargoKind[]) m.set(k, (m.get(k) ?? 0) + c.supplies[k]! * c.growth);
+    };
+    add(st);
+    for (const c of st.catchment) add(c);
+    return m;
+  }
+
+  /** Cargo a station pays to receive: its own demands plus every catchment city's. */
+  private effectiveDemands(st: GStation): Set<CargoKind> {
+    const s = new Set<CargoKind>(st.demands);
+    for (const c of st.catchment) for (const k of c.demands) s.add(k);
+    return s;
   }
 
   /** Nearest city to a point (built or not) — for selection/inspection. */
@@ -766,9 +814,10 @@ export class Network {
    *  own assigned cargo from the city's stock. Typed cars only carry their own kind. */
   private serviceTrain(owner: Company, train: Train, at: GStation): void {
     const bonus = 1 + at.level * STATION_BONUS;
+    const wants = this.effectiveDemands(at); // own demands + the whole catchment's
     for (const car of train.consist) {
       // Unload.
-      if (car.amount > 0 && at.demands.has(car.kind)) {
+      if (car.amount > 0 && wants.has(car.kind)) {
         const dist = car.origin.distanceTo(at.pos);
         const rev = Math.round(haulRevenue(car.kind, car.amount, dist) * bonus);
         owner.money += rev;
@@ -840,14 +889,16 @@ export class Network {
       s.growth = 1 + Math.min(2, s.served / SERVE_FULL);
       this.maybeGrowCity(s);
 
-      // Extraction (scaled by prosperity) accrues as outbound stock, capped.
-      for (const kind of Object.keys(s.supplies) as CargoKind[]) {
-        const cur = s.stock.get(kind) ?? 0;
-        if (cur < STOCK_CAP) s.stock.set(kind, Math.min(STOCK_CAP, cur + s.supplies[kind]! * s.growth * dt));
+      // Only depots accrue stock — gathering their whole catchment (already
+      // prosperity-scaled). A city with no depot in range has no outlet for its cargo.
+      if (s.hasStation) {
+        for (const [kind, rate] of this.effectiveSupplies(s)) {
+          const cur = s.stock.get(kind) ?? 0;
+          if (cur < STOCK_CAP) s.stock.set(kind, Math.min(STOCK_CAP, cur + rate * dt));
+        }
+        // A factory ships finished goods only through its own depot.
+        if (s.recipe) this.process(s, dt);
       }
-      // Processors convert input inventory into finished goods, throttled by whichever
-      // input is scarcest and by room left in the output stockpile.
-      if (s.recipe) this.process(s, dt);
     }
     // Block signalling: each train may not advance past the nearest train ahead of it
     // on the same rail (same direction). Opposing trains ride the other track, so this

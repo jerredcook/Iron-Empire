@@ -479,6 +479,28 @@ function runUiTest(
     noTrain: free?.trains.length === 0,
   };
 
+  // I) Catchment: every depot-less city must belong to its nearest in-range depot.
+  let catchmentCorrect = true;
+  for (const c of network.stations) {
+    if (c.hasStation) continue;
+    let nearest: typeof c | null = null;
+    let nd = network.catchmentRange;
+    for (const d of network.stations) {
+      if (!d.hasStation) continue;
+      const dist = Math.hypot(d.pos.x - c.pos.x, d.pos.z - c.pos.z);
+      if (dist < nd) {
+        nd = dist;
+        nearest = d;
+      }
+    }
+    const servedBySome = network.stations.some((d) => d.hasStation && d.catchment.includes(c));
+    if (nearest ? !nearest.catchment.includes(c) : servedBySome) catchmentCorrect = false;
+  }
+  result.catchment = {
+    correct: catchmentCorrect,
+    anyDepotServesTowns: network.stations.some((s) => s.hasStation && s.catchment.length > 0),
+  };
+
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
   el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px;max-width:100vw;white-space:pre-wrap';
