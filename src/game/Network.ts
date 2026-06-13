@@ -85,10 +85,8 @@ export interface GStation {
 }
 
 export interface GLine {
-  /** Ordered stations the corridor serves (≥2); a/b are its ends. */
+  /** Ordered city stops the line serves (0+). Track can exist with fewer than 2. */
   stops: GStation[];
-  a: GStation;
-  b: GStation;
   track: Track;
   /** Arc-length fraction (0..1) of each stop along the track. */
   stopFracs: number[];
@@ -568,42 +566,35 @@ export class Network {
    * staffed by the chosen locomotive. Deducts cost, lays the Track, and puts a train
    * on it. Returns false (building nothing) if the player can't afford it.
    */
-  buildLine(stops: GStation[], segMids: THREE.Vector3[][], loco: LocoClass, cars?: CargoKind[]): boolean {
-    return this.buildLineFor(this.player, stops, segMids, loco, cars);
+  buildLine(waypoints: THREE.Vector3[], stops: GStation[], loco?: LocoClass, cars?: CargoKind[]): boolean {
+    return this.buildLineFor(this.player, waypoints, stops, loco, cars);
   }
 
-  /** Assemble the full ground route from an ordered stop list and the grade points
-   *  dropped between each consecutive pair. */
-  private routeWaypoints(stops: GStation[], segMids: THREE.Vector3[][]): THREE.Vector3[] {
-    const wp: THREE.Vector3[] = [];
-    for (let i = 0; i < stops.length; i++) {
-      wp.push(stops[i].pos.clone());
-      if (i < stops.length - 1) for (const m of segMids[i] ?? []) wp.push(m.clone());
-    }
-    return wp;
-  }
-
-  /** Commit a corridor owned by the given company (charges its treasury). The first
-   *  train's consist is `cars` (defaults to a sensible route-appropriate one). */
-  buildLineFor(owner: Company, stops: GStation[], segMids: THREE.Vector3[][], loco: LocoClass, cars?: CargoKind[]): boolean {
-    if (stops.length < 2) return false;
-    const waypoints = this.routeWaypoints(stops, segMids);
-    const cost = this.lineCost(waypoints, loco);
+  /**
+   * Commit a length of track along the given ground waypoints, stopping at the listed
+   * cities. Track can be laid freely — with fewer than 2 stops it's just rail (no
+   * train). With 2+ stops and a locomotive, a train is put on it. Returns false (and
+   * builds nothing) if unaffordable.
+   */
+  buildLineFor(owner: Company, waypoints: THREE.Vector3[], stops: GStation[], loco?: LocoClass, cars?: CargoKind[]): boolean {
+    if (waypoints.length < 2) return false;
+    const runnable = stops.length >= 2 && !!loco;
+    const cost = this.routeCost(waypoints) + (runnable ? loco!.cost : 0);
     if (cost > owner.money) return false;
     owner.money -= cost;
-    const consist = cars ?? this.defaultConsist(stops, loco);
-    this.layLine(owner, stops, waypoints, [{ loco, cars: consist }]);
+    const trains = runnable ? [{ loco: loco!, cars: cars ?? this.defaultConsist(stops, loco!) }] : [];
+    this.layLine(owner, stops, waypoints, trains);
     if (owner === this.player) this.onBuilt?.();
     return true;
   }
 
-  /** Lay the rails + trains for a corridor without charging — shared by build and load. */
+  /** Lay the rails + trains for a line without charging — shared by build and load. */
   private layLine(owner: Company, stops: GStation[], waypoints: THREE.Vector3[], trains: { loco: LocoClass; cars: CargoKind[] }[]): GLine {
     const track = new Track(this.field, waypoints);
     this.scene.add(track.group);
     const stopFracs = stops.map((s) => track.nearestU(s.pos));
     const value = this.routeCost(waypoints);
-    const line: GLine = { stops, a: stops[0], b: stops[stops.length - 1], track, stopFracs, trains: [], owner, value, waypoints };
+    const line: GLine = { stops, track, stopFracs, trains: [], owner, value, waypoints };
     this.lines.push(line);
     owner.lines.push(line);
     for (const t of trains) this.spawnTrain(line, t.loco, t.cars);
@@ -910,6 +901,6 @@ export class Network {
         if (!best || cost < best.cost) best = { a, b, cost };
       }
     }
-    if (best) this.buildLineFor(c, [best.a, best.b], [[]], loco);
+    if (best) this.buildLineFor(c, [best.a.pos, best.b.pos], [best.a, best.b], loco);
   }
 }

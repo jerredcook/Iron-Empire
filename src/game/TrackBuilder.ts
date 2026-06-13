@@ -5,6 +5,12 @@ import { LocoClass } from './Locomotives';
 const SNAP = 60; // ground-distance within which the cursor latches to a city
 const CLICK_SLOP = 6; // px of pointer travel still counted as a click, not a drag
 
+/** One point on a route under construction: a city stop, or a free terrain point. */
+export interface RouteNode {
+  pos: THREE.Vector3;
+  station: GStation | null;
+}
+
 export interface BuildStatus {
   active: boolean;
   fromName: string | null;
@@ -23,16 +29,13 @@ export interface BuildStatus {
  */
 export class TrackBuilder {
   onStatus?: (s: BuildStatus) => void;
-  /** Fired when a corridor is finished — the listener configures + commits it. */
-  onCommit?: (stops: GStation[], segMids: THREE.Vector3[][]) => void;
+  /** Fired when a route is finished — the listener configures + commits it. The nodes
+   *  are every point in order; those with a station are the line's stops. */
+  onCommit?: (nodes: RouteNode[]) => void;
 
   private active = false;
-  /** Ordered stations clicked so far (the corridor's stops). */
-  private stops: GStation[] = [];
-  /** Grade points for each completed segment (between consecutive stops). */
-  private segMids: THREE.Vector3[][] = [];
-  /** Grade points dropped since the last stop (the segment in progress). */
-  private mids: THREE.Vector3[] = [];
+  /** Every clicked point in order; free terrain points have station = null. */
+  private nodes: RouteNode[] = [];
   private cursor = new THREE.Vector3();
   private cursorValid = false;
   private snapTarget: GStation | null = null;
@@ -99,9 +102,7 @@ export class TrackBuilder {
   /** Leave build mode, discarding any half-drawn route. */
   cancel(): void {
     this.active = false;
-    this.stops = [];
-    this.segMids = [];
-    this.mids = [];
+    this.nodes = [];
     this.ghost.visible = false;
     this.snapRing.visible = false;
     this.preview.visible = false;
@@ -155,45 +156,30 @@ export class TrackBuilder {
     }
     this.cursor.copy(hit.point);
     const near = this.network.nearestStation(this.cursor, SNAP);
-    // Don't snap back onto the stop we're currently leaving.
-    this.snapTarget = near && near !== this.lastStop ? near : null;
+    // Snap to a city, but not the one we just placed.
+    this.snapTarget = near && near !== this.lastStation ? near : null;
     if (this.snapTarget) this.cursor.copy(this.snapTarget.pos);
   }
 
-  private get lastStop(): GStation | null {
-    return this.stops.length ? this.stops[this.stops.length - 1] : null;
+  private get lastStation(): GStation | null {
+    for (let i = this.nodes.length - 1; i >= 0; i--) if (this.nodes[i].station) return this.nodes[i].station;
+    return null;
   }
 
   private place(): void {
-    if (this.stops.length === 0) {
-      // Must begin on a city.
-      const start = this.snapTarget ?? this.network.nearestStation(this.cursor, SNAP);
-      if (!start) return;
-      this.stops.push(start);
-      this.emit();
-      return;
-    }
-    if (this.snapTarget) {
-      // Reaching another city closes the current segment and adds it as a stop;
-      // the corridor keeps going until the player presses Enter.
-      this.segMids.push(this.mids);
-      this.stops.push(this.snapTarget);
-      this.mids = [];
-      this.refreshVisuals();
-      this.emit();
-      return;
-    }
-    this.mids.push(this.cursor.clone());
+    // Lay track freely: each click adds a point. A click on a city makes that point a
+    // stop; clicks on open ground are shaping/grade points. No need to start or end on
+    // a city — you can lay rail that doesn't connect anything yet.
+    this.nodes.push({ pos: this.cursor.clone(), station: this.snapTarget });
+    this.refreshVisuals();
     this.emit();
   }
 
-  /** Hand the finished corridor (≥2 stops) to the listener to configure + commit. */
+  /** Hand the finished route (≥2 points) to the listener to configure + commit. */
   private finish(): void {
-    if (this.stops.length < 2) return;
-    this.onCommit?.(this.stops.slice(), this.segMids.map((a) => a.slice()));
-    this.stops = [];
-    this.segMids = [];
-    this.mids = [];
+    if (this.nodes.length < 2) return;
+    this.onCommit?.(this.nodes.map((n) => ({ pos: n.pos.clone(), station: n.station })));
+    this.nodes = [];
     this.refreshVisuals();
     this.emit();
   }
@@ -208,7 +194,7 @@ export class TrackBuilder {
     if (this.snapTarget) this.snapRing.position.set(this.snapTarget.pos.x, this.snapTarget.pos.y + 2, this.snapTarget.pos.z);
 
     const route = this.routePoints();
-    if (this.stops.length && route.length >= 2) {
+    if (this.nodes.length && route.length >= 2) {
       this.previewGeo.setFromPoints(route.map((p) => new THREE.Vector3(p.x, p.y + 2.5, p.z)));
       this.preview.visible = true;
       const affordable = this.network.lineCost(route, this.getLoco()) <= this.network.money;
@@ -221,38 +207,29 @@ export class TrackBuilder {
     }
   }
 
-  /** Full polyline through every committed stop, then the in-progress segment out to
-   *  the cursor. */
+  /** Full polyline through every placed point, then out to the cursor. */
   private routePoints(): THREE.Vector3[] {
-    if (!this.stops.length) return [];
-    const pts: THREE.Vector3[] = [];
-    for (let i = 0; i < this.stops.length; i++) {
-      pts.push(this.stops[i].pos.clone());
-      if (i < this.stops.length - 1) for (const m of this.segMids[i]) pts.push(m.clone());
-    }
-    for (const m of this.mids) pts.push(m.clone());
-    if (this.cursorValid && !this.snapTarget) pts.push(this.cursor.clone());
-    else if (this.snapTarget) pts.push(this.snapTarget.pos.clone());
+    const pts = this.nodes.map((n) => n.pos.clone());
+    if (this.cursorValid) pts.push(this.snapTarget ? this.snapTarget.pos.clone() : this.cursor.clone());
     return pts;
   }
 
   private emit(): void {
     const route = this.routePoints();
-    const cost = this.stops.length && route.length >= 2 ? this.network.lineCost(route, this.getLoco()) : 0;
+    const cost = this.nodes.length && route.length >= 2 ? this.network.lineCost(route, this.getLoco()) : 0;
+    const stops = this.nodes.filter((n) => n.station).length;
     this.onStatus?.({
       active: this.active,
-      fromName: this.stops[0]?.name ?? null,
+      fromName: this.nodes.find((n) => n.station)?.station?.name ?? null,
       cost,
       affordable: cost <= this.network.money,
       hint: !this.active
         ? ''
-        : this.stops.length === 0
-          ? 'Click a city to start the line'
+        : this.nodes.length === 0
+          ? 'Click anywhere to start laying track · click a city to make it a stop'
           : this.snapTarget
             ? `Click ${this.snapTarget.name} to add it as a stop · Enter to finish`
-            : this.stops.length >= 2
-              ? 'Drop a grade point · click a city for another stop · Enter to finish · Esc cancels'
-              : 'Click to drop a grade point · click a city to add a stop · Esc cancels',
+            : `Click to lay track (${stops} stop${stops === 1 ? '' : 's'}) · click a city for a stop · Enter to finish · Esc cancels`,
     });
   }
 }

@@ -110,9 +110,16 @@ async function boot(cfg: BootCfg): Promise<void> {
     () => audio.toggle()
   );
   builder.onStatus = (s) => hud.setBuildStatus(s);
-  // Finishing a corridor opens the consist dialog, then builds it with the chosen cars.
-  builder.onCommit = (stops, segMids) =>
-    configureConsist(network, stops, selectedLoco, (cars) => network.buildLine(stops, segMids, selectedLoco, cars));
+  // Finishing a route: lay the track; if it has ≥2 city stops, configure a train for it.
+  builder.onCommit = (nodes) => {
+    const waypoints = nodes.map((n) => n.pos);
+    const stops = nodes.filter((n) => n.station).map((n) => n.station!);
+    if (stops.length >= 2) {
+      configureConsist(network, stops, selectedLoco, (cars) => network.buildLine(waypoints, stops, selectedLoco, cars));
+    } else {
+      network.buildLine(waypoints, stops); // track only — no complete route yet
+    }
+  };
   renderer.gl.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 
   // Inspection: minimap + click-to-select + detail panel, all reading live state.
@@ -175,7 +182,7 @@ async function boot(cfg: BootCfg): Promise<void> {
     // Seed one productive line so the world opens in motion and the cargo loop is
     // legible from the first frame — the closest pair that actually trades.
     const pair = starterPair(network);
-    if (pair) network.buildLine([pair[0], pair[1]], [[]], selectedLoco);
+    if (pair) network.buildLine([pair[0].pos, pair[1].pos], [pair[0], pair[1]], selectedLoco);
   }
 
   // Open on a high three-quarter overview so several cities are in frame.
@@ -393,7 +400,7 @@ function runUiTest(
 
   // B) Build a new line through the builder's commit path (same stops as the starter).
   const linesBefore = network.lines.length;
-  builder.onCommit?.(line.stops.slice(), [[]]);
+  builder.onCommit?.(line.stops.map((s) => ({ pos: s.pos, station: s })));
   const bClosed = driveConsistModal('passengers');
   const newLine = network.lines[network.lines.length - 1];
   result.buildLine = {
@@ -442,6 +449,20 @@ function runUiTest(
     (document.querySelector('[data-demolish]') as HTMLElement | null)?.click();
     result.demolishLine = { before: beforeL, after: network.lines.length, removed: !network.lines.includes(demoLine) };
   }
+
+  // H) Free-form track with no city stops → rail is laid, but no train (no route yet).
+  const beforeFree = network.lines.length;
+  const o = network.stations[0].pos;
+  builder.onCommit?.([
+    { pos: new THREE.Vector3(o.x + 160, 0, o.z + 160), station: null },
+    { pos: new THREE.Vector3(o.x + 360, 0, o.z + 240), station: null },
+  ]);
+  const free = network.lines[network.lines.length - 1];
+  result.freeTrack = {
+    trackLaidWithoutStops: network.lines.length === beforeFree + 1,
+    noStops: free?.stops.length === 0,
+    noTrain: free?.trains.length === 0,
+  };
 
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
