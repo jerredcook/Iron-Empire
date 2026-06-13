@@ -134,6 +134,8 @@ export class Inspector {
           .map((c) => c.name)
           .join(', ')}</div>`;
       }
+      const reach = this.network.reachableFrom(st).size - 1;
+      if (reach > 0) html += `<div style="font-size:11.5px;opacity:0.7;margin-bottom:4px">🌐 Network: reaches ${reach} other station${reach === 1 ? '' : 's'}</div>`;
     } else {
       html += `<div style="font-size:12px;opacity:0.7;margin:2px 0 6px">No depot — build one to route trains here.</div>`;
     }

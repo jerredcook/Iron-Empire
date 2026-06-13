@@ -619,6 +619,25 @@ export class Network {
     return best;
   }
 
+  /** Every station reachable from `st` over the connected rail network — lines that
+   *  share a stop chain into one network, so cargo and trains move across the whole
+   *  component, not just a single line. */
+  reachableFrom(st: GStation): Set<GStation> {
+    const seen = new Set<GStation>([st]);
+    const queue: GStation[] = [st];
+    while (queue.length) {
+      const cur = queue.shift()!;
+      for (const l of this.lines) {
+        if (!l.stops.includes(cur)) continue;
+        for (const s of l.stops) if (!seen.has(s)) {
+          seen.add(s);
+          queue.push(s);
+        }
+      }
+    }
+    return seen;
+  }
+
   /** Nearest city that has a depot — for track-laying stop snapping. */
   nearestStation(point: THREE.Vector3, maxDist: number): GStation | null {
     let best: GStation | null = null;

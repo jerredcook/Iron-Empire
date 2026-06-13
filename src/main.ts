@@ -501,6 +501,13 @@ function runUiTest(
     anyDepotServesTowns: network.stations.some((s) => s.hasStation && s.catchment.length > 0),
   };
 
+  // J) Network reachability: stations on a line reach each other across the network.
+  const netLine = network.lines.find((l) => l.stops.length >= 2);
+  if (netLine) {
+    const reach = network.reachableFrom(netLine.stops[0]);
+    result.network = { reachesAllStops: netLine.stops.every((s) => reach.has(s)), reachCount: reach.size };
+  }
+
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
   el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px;max-width:100vw;white-space:pre-wrap';
