@@ -209,7 +209,7 @@ async function boot(cfg: BootCfg): Promise<void> {
   // Headless UI test: drive the real consist modal DOM for both the add-train and
   // build-line paths, then report what actually happened in the model.
   if (location.search.includes('uitest')) {
-    runUiTest(network, builder, selectedLoco);
+    runUiTest(network, builder, inspector, rig.camera, renderer.gl.domElement, selectedLoco);
   }
 
   const clock = new THREE.Clock();
@@ -281,11 +281,26 @@ function driveConsistModal(cargo: CargoKind): boolean {
   return !panel();
 }
 
-function runUiTest(network: Network, builder: TrackBuilder, loco: LocoClass): void {
+/** Dispatch a real click (pointerdown+up at one spot) on the canvas at pixel x,y. */
+function clickCanvas(canvas: HTMLElement, x: number, y: number): void {
+  for (const type of ['pointerdown', 'pointerup'] as const) {
+    canvas.dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true }));
+  }
+}
+
+function runUiTest(
+  network: Network,
+  builder: TrackBuilder,
+  inspector: Inspector,
+  camera: THREE.PerspectiveCamera,
+  canvas: HTMLElement,
+  loco: LocoClass
+): void {
   const result: Record<string, unknown> = {};
+  network.player.money = 5_000_000; // fund the test so nothing fails on affordability
   const maxCars = network.maxCars(loco);
 
-  // A) Add a configured train to the existing starter line.
+  // A) Add a configured train to the existing starter line (drives the consist modal).
   const line = network.lines[0];
   const before = line.trains.length;
   configureConsist(network, line.stops, loco, (cars) => network.addTrain(line, loco, cars));
@@ -311,11 +326,86 @@ function runUiTest(network: Network, builder: TrackBuilder, loco: LocoClass): vo
     hasPassengerCar: newLine?.trains[0]?.consist.some((c) => c.kind === 'passengers') ?? false,
   };
 
+  // C) Depot upgrade via the inspector station panel button.
+  const upStation = network.stations[0];
+  const lvlBefore = upStation.level;
+  inspector.select({ kind: 'station', station: upStation });
+  inspector.update(1); // force a render so the panel + handlers exist
+  (document.querySelector('[data-upgrade]') as HTMLElement | null)?.click();
+  result.upgradeDepot = { levelBefore: lvlBefore, levelAfter: upStation.level, upgraded: upStation.level === lvlBefore + 1 };
+
+  // D) Build factory via the inspector station panel button (a city without industry).
+  const facStation = network.stations.find((s) => !s.recipe);
+  if (facStation) {
+    inspector.select({ kind: 'station', station: facStation });
+    inspector.update(1);
+    (document.querySelector('[data-industry]') as HTMLElement | null)?.click();
+    result.buildFactory = { hadRecipe: false, nowHasRecipe: !!facStation.recipe, ownedByPlayer: facStation.owner === network.player };
+  }
+
+  // E) Lay track by clicking the canvas: frame two unconnected cities, click each, Enter.
+  result.trackLay = layTrackTest(network, builder, camera, canvas);
+
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
-  el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px';
+  el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px;max-width:100vw;white-space:pre-wrap';
   el.textContent = JSON.stringify(result);
   document.body.append(el);
+}
+
+/** Drive the whole interactive track-laying pipeline with real canvas pointer events. */
+function layTrackTest(
+  network: Network,
+  builder: TrackBuilder,
+  camera: THREE.PerspectiveCamera,
+  canvas: HTMLElement
+): Record<string, unknown> {
+  // Closest pair of cities not yet connected.
+  const s = network.stations;
+  let a = s[0];
+  let b = s[1];
+  let bd = Infinity;
+  for (let i = 0; i < s.length; i++)
+    for (let j = i + 1; j < s.length; j++) {
+      if (network.isConnected(s[i], s[j])) continue;
+      const d = s[i].pos.distanceToSquared(s[j].pos);
+      if (d < bd) {
+        bd = d;
+        a = s[i];
+        b = s[j];
+      }
+    }
+
+  // Frame the camera nearly top-down over the pair so both project on-screen.
+  const mid = a.pos.clone().add(b.pos).multiplyScalar(0.5);
+  const dist = a.pos.distanceTo(b.pos);
+  camera.position.set(mid.x + 1, mid.y + Math.max(dist * 1.3, 500), mid.z + 1);
+  camera.lookAt(mid);
+  camera.updateMatrixWorld(true);
+
+  const rect = canvas.getBoundingClientRect();
+  const screen = (p: THREE.Vector3): { x: number; y: number; on: boolean } => {
+    const v = p.clone().project(camera);
+    return { x: (v.x * 0.5 + 0.5) * rect.width + rect.left, y: (-v.y * 0.5 + 0.5) * rect.height + rect.top, on: Math.abs(v.x) < 1 && Math.abs(v.y) < 1 };
+  };
+  const sa = screen(a.pos);
+  const sb = screen(b.pos);
+
+  const linesBefore = network.lines.length;
+  builder.start();
+  clickCanvas(canvas, sa.x, sa.y); // first stop
+  clickCanvas(canvas, sb.x, sb.y); // second stop (snaps to the city)
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); // finish → consist modal
+  const consistClosed = driveConsistModal('goods');
+  const built = network.lines.length === linesBefore + 1;
+  const nl = network.lines[network.lines.length - 1];
+  return {
+    aOnScreen: sa.on,
+    bOnScreen: sb.on,
+    lineBuilt: built,
+    connectsChosenCities: built ? nl.stops.includes(a) && nl.stops.includes(b) : false,
+    consistCommitted: consistClosed,
+  };
 }
 
 const FALLBACK_GOAL = { targetCash: 2_500_000, byYear: 1890 };
