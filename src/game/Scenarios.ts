@@ -47,17 +47,17 @@ export interface GameSetup {
 export type StartChoice = { kind: 'new'; setup: GameSetup } | { kind: 'continue' };
 
 export const SCENARIOS: Scenario[] = [
-  { id: 'pioneer', name: 'Pioneer Valley', blurb: 'A temperate frontier of farms and forests.', seed: 20260611, year: 1862, startMoney: 850_000, cities: 9, goal: { targetCash: 2_500_000, byYear: 1890 } },
-  { id: 'coal', name: 'Coal Country', blurb: 'A rugged mining belt — feed the factories.', seed: 7771234, year: 1855, startMoney: 700_000, cities: 10, goal: { targetCash: 3_000_000, byYear: 1888 } },
-  { id: 'golden', name: 'Golden State', blurb: 'A booming coast. Big cities, bigger ambitions.', seed: 5550987, year: 1872, startMoney: 1_100_000, cities: 11, goal: { targetCash: 4_000_000, byYear: 1898 } },
-  { id: 'gambit', name: "Tycoon's Gambit", blurb: 'Thin capital and hungry rivals.', seed: 9123456, year: 1860, startMoney: 500_000, cities: 8, goal: { targetCash: 3_500_000, byYear: 1885 } },
+  { id: 'pioneer', name: 'Pioneer Valley', blurb: 'A temperate frontier of farms and forests.', seed: 20260611, year: 1862, startMoney: 850_000, cities: 20, goal: { targetCash: 2_500_000, byYear: 1890 } },
+  { id: 'coal', name: 'Coal Country', blurb: 'A rugged mining belt — feed the factories.', seed: 7771234, year: 1855, startMoney: 700_000, cities: 28, goal: { targetCash: 3_000_000, byYear: 1888 } },
+  { id: 'golden', name: 'Golden State', blurb: 'A booming coast. Big cities, bigger ambitions.', seed: 5550987, year: 1872, startMoney: 1_100_000, cities: 36, goal: { targetCash: 4_000_000, byYear: 1898 } },
+  { id: 'gambit', name: "Tycoon's Gambit", blurb: 'Thin capital and hungry rivals.', seed: 9123456, year: 1860, startMoney: 500_000, cities: 14, goal: { targetCash: 3_500_000, byYear: 1885 } },
 ];
 
 const LIVERIES = [0x8fffa8, 0x6db4d6, 0xffe28a, 0xff8a4d, 0xff7766, 0xc792ea, 0x9bd07a, 0xb89a7a];
 const AI_NAMES = ['Atlas & Pacific', 'Great Northern', 'Union Central'];
 const AI_COLORS = [0xff8a4d, 0x6db4d6, 0xc792ea];
 const SANDBOX_YEAR = 9999;
-const CITY_OPTIONS = [6, 9, 12, 16];
+const CITY_OPTIONS = [14, 20, 28, 36];
 const TARGET_OPTIONS = [1_500_000, 2_500_000, 4_000_000, 6_000_000];
 
 /** Show the setup screen and resolve with the chosen setup, or 'continue' to resume. */

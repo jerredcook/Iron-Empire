@@ -75,6 +75,9 @@ const CITY_NAMES = [
   'Ashford', 'Brookline', 'Carrolton', 'Dunmore', 'Eastgate', 'Fairhaven', 'Granger',
   'Holloway', 'Ironton', 'Jericho', 'Kingsbury', 'Lakemont', 'Millbrook', 'Norwood',
   'Oakdale', 'Pinecrest', 'Quarry Bend', 'Redfield', 'Stillwater', 'Thornton',
+  'Underwood', 'Vinemont', 'Westcliff', 'Yardley', 'Aldergrove', 'Belcourt', 'Cedarvale',
+  'Drayton', 'Elmwood', 'Foxglen', 'Greenport', 'Hartwell', 'Inglewood', 'Juniper Flats',
+  'Kestrel', 'Linden', 'Marlow', 'Northbrook', 'Orchard Hill', 'Pemberton',
 ];
 
 export interface CitySite {
@@ -133,19 +136,22 @@ export function placeCities(field: Heightfield, seed: number, count: number): Ci
   let nameI = 0;
 
   const picks: { x: number; z: number; key: keyof typeof ARCHETYPES }[] = [];
-  for (let attempt = 0; attempt < count * 80 && picks.length < count; attempt++) {
-    const x = (rng() * 2 - 1) * half * 0.86;
-    const z = (rng() * 2 - 1) * half * 0.86;
+  for (let attempt = 0; attempt < count * 120 && picks.length < count; attempt++) {
+    const x = (rng() * 2 - 1) * half * 0.9;
+    const z = (rng() * 2 - 1) * half * 0.9;
     const h = field.height(x, z);
-    if (h < sea + 3) continue; // no founding cities in the surf
-    if (field.slope(x, z, 6) > 0.32) continue; // too steep to grade a town
-    if (picks.some((p) => Math.hypot(p.x - x, p.z - z) < 480)) continue;
+    if (h < sea + 3) continue; // no founding towns in the surf
+    if (field.slope(x, z, 6) > 0.34) continue; // too steep to grade a town
+    // Pack the map densely so a depot's catchment can gather a regional cluster.
+    if (picks.some((p) => Math.hypot(p.x - x, p.z - z) < 260)) continue;
 
+    // A few full cities anchor the map; the rest are smaller towns and industries
+    // (the catchment fodder), biased by elevation.
     let key: keyof typeof ARCHETYPES;
     if (h > 170) key = 'mine';
     else if (h > 95) key = rng() > 0.5 ? 'mill' : 'mine';
-    else if (h > 45) key = rng() > 0.45 ? 'farm' : 'mill';
-    else key = picks.length < 2 ? 'city' : rng() > 0.62 ? 'town' : rng() > 0.5 ? 'farm' : 'factory';
+    else if (h > 45) key = rng() > 0.4 ? 'farm' : 'mill';
+    else key = picks.length < 3 ? 'city' : rng() > 0.72 ? 'city' : rng() > 0.45 ? 'town' : rng() > 0.5 ? 'farm' : 'factory';
     picks.push({ x, z, key });
   }
 
@@ -166,7 +172,7 @@ export function placeCities(field: Heightfield, seed: number, count: number): Ci
 
   const sites: CitySite[] = [];
   for (const p of picks) {
-    field.addFlat(p.x, p.z, 70);
+    field.addFlat(p.x, p.z, 48);
     const arch = ARCHETYPES[p.key];
     sites.push({
       name: CITY_NAMES[nameI++ % CITY_NAMES.length],
