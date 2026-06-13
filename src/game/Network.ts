@@ -680,6 +680,29 @@ export class Network {
     return true;
   }
 
+  /** Sell a train off a line: remove it and refund half the locomotive's value. */
+  sellTrain(line: GLine, train: Train): boolean {
+    const i = line.trains.indexOf(train);
+    if (i < 0) return false;
+    line.trains.splice(i, 1);
+    train.dispose(this.scene);
+    line.owner.money += Math.round(train.locoClass.cost * 0.5);
+    return true;
+  }
+
+  /** Demolish a whole line: scrap its trains and rails, refund part of the grading. */
+  demolishLine(line: GLine): boolean {
+    for (const t of [...line.trains]) t.dispose(this.scene);
+    line.trains.length = 0;
+    this.scene.remove(line.track.group);
+    line.owner.money += Math.round(line.value * 0.4);
+    const gi = this.lines.indexOf(line);
+    if (gi >= 0) this.lines.splice(gi, 1);
+    const oi = line.owner.lines.indexOf(line);
+    if (oi >= 0) line.owner.lines.splice(oi, 1);
+    return true;
+  }
+
   /** Upgrade a city's depot (higher levels add a haul-revenue bonus there). */
   upgradeStation(st: GStation): boolean {
     if (st.level >= MAX_STATION_LEVEL || this.status !== 'playing') return false;

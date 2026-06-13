@@ -24,7 +24,10 @@ export class Inspector {
     private onClose: () => void,
     private onAddTrain: (line: GLine) => void,
     private onBuildIndustry: (st: GStation) => void,
-    private onUpgrade: (st: GStation) => void
+    private onUpgrade: (st: GStation) => void,
+    private onFollow: (train: Train) => void,
+    private onSellTrain: (line: GLine, train: Train) => void,
+    private onDemolishLine: (line: GLine) => void
   ) {
     this.panel = document.createElement('div');
     Object.assign(this.panel.style, {
@@ -63,10 +66,16 @@ export class Inspector {
       this.sel.kind === 'station' ? this.stationHtml(this.sel.station) : this.trainHtml(this.sel.line, this.sel.train);
     const close = this.panel.querySelector('[data-close]') as HTMLElement | null;
     if (close) close.onclick = () => this.onClose();
-    const add = this.panel.querySelector('[data-addtrain]') as HTMLElement | null;
-    if (add && this.sel.kind === 'train') {
-      const line = this.sel.line;
-      add.onclick = () => this.onAddTrain(line);
+    if (this.sel.kind === 'train') {
+      const { line, train } = this.sel;
+      const add = this.panel.querySelector('[data-addtrain]') as HTMLElement | null;
+      if (add) add.onclick = () => this.onAddTrain(line);
+      const follow = this.panel.querySelector('[data-follow]') as HTMLElement | null;
+      if (follow) follow.onclick = () => this.onFollow(train);
+      const sell = this.panel.querySelector('[data-sell]') as HTMLElement | null;
+      if (sell) sell.onclick = () => this.onSellTrain(line, train);
+      const demo = this.panel.querySelector('[data-demolish]') as HTMLElement | null;
+      if (demo) demo.onclick = () => this.onDemolishLine(line);
     }
     const ind = this.panel.querySelector('[data-industry]') as HTMLElement | null;
     if (ind && this.sel.kind === 'station') {
@@ -192,6 +201,17 @@ export class Inspector {
     html += line.owner.isAI
       ? `<span style="font-size:11.5px;color:#${line.owner.color.toString(16).padStart(6, '0')}">${line.owner.name}</span>`
       : `<span data-addtrain style="cursor:pointer;pointer-events:auto;padding:4px 10px;border-radius:6px;border:1px solid rgba(143,255,168,0.5);color:#8fffa8;font-size:11.5px">+ Add train</span>`;
+    html += `</div>`;
+
+    // Train actions.
+    const action = (attr: string, label: string, color: string): string =>
+      `<span ${attr} style="flex:1;text-align:center;cursor:pointer;pointer-events:auto;padding:5px 4px;border-radius:6px;border:1px solid ${color}66;color:${color};font-size:11.5px">${label}</span>`;
+    html += `<div style="display:flex;gap:5px;margin-top:8px">`;
+    html += action('data-follow', '🎥 Follow', '#8fffa8');
+    if (!line.owner.isAI) {
+      html += action('data-sell', 'Sell train', '#ffe28a');
+      html += action('data-demolish', '✕ Demolish line', '#ff7766');
+    }
     html += `</div>`;
     return html;
   }

@@ -90,6 +90,12 @@ export class Train {
     return this.loco.group.position;
   }
 
+  /** Remove this train's visuals from the scene (sold or its line demolished). */
+  dispose(scene: THREE.Scene): void {
+    scene.remove(this.group);
+    scene.remove(this.smoke.points);
+  }
+
   /** Current arc-length position and heading — read by the block-signal pass. */
   get railDist(): number {
     return this.dist;

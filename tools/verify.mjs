@@ -93,6 +93,8 @@ async function main() {
     check('ui: depot upgrade button raises level', ui?.upgradeDepot?.upgraded, ui?.upgradeDepot);
     check('ui: build-factory button founds an owned industry', ui?.buildFactory?.nowHasRecipe && ui?.buildFactory?.ownedByPlayer, ui?.buildFactory);
     check('ui: canvas track-laying builds the right line', ui?.trackLay?.lineBuilt && ui?.trackLay?.connectsChosenCities, ui?.trackLay);
+    check('ui: sell train removes it from the line', ui?.sellTrain?.sold, ui?.sellTrain);
+    check('ui: demolish line removes it', ui?.demolishLine?.removed, ui?.demolishLine);
 
     console.log('• Render-loop test…');
     const fr = extract(chromeDump('autostart&frames=240'), 'ie-frames');

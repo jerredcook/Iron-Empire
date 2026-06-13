@@ -19,6 +19,7 @@ import { chooseScenario, DIFFICULTIES, SCENARIOS, Difficulty } from './game/Scen
 import { Auctioneer } from './game/Auction';
 import { configureConsist } from './game/ConsistConfig';
 import { CargoKind } from './game/Cargo';
+import { Train } from './game/Train';
 
 const SIZE = 4096;
 const SEA = 0;
@@ -116,24 +117,43 @@ async function boot(cfg: BootCfg): Promise<void> {
 
   // Inspection: minimap + click-to-select + detail panel, all reading live state.
   const minimap = new Minimap(field, network);
+  let followTrain: Train | null = null;
+  const clearSelection = (): void => {
+    inspector.select(null);
+    minimap.setSelection(null);
+  };
   const inspector = new Inspector(
     network,
-    () => {
-      inspector.select(null);
-      minimap.setSelection(null);
-    },
+    clearSelection,
     (line) => {
       if (!line.owner.isAI) configureConsist(network, line.stops, selectedLoco, (cars) => network.addTrain(line, selectedLoco, cars));
     },
     (st) => network.buildIndustry(st),
-    (st) => network.upgradeStation(st)
+    (st) => network.upgradeStation(st),
+    (train) => {
+      followTrain = train;
+    },
+    (line, train) => {
+      network.sellTrain(line, train);
+      if (followTrain === train) followTrain = null;
+      clearSelection();
+    },
+    (line) => {
+      if (line.trains.includes(followTrain as Train)) followTrain = null;
+      network.demolishLine(line);
+      clearSelection();
+    }
   );
   const auctioneer = new Auctioneer(network);
   const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());
   picker.onSelect = (sel) => {
+    followTrain = null; // selecting anything new stops following
     inspector.select(sel);
     minimap.setSelection(sel);
   };
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') followTrain = null;
+  });
   minimap.onPan = (x, z) => {
     const dx = x - rig.controls.target.x;
     const dz = z - rig.controls.target.z;
@@ -215,6 +235,20 @@ async function boot(cfg: BootCfg): Promise<void> {
   // One frame of the whole game — used by the live loop and the headless frame test.
   const step = (dt: number): void => {
     rig.update(dt);
+    // Follow camera: shift the whole rig so the followed train stays centred while
+    // the player can still orbit/zoom around it. Drops follow if the train is gone.
+    if (followTrain) {
+      const onRails = network.lines.some((l) => l.trains.includes(followTrain as Train));
+      if (!onRails) followTrain = null;
+      else {
+        const p = followTrain.headPosition;
+        const dx = p.x - rig.controls.target.x;
+        const dy = p.y - rig.controls.target.y;
+        const dz = p.z - rig.controls.target.z;
+        rig.controls.target.set(p.x, p.y, p.z);
+        rig.camera.position.set(rig.camera.position.x + dx, rig.camera.position.y + dy, rig.camera.position.z + dz);
+      }
+    }
     water.update(dt);
     scatter.update(dt);
     network.update(dt);
@@ -388,6 +422,26 @@ function runUiTest(
 
   // E) Lay track by clicking the canvas: frame two unconnected cities, click each, Enter.
   result.trackLay = layTrackTest(network, builder, camera, canvas);
+
+  // F) Sell a train via the inspector button.
+  const sellLine = network.lines.find((l) => !l.owner.isAI && l.trains.length > 1);
+  if (sellLine) {
+    const beforeT = sellLine.trains.length;
+    inspector.select({ kind: 'train', line: sellLine, train: sellLine.trains[0] });
+    inspector.update(1);
+    (document.querySelector('[data-sell]') as HTMLElement | null)?.click();
+    result.sellTrain = { before: beforeT, after: sellLine.trains.length, sold: sellLine.trains.length === beforeT - 1 };
+  }
+
+  // G) Demolish a line via the inspector button.
+  const demoLine = network.lines.find((l) => !l.owner.isAI && l.trains.length > 0);
+  if (demoLine) {
+    const beforeL = network.lines.length;
+    inspector.select({ kind: 'train', line: demoLine, train: demoLine.trains[0] });
+    inspector.update(1);
+    (document.querySelector('[data-demolish]') as HTMLElement | null)?.click();
+    result.demolishLine = { before: beforeL, after: network.lines.length, removed: !network.lines.includes(demoLine) };
+  }
 
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
