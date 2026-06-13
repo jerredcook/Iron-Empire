@@ -638,6 +638,102 @@ export class Network {
     return seen;
   }
 
+  /** Adjacent depots one segment away from `s`, with the line and segment length. */
+  private neighbors(s: GStation): { to: GStation; line: GLine; w: number }[] {
+    const out: { to: GStation; line: GLine; w: number }[] = [];
+    for (const l of this.lines) {
+      const idx = l.stops.indexOf(s);
+      if (idx < 0) continue;
+      for (const j of [idx - 1, idx + 1]) {
+        if (j < 0 || j >= l.stops.length) continue;
+        const w = Math.abs(l.stopFracs[j] - l.stopFracs[idx]) * l.track.length;
+        out.push({ to: l.stops[j], line: l, w });
+      }
+    }
+    return out;
+  }
+
+  /** Shortest path across the rail network from one depot to another, as the legs (each
+   *  a line + the two stations it runs between). Dijkstra over the segment graph. */
+  pathLegs(from: GStation, to: GStation): { line: GLine; from: GStation; to: GStation }[] | null {
+    const dist = new Map<GStation, number>([[from, 0]]);
+    const prev = new Map<GStation, { via: GStation; line: GLine }>();
+    const open: GStation[] = [from];
+    const done = new Set<GStation>();
+    while (open.length) {
+      open.sort((a, b) => (dist.get(a) ?? Infinity) - (dist.get(b) ?? Infinity));
+      const u = open.shift()!;
+      if (done.has(u)) continue;
+      done.add(u);
+      if (u === to) break;
+      for (const n of this.neighbors(u)) {
+        const nd = (dist.get(u) ?? Infinity) + n.w;
+        if (nd < (dist.get(n.to) ?? Infinity)) {
+          dist.set(n.to, nd);
+          prev.set(n.to, { via: u, line: n.line });
+          open.push(n.to);
+        }
+      }
+    }
+    if (from === to || !prev.has(to)) return from === to ? [] : null;
+    const legs: { line: GLine; from: GStation; to: GStation }[] = [];
+    let cur = to;
+    while (cur !== from) {
+      const p = prev.get(cur)!;
+      legs.unshift({ line: p.line, from: p.via, to: cur });
+      cur = p.via;
+    }
+    return legs;
+  }
+
+  /**
+   * Run a through-service from a depot to the farthest depot reachable across the
+   * network, path-finding over the existing lines. The train rides a movement-only
+   * track that traces the rails it crosses, so a single train threads several lines
+   * through their junctions. Charged the cost of the locomotive.
+   */
+  buildThroughService(from: GStation, loco: LocoClass, cars?: CargoKind[]): boolean {
+    if (loco.cost > this.player.money) return false;
+    const reach = [...this.reachableFrom(from)].filter((s) => s !== from && s.hasStation);
+    if (!reach.length) return false;
+    let to = reach[0];
+    let far = -1;
+    for (const s of reach) {
+      const d = from.pos.distanceToSquared(s.pos);
+      if (d > far) {
+        far = d;
+        to = s;
+      }
+    }
+    const legs = this.pathLegs(from, to);
+    if (!legs || legs.length === 0) return false;
+
+    // Sample each leg's curve to trace a continuous route across the junctions.
+    const pts: THREE.Vector3[] = [];
+    const stops: GStation[] = [from];
+    const tmp = new THREE.Vector3();
+    for (const leg of legs) {
+      const uA = leg.line.track.nearestU(leg.from.pos);
+      const uB = leg.line.track.nearestU(leg.to.pos);
+      const n = Math.max(4, Math.floor((Math.abs(uB - uA) * leg.line.track.length) / 18));
+      for (let i = pts.length ? 1 : 0; i <= n; i++) {
+        leg.line.track.curve.getPointAt(THREE.MathUtils.clamp(THREE.MathUtils.lerp(uA, uB, i / n), 0, 1), tmp);
+        pts.push(tmp.clone());
+      }
+      stops.push(leg.to);
+    }
+
+    this.player.money -= loco.cost;
+    const track = new Track(this.field, pts, false); // movement-only — rides existing rails
+    const stopFracs = stops.map((s) => track.nearestU(s.pos));
+    const line: GLine = { stops, track, stopFracs, trains: [], owner: this.player, value: 0, waypoints: pts };
+    this.lines.push(line);
+    this.player.lines.push(line);
+    this.spawnTrain(line, loco, cars ?? this.defaultConsist(stops, loco));
+    this.onBuilt?.();
+    return true;
+  }
+
   /** Nearest city that has a depot — for track-laying stop snapping. */
   nearestStation(point: THREE.Vector3, maxDist: number): GStation | null {
     let best: GStation | null = null;

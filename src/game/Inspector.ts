@@ -28,7 +28,8 @@ export class Inspector {
     private onFollow: (train: Train) => void,
     private onSellTrain: (line: GLine, train: Train) => void,
     private onDemolishLine: (line: GLine) => void,
-    private onBuildStation: (st: GStation) => void
+    private onBuildStation: (st: GStation) => void,
+    private onThroughService: (st: GStation) => void
   ) {
     this.panel = document.createElement('div');
     Object.assign(this.panel.style, {
@@ -92,6 +93,11 @@ export class Inspector {
     if (bs && this.sel.kind === 'station') {
       const st = this.sel.station;
       bs.onclick = () => this.onBuildStation(st);
+    }
+    const ts = this.panel.querySelector('[data-through]') as HTMLElement | null;
+    if (ts && this.sel.kind === 'station') {
+      const st = this.sel.station;
+      ts.onclick = () => this.onThroughService(st);
     }
   }
 
@@ -182,6 +188,10 @@ export class Inspector {
       `<div ${attr} style="margin-top:8px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,226,138,0.5);color:#ffe28a;font-size:12px">${label}</div>`;
     // The core station-first step: a city can't be routed to without a depot.
     if (!st.hasStation) html += btn('data-buildstation', '🚉 Build Station — $70k');
+    // Run one train across the whole connected network through its junctions.
+    if (st.hasStation && this.network.reachableFrom(st).size > 1) {
+      html += btn('data-through', '🚆 Run Through-Service across network');
+    }
     // A depot can be upgraded; an industry can be founded regardless of a depot.
     if (st.hasStation && st.level < 3) html += btn('data-upgrade', `⬆ Upgrade Depot — $${(90 * (st.level + 1)).toFixed(0)}k`);
     if (!st.recipe) html += btn('data-industry', '🏭 Build Factory — $160k');

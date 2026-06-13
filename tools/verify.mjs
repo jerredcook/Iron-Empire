@@ -99,6 +99,11 @@ async function main() {
     check('ui: build station at a city adds a depot', ui?.buildStation?.nowHasDepot, ui?.buildStation);
     check('ui: catchment assigns towns to their nearest in-range depot', ui?.catchment?.correct, ui?.catchment);
     check('ui: rail network reaches all stops on a line', ui?.network?.reachesAllStops, ui?.network);
+    check(
+      'ui: junction routing threads two lines via a shared depot',
+      ui?.throughService?.legsAtoC === 2 && ui?.throughService?.twoDifferentLines && ui?.throughService?.built && ui?.throughService?.serviceHasTrain,
+      ui?.throughService
+    );
 
     console.log('• Render-loop test…');
     const fr = extract(chromeDump('autostart&frames=240'), 'ie-frames');

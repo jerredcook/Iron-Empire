@@ -150,7 +150,8 @@ async function boot(cfg: BootCfg): Promise<void> {
       network.demolishLine(line);
       clearSelection();
     },
-    (st) => network.buildStationAt(st)
+    (st) => network.buildStationAt(st),
+    (st) => network.buildThroughService(st, selectedLoco)
   );
   const auctioneer = new Auctioneer(network);
   const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());
@@ -507,6 +508,25 @@ function runUiTest(
     const reach = network.reachableFrom(netLine.stops[0]);
     result.network = { reachesAllStops: netLine.stops.every((s) => reach.has(s)), reachCount: reach.size };
   }
+
+  // K) Junction routing: two lines sharing a depot, a through-service threads both.
+  const A = network.stations[1];
+  const B = network.stations[2];
+  const C = network.stations[3];
+  network.buildStationAt(A);
+  network.buildStationAt(B);
+  network.buildStationAt(C);
+  network.buildLine([A.pos, B.pos], [A, B], loco);
+  network.buildLine([B.pos, C.pos], [B, C], loco);
+  const legs = network.pathLegs(A, C);
+  const tsBuilt = network.buildThroughService(A, loco);
+  const tsLine = network.lines[network.lines.length - 1];
+  result.throughService = {
+    legsAtoC: legs?.length ?? 0, // expect 2 — A→B then B→C
+    twoDifferentLines: legs?.length === 2 ? legs[0].line !== legs[1].line : false,
+    built: tsBuilt,
+    serviceHasTrain: (tsLine?.trains.length ?? 0) >= 1,
+  };
 
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
