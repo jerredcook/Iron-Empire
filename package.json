@@ -8,7 +8,8 @@
     "dev": ".toolchain/node-v20.18.0-darwin-arm64/bin/node ./node_modules/vite/bin/vite.js",
     "build": ".toolchain/node-v20.18.0-darwin-arm64/bin/node ./node_modules/vite/bin/vite.js build",
     "preview": ".toolchain/node-v20.18.0-darwin-arm64/bin/node ./node_modules/vite/bin/vite.js preview",
-    "typecheck": ".toolchain/node-v20.18.0-darwin-arm64/bin/node ./node_modules/typescript/bin/tsc --noEmit"
+    "typecheck": ".toolchain/node-v20.18.0-darwin-arm64/bin/node ./node_modules/typescript/bin/tsc --noEmit",
+    "verify": ".toolchain/node-v20.18.0-darwin-arm64/bin/node tools/verify.mjs"
   },
   "dependencies": {
     "simplex-noise": "^4.0.3",

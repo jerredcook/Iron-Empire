@@ -212,10 +212,8 @@ async function boot(cfg: BootCfg): Promise<void> {
     runUiTest(network, builder, inspector, rig.camera, renderer.gl.domElement, selectedLoco);
   }
 
-  const clock = new THREE.Clock();
-  const loop = (): void => {
-    requestAnimationFrame(loop);
-    const dt = Math.min(clock.getDelta(), 0.05);
+  // One frame of the whole game — used by the live loop and the headless frame test.
+  const step = (dt: number): void => {
     rig.update(dt);
     water.update(dt);
     scatter.update(dt);
@@ -226,6 +224,51 @@ async function boot(cfg: BootCfg): Promise<void> {
     inspector.update(dt);
     minimap.update(rig.camera, rig.controls.target);
     writeDiag();
+  };
+
+  // Headless render-loop test: run the real per-frame step N times (rendering and all)
+  // and assert it never throws and a train physically moves across the frames.
+  const frames = Number(new URLSearchParams(location.search).get('frames') ?? 0);
+  if (frames > 0) {
+    step(1 / 30); // one step so the train is placed on the rail before we sample it
+    const train = network.lines[0]?.trains[0];
+    const start = train ? train.headPosition.clone() : new THREE.Vector3();
+    const moneyStart = network.money;
+    let ran = 0;
+    let renderErrors = 0;
+    let lastError = '';
+    let maxStep = 0; // largest single-frame movement — a moving train, not a teleport
+    for (let i = 0; i < frames; i++) {
+      const prev = train ? train.headPosition.clone() : new THREE.Vector3();
+      try {
+        step(1 / 30);
+        ran++;
+      } catch (e) {
+        renderErrors++;
+        lastError = String(e);
+      }
+      if (train) maxStep = Math.max(maxStep, train.headPosition.distanceTo(prev));
+    }
+    const moved = train ? train.headPosition.distanceTo(start) : 0;
+    const el = document.createElement('pre');
+    el.id = 'ie-frames';
+    el.style.cssText = 'position:fixed;top:40px;left:0;z-index:99;font-size:10px;color:#ff0;background:#000;margin:0;padding:2px';
+    el.textContent = JSON.stringify({
+      framesRun: ran,
+      renderErrors,
+      lastError,
+      trainMoved: +moved.toFixed(1),
+      maxFrameStep: +maxStep.toFixed(2),
+      movedOk: moved > 5 && maxStep < 20, // it travelled, and smoothly (no teleport)
+      moneyChanged: network.money !== moneyStart,
+    });
+    document.body.append(el);
+  }
+
+  const clock = new THREE.Clock();
+  const loop = (): void => {
+    requestAnimationFrame(loop);
+    step(Math.min(clock.getDelta(), 0.05));
   };
   loop();
   document.getElementById('loading')?.classList.add('hidden');
