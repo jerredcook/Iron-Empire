@@ -98,6 +98,9 @@ export class Heightfield {
   height(x: number, z: number): number {
     let h = this.rawHeight(x, z);
     for (const p of this.flats) {
+      // Cheap bounding-box reject before the sqrt — with a dense map (many flats),
+      // almost every flat is far from any given vertex, so this skips the hypot.
+      if (Math.abs(x - p.x) >= p.outer || Math.abs(z - p.z) >= p.outer) continue;
       const d = Math.hypot(x - p.x, z - p.z);
       if (d >= p.outer) continue;
       const t = 1 - smooth(p.inner, p.outer, d);

@@ -209,6 +209,9 @@ function flattenByMaterial(src: THREE.Group): THREE.Group {
   const out = new THREE.Group();
   for (const [mat, bucket] of byMat) {
     const merged = mergeGeometries(bucket.geos, false);
+    // mergeGeometries copies into a fresh geometry; release the per-source clones so
+    // their CPU buffers (and any GPU upload) don't linger.
+    for (const g of bucket.geos) g.dispose();
     if (!merged) continue;
     const mesh = new THREE.Mesh(merged, mat);
     mesh.castShadow = bucket.cast;
