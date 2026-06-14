@@ -6,7 +6,7 @@ import { TerrainMesh } from './world/TerrainMesh';
 import { buildSky } from './world/Sky';
 import { WaterPlane } from './world/WaterPlane';
 import { Scatter } from './world/Scatter';
-import { Network } from './game/Network';
+import { Network, STOCK_CAP } from './game/Network';
 import { placeCities } from './game/Economy';
 import { TrackBuilder } from './game/TrackBuilder';
 import { HUD } from './game/HUD';
@@ -19,7 +19,7 @@ import { chooseScenario, DIFFICULTIES, SCENARIOS, Difficulty } from './game/Scen
 import { Auctioneer } from './game/Auction';
 import { configureConsist } from './game/ConsistConfig';
 import { CargoKind } from './game/Cargo';
-import { Train } from './game/Train';
+import { Train, CAR_CAP } from './game/Train';
 
 const SIZE = 4096;
 const SEA = 0;
@@ -243,6 +243,12 @@ async function boot(cfg: BootCfg): Promise<void> {
   // build-line paths, then report what actually happened in the model.
   if (location.search.includes('uitest')) {
     runUiTest(network, builder, inspector, rig.camera, renderer.gl.domElement, selectedLoco);
+  }
+
+  // Headless soak test: build an active multi-line economy and simulate many game-years,
+  // checking every tick for NaN, runaway, or out-of-bounds stock/cargo.
+  if (location.search.includes('soak')) {
+    runSoak(network, selectedLoco);
   }
 
   // One frame of the whole game — used by the live loop and the headless frame test.
@@ -655,6 +661,79 @@ function layTrackTest(
     connectsChosenCities: built ? nl.stops.includes(a) && nl.stops.includes(b) : false,
     consistCommitted: consistClosed,
   };
+}
+
+/** Build a busy multi-line economy and simulate ~16 game-years, asserting every tick
+ *  that nothing goes NaN, runs away, or leaves valid bounds. */
+function runSoak(network: Network, loco: LocoClass): void {
+  const TICKS = 20000; // ~16 game-years
+  // Fund everyone and remove the win/lose deadline so the sim keeps running.
+  network.player.money = 5e8;
+  for (const r of network.rivals) r.money = 5e8;
+  network.goal.byYear = 99999;
+  network.goal.targetCash = Number.MAX_SAFE_INTEGER;
+
+  // Lay a web of lines across the map, double a few up.
+  const s = network.stations;
+  for (let i = 0; i + 1 < Math.min(s.length, 18); i += 2) {
+    network.buildStationAt(s[i]);
+    network.buildStationAt(s[i + 1]);
+    network.buildLine([s[i].pos, s[i + 1].pos], [s[i], s[i + 1]], loco);
+  }
+  for (const l of network.player.lines.slice(0, 5)) network.addTrain(l, loco);
+
+  const bad = (v: number): boolean => !Number.isFinite(v);
+  let violations = 0;
+  let firstTick = -1;
+  let firstViolation = '';
+  const flag = (msg: string, t: number): void => {
+    violations++;
+    if (firstTick < 0) {
+      firstTick = t;
+      firstViolation = msg;
+    }
+  };
+
+  for (let t = 0; t < TICKS; t++) {
+    network.update(1 / 30);
+    for (const c of network.companies) {
+      if (bad(c.money) || bad(c.netWorth)) flag(`company ${c.name} money/netWorth not finite`, t);
+    }
+    for (const st of network.stations) {
+      for (const [k, amt] of st.stock) {
+        if (bad(amt) || amt < -0.5 || amt > STOCK_CAP + 2) flag(`stock ${st.name}/${k}=${amt}`, t);
+      }
+      for (const [k, amt] of st.input) {
+        if (bad(amt) || amt < -0.5 || amt > STOCK_CAP + 2) flag(`input ${st.name}/${k}=${amt}`, t);
+      }
+    }
+    for (const l of network.lines) {
+      for (const tr of l.trains) {
+        for (const car of tr.consist) {
+          if (bad(car.amount) || car.amount < -0.5 || car.amount > CAR_CAP + 2) flag(`car ${car.kind}=${car.amount}`, t);
+        }
+        if (bad(tr.railDist)) flag('train railDist not finite', t);
+      }
+    }
+    if (violations > 0 && firstTick === t) break; // stop at the first failing tick
+  }
+
+  const el = document.createElement('pre');
+  el.id = 'ie-soak';
+  el.style.cssText = 'position:fixed;top:80px;left:0;z-index:99;font-size:10px;color:#f80;background:#000;margin:0;padding:2px';
+  el.textContent = JSON.stringify({
+    ticks: TICKS,
+    violations,
+    firstTick,
+    firstViolation,
+    clean: violations === 0,
+    finalYear: network.year,
+    finalMoney: Math.round(network.money),
+    lines: network.lines.length,
+    trains: network.lines.reduce((a, l) => a + l.trains.length, 0),
+    deliveries: 0,
+  });
+  document.body.append(el);
 }
 
 const FALLBACK_GOAL = { targetCash: 2_500_000, byYear: 1890 };

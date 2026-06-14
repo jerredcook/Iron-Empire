@@ -127,6 +127,10 @@ async function main() {
     check('economy: deliveries occur', (ec?.deliveries ?? 0) > 0, ec);
     check('economy: rival stays solvent', (ec?.rivalNetWorth ?? -1e9) > -100_000, ec);
     check('economy: player state is sane', typeof ec?.money === 'number' && !!ec?.status, ec);
+
+    console.log('• Soak test (~16 game-years, busy network)…');
+    const sk = extract(chromeDump('autostart&soak'), 'ie-soak');
+    check('soak: no NaN / runaway / out-of-bounds over ~16 game-years', sk?.clean === true && sk?.violations === 0, sk);
   } finally {
     if (server) {
       try {
