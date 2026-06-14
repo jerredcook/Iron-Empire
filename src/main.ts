@@ -151,7 +151,11 @@ async function boot(cfg: BootCfg): Promise<void> {
       clearSelection();
     },
     (st) => network.buildStationAt(st),
-    (st) => network.buildThroughService(st, selectedLoco)
+    (st) => network.buildThroughService(st, selectedLoco),
+    (st) => {
+      network.demolishStation(st);
+      clearSelection();
+    }
   );
   const auctioneer = new Auctioneer(network);
   const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());
@@ -595,6 +599,51 @@ function runUiTest(
     ownershipPreserved: network.stations.filter((s) => s.owner).length === pre.owned,
     positionPreserved: Math.abs(sumPos() - pre.pos) < 25,
     cargoPreserved: Math.abs(sumCargo() - pre.cargo) < 5,
+  };
+
+  // M) Demolish station via the inspector button: the depot goes away, every line that
+  //    stops there is scrapped with it, and the player is refunded.
+  //    Use cities the player can actually build on (no pre-existing rival depot), so the
+  //    player owns the depot it then tears down.
+  //    (The harness has amassed enough cash to trip the win condition by now, which
+  //    halts building — reset to 'playing' so we exercise the demolish mechanic itself.)
+  network.status = 'playing';
+  const freeCities = network.stations.filter((s) => !s.hasStation);
+  const ds1 = freeCities[0];
+  const ds2 = freeCities[1];
+  network.buildStationAt(ds1);
+  network.buildStationAt(ds2);
+  network.buildLine([ds1.pos, ds2.pos], [ds1, ds2], loco);
+  const dsLine = network.lines[network.lines.length - 1];
+  const moneyBeforeDS = network.player.money;
+  const linesBeforeDS = network.lines.length;
+  inspector.select({ kind: 'station', station: ds1 });
+  inspector.update(1);
+  const dsBtnShown = !!document.querySelector('[data-demolishstation]');
+  (document.querySelector('[data-demolishstation]') as HTMLElement | null)?.click();
+  result.demolishStation = {
+    btnShown: dsBtnShown,
+    depotRemoved: !ds1.hasStation,
+    dependentLineScrapped: !network.lines.includes(dsLine) && network.lines.length < linesBeforeDS,
+    refunded: network.player.money > moneyBeforeDS,
+  };
+
+  // N) Select a line by its track (the Picker's 'line' selection) and demolish it from
+  //    the line panel — the path a player takes when clicking rails to delete them.
+  const ls1 = freeCities[2];
+  const ls2 = freeCities[3];
+  network.buildStationAt(ls1);
+  network.buildStationAt(ls2);
+  network.buildLine([ls1.pos, ls2.pos], [ls1, ls2], loco);
+  const lsLine = network.lines[network.lines.length - 1];
+  const linesBeforeLS = network.lines.length;
+  inspector.select({ kind: 'line', line: lsLine });
+  inspector.update(1);
+  const lsPanelShown = !!document.querySelector('[data-demolish]');
+  (document.querySelector('[data-demolish]') as HTMLElement | null)?.click();
+  result.lineSelect = {
+    panelShown: lsPanelShown,
+    removed: !network.lines.includes(lsLine) && network.lines.length < linesBeforeLS,
   };
 
   const el = document.createElement('pre');

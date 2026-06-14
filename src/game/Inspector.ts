@@ -5,6 +5,7 @@ import { Train } from './Train';
 export type Selection =
   | { kind: 'station'; station: GStation }
   | { kind: 'train'; line: GLine; train: Train }
+  | { kind: 'line'; line: GLine }
   | null;
 
 const hex = (c: number): string => '#' + c.toString(16).padStart(6, '0');
@@ -29,7 +30,8 @@ export class Inspector {
     private onSellTrain: (line: GLine, train: Train) => void,
     private onDemolishLine: (line: GLine) => void,
     private onBuildStation: (st: GStation) => void,
-    private onThroughService: (st: GStation) => void
+    private onThroughService: (st: GStation) => void,
+    private onDemolishStation: (st: GStation) => void
   ) {
     this.panel = document.createElement('div');
     Object.assign(this.panel.style, {
@@ -62,10 +64,14 @@ export class Inspector {
     this.accum += dt;
     if (this.accum < 0.2) return;
     this.accum = 0;
-    // A selected station/train can be valid only as long as it still exists.
+    // A selected station/train/line is valid only as long as it still exists.
     this.panel.style.display = 'block';
     this.panel.innerHTML =
-      this.sel.kind === 'station' ? this.stationHtml(this.sel.station) : this.trainHtml(this.sel.line, this.sel.train);
+      this.sel.kind === 'station'
+        ? this.stationHtml(this.sel.station)
+        : this.sel.kind === 'line'
+          ? this.lineHtml(this.sel.line)
+          : this.trainHtml(this.sel.line, this.sel.train);
     const close = this.panel.querySelector('[data-close]') as HTMLElement | null;
     if (close) close.onclick = () => this.onClose();
     if (this.sel.kind === 'train') {
@@ -78,6 +84,16 @@ export class Inspector {
       if (sell) sell.onclick = () => this.onSellTrain(line, train);
       const demo = this.panel.querySelector('[data-demolish]') as HTMLElement | null;
       if (demo) demo.onclick = () => this.onDemolishLine(line);
+    }
+    if (this.sel.kind === 'line') {
+      const line = this.sel.line;
+      const demo = this.panel.querySelector('[data-demolish]') as HTMLElement | null;
+      if (demo) demo.onclick = () => this.onDemolishLine(line);
+    }
+    const ds = this.panel.querySelector('[data-demolishstation]') as HTMLElement | null;
+    if (ds && this.sel.kind === 'station') {
+      const st = this.sel.station;
+      ds.onclick = () => this.onDemolishStation(st);
     }
     const ind = this.panel.querySelector('[data-industry]') as HTMLElement | null;
     if (ind && this.sel.kind === 'station') {
@@ -195,7 +211,26 @@ export class Inspector {
     // A depot can be upgraded; an industry can be founded regardless of a depot.
     if (st.hasStation && st.level < 3) html += btn('data-upgrade', `⬆ Upgrade Depot — $${(90 * (st.level + 1)).toFixed(0)}k`);
     if (!st.recipe) html += btn('data-industry', '🏭 Build Factory — $160k');
+    // Demolish your own depot (scraps lines that stop here) for a partial refund.
+    if (st.depotOwner === this.network.player) {
+      html += `<div data-demolishstation style="margin-top:8px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,119,102,0.5);color:#ff7766;font-size:12px">✕ Demolish Station — +$28k</div>`;
+    }
 
+    return html;
+  }
+
+  /** Panel for a rail line selected by clicking its track. */
+  private lineHtml(line: GLine): string {
+    const route = line.stops.length ? line.stops.map((s) => s.name).join(' → ') : 'Unconnected track';
+    const oc = '#' + line.owner.color.toString(16).padStart(6, '0');
+    let html = this.header(line.through ? 'Through-Service' : 'Rail Line', route);
+    html += `<div style="display:flex;gap:10px;font-size:11.5px;opacity:0.78;margin:-2px 0 6px">` +
+      `<span style="color:${oc}">${line.owner.name}</span><span>${line.trains.length} train${line.trains.length === 1 ? '' : 's'}</span>` +
+      (line.through ? '' : `<span>value $${Math.round(line.value).toLocaleString()}</span>`) +
+      `</div>`;
+    if (!line.owner.isAI) {
+      html += `<div data-demolish style="margin-top:10px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,119,102,0.5);color:#ff7766;font-size:12px">✕ Demolish line</div>`;
+    }
     return html;
   }
 

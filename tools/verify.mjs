@@ -97,6 +97,16 @@ async function main() {
     check('ui: demolish line removes it', ui?.demolishLine?.removed, ui?.demolishLine);
     check('ui: free track lays rail with no stations (no train)', ui?.freeTrack?.trackLaidWithoutStops && ui?.freeTrack?.noStops && ui?.freeTrack?.noTrain, ui?.freeTrack);
     check('ui: build station at a city adds a depot', ui?.buildStation?.nowHasDepot, ui?.buildStation);
+    check(
+      'ui: demolish station removes its depot, scraps dependent lines, refunds',
+      ui?.demolishStation?.depotRemoved && ui?.demolishStation?.dependentLineScrapped && ui?.demolishStation?.refunded,
+      ui?.demolishStation
+    );
+    check(
+      'ui: selecting a line by its track and demolishing it removes the line',
+      ui?.lineSelect?.panelShown && ui?.lineSelect?.removed,
+      ui?.lineSelect
+    );
     check('ui: catchment assigns towns to their nearest in-range depot', ui?.catchment?.correct, ui?.catchment);
     check('ui: rail network reaches all stops on a line', ui?.network?.reachesAllStops, ui?.network);
     check(

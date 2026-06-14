@@ -86,6 +86,10 @@ export interface GStation {
   revenue: number;
   /** Whether a depot has been built here — a route can only stop at built stations. */
   hasStation: boolean;
+  /** The depot building (for removal on demolish), or null. */
+  depot: THREE.Object3D | null;
+  /** The company that built the depot — only it may demolish it. */
+  depotOwner: Company | null;
   /** Nearby depot-less cities this station gathers cargo from (its catchment). */
   catchment: GStation[];
 }
@@ -358,6 +362,7 @@ export class Network {
         level: s.level,
         revenue: Math.round(s.revenue),
         hasStation: s.hasStation,
+        depotOwner: s.depotOwner ? ci(s.depotOwner) : -1,
       })),
       lines: this.lines.map((l) => ({
         owner: ci(l.owner),
@@ -441,7 +446,7 @@ export class Network {
       if (s.owner) s.owner.industries.push(s);
       s.level = sd.level ?? 0;
       s.revenue = sd.revenue ?? 0;
-      if (sd.hasStation) this.placeDepot(s);
+      if (sd.hasStation) this.placeDepot(s, sd.depotOwner >= 0 ? this.companies[sd.depotOwner] : this.player);
     });
 
     for (const ld of data.lines) {
@@ -561,6 +566,8 @@ export class Network {
       level: 0,
       revenue: 0,
       hasStation: false,
+      depot: null,
+      depotOwner: null,
       catchment: [],
     };
     this.stations.push(st);
@@ -587,18 +594,45 @@ export class Network {
     if (st.hasStation || this.status !== 'playing') return false;
     if (STATION_COST > this.player.money) return false;
     this.player.money -= STATION_COST;
-    this.placeDepot(st);
+    this.placeDepot(st, this.player);
+    this.onBuilt?.();
+    return true;
+  }
+
+  /** Demolish a player-built depot: scrap any lines that stop here (they can't run
+   *  without it), remove the depot, refund part of its cost, and re-figure catchment. */
+  demolishStation(st: GStation): boolean {
+    if (!st.hasStation || st.depotOwner !== this.player || this.status !== 'playing') return false;
+    for (const l of [...this.lines]) {
+      if (l.stops.includes(st)) this.demolishLine(l);
+    }
+    if (st.depot) {
+      this.scene.remove(st.depot);
+      st.depot.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose(); // depot materials are shared (mats() singleton)
+      });
+      st.depot = null;
+    }
+    st.hasStation = false;
+    st.depotOwner = null;
+    st.level = 0;
+    st.revenue = 0;
+    this.player.money += Math.round(STATION_COST * 0.4);
+    this.assignCatchment();
     this.onBuilt?.();
     return true;
   }
 
   /** The depot building + flag at a city's station (also used on load). */
-  private placeDepot(st: GStation): void {
+  private placeDepot(st: GStation, owner: Company): void {
     st.hasStation = true;
+    st.depotOwner = owner;
     const depot = buildStation();
     depot.position.set(st.pos.x + 16, this.field.height(st.pos.x + 16, st.pos.z), st.pos.z);
     depot.rotation.y = Math.atan2(st.pos.x - depot.position.x, st.pos.z - depot.position.z);
     this.scene.add(depot);
+    st.depot = depot;
     this.assignCatchment();
   }
 
@@ -1190,7 +1224,7 @@ export class Network {
       for (const st of [best.a, best.b]) {
         if (!st.hasStation) {
           c.money -= STATION_COST;
-          this.placeDepot(st);
+          this.placeDepot(st, c);
         }
       }
       this.buildLineFor(c, [best.a.pos, best.b.pos], [best.a, best.b], loco);

@@ -40,10 +40,10 @@ export class Picker {
 
     // 1) A locomotive under the cursor wins.
     const trainGroups = this.network.lines.flatMap((l) => l.trains.map((t) => t.group));
-    const hit = this.ray.intersectObjects(trainGroups, true)[0];
-    if (hit) {
+    const trainHit = this.ray.intersectObjects(trainGroups, true)[0];
+    if (trainHit) {
       for (const line of this.network.lines) {
-        const train = line.trains.find((t) => isDescendant(hit.object, t.group));
+        const train = line.trains.find((t) => isDescendant(trainHit.object, t.group));
         if (train) {
           this.onSelect?.({ kind: 'train', line, train });
           return;
@@ -51,8 +51,22 @@ export class Picker {
       }
     }
 
-    // 2) Otherwise project to the ground and grab the nearest city (built or not).
+    // 2) Otherwise the rails themselves — clicking track selects its line. (Through-
+    //    services have no visual track, so they're selected via their train.)
+    const trackGroups = this.network.lines.map((l) => l.track.group).filter((g) => g.children.length > 0);
+    const trackHit = this.ray.intersectObjects(trackGroups, true)[0];
+
+    // 3) And the ground → nearest city.
     const ground = this.ray.intersectObject(this.terrain, true)[0];
+
+    // Prefer whichever is closer to the camera (track sits just above the ground).
+    if (trackHit && (!ground || trackHit.distance <= ground.distance + 1)) {
+      const line = this.network.lines.find((l) => isDescendant(trackHit.object, l.track.group));
+      if (line) {
+        this.onSelect?.({ kind: 'line', line });
+        return;
+      }
+    }
     if (ground) {
       const st = this.network.nearestCity(ground.point, STATION_PICK);
       this.onSelect?.(st ? { kind: 'station', station: st } : null);

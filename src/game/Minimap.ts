@@ -118,10 +118,14 @@ export class Minimap {
     ctx.clearRect(0, 0, SIZE, SIZE);
     ctx.drawImage(this.terrain, 0, 0, SIZE, SIZE);
 
-    // Rail lines, tinted by their owner, drawn through every stop.
-    ctx.lineWidth = 1.6;
+    // Rail lines, tinted by their owner, drawn through every stop. The selected line
+    // (via clicking its track or one of its trains) is highlighted white + thicker.
+    const selLineDirect = this.sel?.kind === 'line' ? this.sel.line : null;
+    const selLineViaTrain = this.sel?.kind === 'train' ? this.sel.line : null;
     for (const l of this.network.lines) {
-      ctx.strokeStyle = '#' + l.owner.color.toString(16).padStart(6, '0');
+      const on = l === selLineDirect || l === selLineViaTrain;
+      ctx.strokeStyle = on ? '#ffffff' : '#' + l.owner.color.toString(16).padStart(6, '0');
+      ctx.lineWidth = on ? 3 : 1.6;
       ctx.beginPath();
       l.stops.forEach((s, i) => {
         const x = this.wx(s.pos.x);
