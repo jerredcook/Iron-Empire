@@ -105,6 +105,16 @@ async function main() {
       ui?.throughService
     );
     check('ui: signalling keeps same-line trains spaced (no telescope)', ui?.signalling?.measured && ui?.signalling?.noTelescope, ui?.signalling);
+    check(
+      'ui: takeover transfers acquired industries to the buyer',
+      ui?.takeover?.industryToPlayer && ui?.takeover?.inPlayerIndustries && ui?.takeover?.rivalEmptied,
+      ui?.takeover
+    );
+    check(
+      'ui: save/load round-trips through-services, position, cargo, ownership',
+      ui?.saveLoad?.throughPreserved && ui?.saveLoad?.ownershipPreserved && ui?.saveLoad?.positionPreserved && ui?.saveLoad?.cargoPreserved,
+      ui?.saveLoad
+    );
 
     console.log('• Render-loop test…');
     const fr = extract(chromeDump('autostart&frames=240'), 'ie-frames');

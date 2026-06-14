@@ -94,10 +94,17 @@ export class Train {
     return this.loco.group.position;
   }
 
-  /** Remove this train's visuals from the scene (sold or its line demolished). */
+  /** Remove this train's visuals from the scene and free its GPU resources (sold or
+   *  its line demolished). Loco/car materials are shared module-level singletons, so
+   *  only per-instance geometries and the train's own smoke buffers are disposed. */
   dispose(scene: THREE.Scene): void {
     scene.remove(this.group);
     scene.remove(this.smoke.points);
+    this.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+    });
+    this.smoke.dispose();
   }
 
   /** Current arc-length position and heading — read by the block-signal pass. */
@@ -128,6 +135,30 @@ export class Train {
     } else {
       this.dir = 1;
       this.target = ahead;
+    }
+  }
+
+  /** Restore a saved train's position, heading, and per-car cargo (on load). */
+  restore(dist: number, dir: 1 | -1, cargo: { amount: number; origin: [number, number, number] }[]): void {
+    this.dist = THREE.MathUtils.clamp(dist, STOP_MARGIN, this.track.length - STOP_MARGIN);
+    this.dir = dir;
+    // Re-aim at the next scheduled stop in the heading.
+    if (dir > 0) {
+      const ahead = this.stopDist.findIndex((d) => d > this.dist + 0.5);
+      this.target = ahead === -1 ? this.stopDist.length - 1 : ahead;
+    } else {
+      let t = 0;
+      for (let i = this.stopDist.length - 1; i >= 0; i--) {
+        if (this.stopDist[i] < this.dist - 0.5) {
+          t = i;
+          break;
+        }
+      }
+      this.target = t;
+    }
+    for (let i = 0; i < this.consist.length && i < cargo.length; i++) {
+      this.consist[i].amount = cargo[i].amount;
+      this.consist[i].origin.set(cargo[i].origin[0], cargo[i].origin[1], cargo[i].origin[2]);
     }
   }
 
@@ -287,9 +318,18 @@ class Smoke {
     (this.points.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
     alpha.needsUpdate = true;
   }
+
+  /** Free the per-instance geometry + material (the sprite texture is shared). */
+  dispose(): void {
+    this.points.geometry.dispose();
+    (this.points.material as THREE.Material).dispose();
+  }
 }
 
+let cachedSmokeSprite: THREE.Texture | null = null;
+
 function smokeSprite(): THREE.Texture {
+  if (cachedSmokeSprite) return cachedSmokeSprite;
   const c = document.createElement('canvas');
   c.width = c.height = 64;
   const ctx = c.getContext('2d')!;
@@ -301,5 +341,6 @@ function smokeSprite(): THREE.Texture {
   ctx.fillRect(0, 0, 64, 64);
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
+  cachedSmokeSprite = t;
   return t;
 }

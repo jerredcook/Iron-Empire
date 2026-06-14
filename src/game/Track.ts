@@ -89,6 +89,19 @@ export class Track {
     return bu;
   }
 
+  /** Free this track's GPU resources (call after removing the group from the scene).
+   *  Geometries and materials are per-track; their texture maps come from the shared
+   *  Assets cache, so we don't dispose those. */
+  dispose(): void {
+    this.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+      if (m.material) {
+        for (const mat of Array.isArray(m.material) ? m.material : [m.material]) mat.dispose();
+      }
+    });
+  }
+
   /** Laplacian relax + grade clamp, endpoints fixed. */
   private smoothGrade(pts: THREE.Vector3[]): void {
     const n = pts.length;

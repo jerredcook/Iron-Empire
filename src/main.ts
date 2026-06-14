@@ -557,6 +557,40 @@ function runUiTest(
     measured: sameDirTicks > 50,
   };
 
+  // M) Takeover transfers the acquired company's industries to the buyer.
+  const rival = network.rivals[0];
+  const lot = network.ownableIndustries()[0];
+  if (rival && lot) {
+    network.awardIndustry(lot, rival, 1000);
+    network.player.money = 1e9;
+    network.buyShares(rival, 60_000); // > 50% → takeover
+    result.takeover = {
+      industryToPlayer: lot.owner === network.player,
+      inPlayerIndustries: network.player.industries.includes(lot),
+      rivalEmptied: rival.industries.length === 0,
+    };
+  }
+
+  // N) Save → load round-trips through-services, cargo, train position, ownership.
+  for (let i = 0; i < 400; i++) network.update(1 / 30); // let trains pick up cargo
+  const sumPos = (): number => network.lines.flatMap((l) => l.trains).reduce((a, t) => a + t.railDist, 0);
+  const sumCargo = (): number => network.lines.flatMap((l) => l.trains).reduce((a, t) => a + t.cargoTotal(), 0);
+  const pre = {
+    through: network.lines.filter((l) => l.through).length,
+    owned: network.stations.filter((s) => s.owner).length,
+    pos: sumPos(),
+    cargo: sumCargo(),
+  };
+  network.save();
+  network.loadFromStorage();
+  result.saveLoad = {
+    cargoBefore: +pre.cargo.toFixed(0),
+    throughPreserved: pre.through > 0 && network.lines.filter((l) => l.through).length === pre.through,
+    ownershipPreserved: network.stations.filter((s) => s.owner).length === pre.owned,
+    positionPreserved: Math.abs(sumPos() - pre.pos) < 25,
+    cargoPreserved: Math.abs(sumCargo() - pre.cargo) < 5,
+  };
+
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
   el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px;max-width:100vw;white-space:pre-wrap';

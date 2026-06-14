@@ -103,6 +103,8 @@ export interface GLine {
   value: number;
   /** The full ground route through every stop, kept so the line can be re-laid on load. */
   waypoints: THREE.Vector3[];
+  /** A through-service rides existing rails (movement-only track) — no new visuals. */
+  through: boolean;
 }
 
 export interface Delivery {
@@ -360,8 +362,16 @@ export class Network {
       lines: this.lines.map((l) => ({
         owner: ci(l.owner),
         stops: l.stops.map((s) => s.id),
-        wp: l.waypoints.map((p) => [Math.round(p.x), Math.round(p.z)]),
-        trains: l.trains.map((t) => ({ loco: t.locoClass.id, cars: t.consist.map((c) => c.kind) })),
+        through: l.through,
+        // [x, y, z] — y is only needed for through-services (raw tracks); regular
+        // lines recompute it from the terrain on load.
+        wp: l.waypoints.map((p) => [Math.round(p.x), +p.y.toFixed(1), Math.round(p.z)]),
+        trains: l.trains.map((t) => ({
+          loco: t.locoClass.id,
+          dist: +t.railDist.toFixed(1),
+          dir: t.heading,
+          cars: t.consist.map((c) => ({ kind: c.kind, amount: +c.amount.toFixed(1), origin: [+c.origin.x.toFixed(1), +c.origin.y.toFixed(1), +c.origin.z.toFixed(1)] })),
+        })),
       })),
     };
     try {
@@ -438,12 +448,29 @@ export class Network {
       const stops = (ld.stops as number[]).map((id) => this.stations[id]);
       const owner = this.companies[ld.owner];
       if (stops.some((s) => !s) || !owner) continue;
-      const wp: THREE.Vector3[] = ld.wp.map((p: [number, number]) => new THREE.Vector3(p[0], this.field.height(p[0], p[1]), p[1]));
-      const trains = (ld.trains as { loco: string; cars: CargoKind[] }[]).map((t) => ({
+      const through = !!ld.through;
+      // Waypoints saved as [x,y,z]; a through-service keeps its exact y (it rides the
+      // rails), a regular line recomputes y from the terrain. (Old saves stored [x,z].)
+      const wp: THREE.Vector3[] = ld.wp.map((p: number[]) =>
+        new THREE.Vector3(p[0], through && p.length >= 3 ? p[1] : this.field.height(p[0], p[p.length - 1]), p[p.length - 1])
+      );
+      const tds = ld.trains as { loco: string; dist?: number; dir?: 1 | -1; cars: unknown[] }[];
+      const trains = tds.map((t) => ({
         loco: LOCOS.find((l) => l.id === t.loco) ?? defaultLoco(this.year),
-        cars: t.cars,
+        cars: t.cars.map((c) => (typeof c === 'string' ? c : (c as { kind: CargoKind }).kind)) as CargoKind[],
       }));
-      this.layLine(owner, stops, wp, trains);
+      const line = this.layLine(owner, stops, wp, trains, through);
+      // Restore each train's position + cargo (cars saved as objects in current format).
+      line.trains.forEach((tr, i) => {
+        const td = tds[i];
+        if (!td || td.dist === undefined || td.dir === undefined) return;
+        const cargo = td.cars.map((c) =>
+          typeof c === 'string'
+            ? { amount: 0, origin: [0, 0, 0] as [number, number, number] }
+            : { amount: (c as { amount: number }).amount, origin: (c as { origin: [number, number, number] }).origin }
+        );
+        tr.restore(td.dist, td.dir, cargo);
+      });
     }
     return true;
   }
@@ -451,8 +478,9 @@ export class Network {
   /** Tear down every line (meshes + trains) — used before restoring a save. */
   private clearLines(): void {
     for (const l of this.lines) {
+      for (const t of l.trains) t.dispose(this.scene);
       this.scene.remove(l.track.group);
-      for (const t of l.trains) this.scene.remove(t.group);
+      l.track.dispose();
     }
     this.lines.length = 0;
     for (const c of this.companies) c.lines.length = 0;
@@ -491,6 +519,14 @@ export class Network {
       buyer.lines.push(l);
     }
     target.lines.length = 0;
+    // The acquired company's industries (and their royalties + book value) transfer too.
+    for (const st of this.stations) {
+      if (st.owner === target) {
+        st.owner = buyer;
+        buyer.industries.push(st);
+      }
+    }
+    target.industries.length = 0;
     buyer.money += target.money;
     target.money = 0;
     target.defunct = true;
@@ -724,12 +760,9 @@ export class Network {
     }
 
     this.player.money -= loco.cost;
-    const track = new Track(this.field, pts, false, true); // movement-only, exact rail trace
-    const stopFracs = stops.map((s) => track.nearestU(s.pos));
-    const line: GLine = { stops, track, stopFracs, trains: [], owner: this.player, value: 0, waypoints: pts };
-    this.lines.push(line);
-    this.player.lines.push(line);
-    this.spawnTrain(line, loco, cars ?? this.defaultConsist(stops, loco));
+    // Movement-only track tracing existing rails — built via layLine(through) so it
+    // round-trips correctly through save/load.
+    this.layLine(this.player, stops, pts, [{ loco, cars: cars ?? this.defaultConsist(stops, loco) }], true);
     this.onBuilt?.();
     return true;
   }
@@ -793,13 +826,21 @@ export class Network {
     return true;
   }
 
-  /** Lay the rails + trains for a line without charging — shared by build and load. */
-  private layLine(owner: Company, stops: GStation[], waypoints: THREE.Vector3[], trains: { loco: LocoClass; cars: CargoKind[] }[]): GLine {
-    const track = new Track(this.field, waypoints);
+  /** Lay the rails + trains for a line without charging — shared by build and load. A
+   *  through-service rides existing rails on a movement-only (raw) track and adds no
+   *  infrastructure value. */
+  private layLine(
+    owner: Company,
+    stops: GStation[],
+    waypoints: THREE.Vector3[],
+    trains: { loco: LocoClass; cars: CargoKind[] }[],
+    through = false
+  ): GLine {
+    const track = new Track(this.field, waypoints, !through, through);
     this.scene.add(track.group);
     const stopFracs = stops.map((s) => track.nearestU(s.pos));
-    const value = this.routeCost(waypoints);
-    const line: GLine = { stops, track, stopFracs, trains: [], owner, value, waypoints };
+    const value = through ? 0 : this.routeCost(waypoints);
+    const line: GLine = { stops, track, stopFracs, trains: [], owner, value, waypoints, through };
     this.lines.push(line);
     owner.lines.push(line);
     for (const t of trains) this.spawnTrain(line, t.loco, t.cars);
@@ -891,6 +932,7 @@ export class Network {
     for (const t of [...line.trains]) t.dispose(this.scene);
     line.trains.length = 0;
     this.scene.remove(line.track.group);
+    line.track.dispose();
     line.owner.money += Math.round(line.value * 0.4);
     const gi = this.lines.indexOf(line);
     if (gi >= 0) this.lines.splice(gi, 1);
