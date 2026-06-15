@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Heightfield } from '../world/Heightfield';
 import { Track, TRACK_SIDE } from './Track';
 import { Train, CAR_CAP } from './Train';
-import { CargoKind, ALL_CARGO, haulRevenue } from './Cargo';
+import { CargoKind, ALL_CARGO, haulRevenue, marketMult } from './Cargo';
 import { Archetype, CitySite, Recipe, ARCHETYPES } from './Economy';
 import { buildTown, buildStation, buildFactory } from './Buildings';
 import { LocoClass, defaultLoco, LOCOS } from './Locomotives';
@@ -22,6 +22,8 @@ const CATCHMENT_RADIUS = 380; // a depot gathers cargo from towns within this ra
 const MAX_STATION_LEVEL = 3;
 const SERVE_FULL = 55; // banked service that yields full prosperity
 const GROWTH_TIERS = [1.55, 2.05, 2.55]; // growth thresholds that add a house ring
+const SAT_PER_UNIT = 0.0055; // market saturation added per delivered unit (a ~80-unit drop ≈ +0.44)
+const SAT_RECOVERY = 0.02; // saturation shed per second while a market goes unfed (~full in 30s)
 
 export type GameStatus = 'playing' | 'won' | 'lost';
 
@@ -67,6 +69,9 @@ export interface GStation {
   demands: Set<CargoKind>;
   /** Outbound: produced/extracted cargo waiting to be hauled away. */
   stock: Map<CargoKind, number>;
+  /** Per-cargo market saturation (0 fresh … 1 glutted): rises as a cargo is delivered
+   *  here, recovers while the market goes unfed, and depresses the price paid. */
+  sat: Map<CargoKind, number>;
   /** Inbound: delivered raw materials waiting to be processed (processors only). */
   input: Map<CargoKind, number>;
   recipe?: Recipe;
@@ -105,6 +110,12 @@ export interface GLine {
   owner: Company;
   /** Grading cost of the route — its value as infrastructure. */
   value: number;
+  /** Cumulative haul revenue booked by this line's trains — the income half of its P/L. */
+  earned: number;
+  /** Completed service stops (legs) — earned ÷ trips gives revenue per trip. */
+  trips: number;
+  /** Sim-clock reading when the line was laid — used to annualize earnings. */
+  bornClock: number;
   /** The full ground route through every stop, kept so the line can be re-laid on load. */
   waypoints: THREE.Vector3[];
   /** A through-service rides existing rails (movement-only track) — no new visuals. */
@@ -234,6 +245,8 @@ export class Network {
   private aiInterval = 6;
   private aiReserve = 160_000;
   private yearAccum = 0;
+  /** Total elapsed sim-seconds — used to annualize a line's earnings into a rate. */
+  private clock = 0;
   /** Newest first; the HUD shows the head of this list. */
   readonly deliveries: Delivery[] = [];
   /** Fired when the player earns a delivery / completes a build (for audio). */
@@ -556,6 +569,7 @@ export class Network {
       supplies: site.supplies,
       demands,
       stock: new Map(),
+      sat: new Map(),
       input: new Map(),
       recipe,
       growth: 1,
@@ -583,6 +597,12 @@ export class Network {
   /** What it costs to put a depot at a city — required before a route can stop there. */
   stationCost(): number {
     return STATION_COST;
+  }
+
+  /** The price multiplier (0..1) this market currently pays for a cargo — 1 when fresh,
+   *  falling as it saturates. Read by the inspector to show why a glutted town pays less. */
+  marketPrice(st: GStation, kind: CargoKind): number {
+    return marketMult(st.sat.get(kind) ?? 0);
   }
 
   get catchmentRange(): number {
@@ -834,6 +854,26 @@ export class Network {
   }
 
   /**
+   * A line's running profit-and-loss — the core "is this route paying?" readout. Income
+   * is the haul revenue its trains have booked, annualized over how long the line has
+   * run; cost is the yearly upkeep of its locomotives. `perTrip` is the average revenue
+   * each service stop brings in.
+   */
+  lineStats(line: GLine): {
+    earned: number;
+    trips: number;
+    perTrip: number;
+    upkeepPerYear: number;
+    profitPerYear: number;
+  } {
+    const ageYears = Math.max(0.05, (this.clock - line.bornClock) / SECONDS_PER_YEAR);
+    const upkeepPerYear = line.trains.reduce((a, t) => a + t.locoClass.upkeep, 0);
+    const perTrip = line.trips > 0 ? line.earned / line.trips : 0;
+    const profitPerYear = line.earned / ageYears - upkeepPerYear;
+    return { earned: line.earned, trips: line.trips, perTrip, upkeepPerYear, profitPerYear };
+  }
+
+  /**
    * Commit a line between two stations through the given intermediate waypoints,
    * staffed by the chosen locomotive. Deducts cost, lays the Track, and puts a train
    * on it. Returns false (building nothing) if the player can't afford it.
@@ -874,7 +914,7 @@ export class Network {
     this.scene.add(track.group);
     const stopFracs = stops.map((s) => track.nearestU(s.pos));
     const value = through ? 0 : this.routeCost(waypoints);
-    const line: GLine = { stops, track, stopFracs, trains: [], owner, value, waypoints, through };
+    const line: GLine = { stops, track, stopFracs, trains: [], owner, value, waypoints, through, earned: 0, trips: 0, bornClock: this.clock };
     this.lines.push(line);
     owner.lines.push(line);
     for (const t of trains) this.spawnTrain(line, t.loco, t.cars);
@@ -996,23 +1036,46 @@ export class Network {
     const train = new Train(line.track, this.scene, loco, line.stopFracs, cars);
     train.offsetStart(line.trains.length * 0.28);
     this.scene.add(train.group);
-    train.onStop = (i) => this.serviceTrain(line.owner, train, line.stops[i]);
+    train.onStop = (i) => this.serviceTrain(line, train, line.stops[i]);
+    train.onBreakdown = () => {
+      const fee = Math.round(loco.cost * 0.04);
+      line.owner.money -= fee;
+      if (line.owner === this.player) {
+        this.pushDelivery(`${loco.name} broke down — repairs`, -fee);
+        this.onBuilt?.();
+      }
+    };
     line.trains.push(train);
+  }
+
+  /** Get a broken engine out of the shop immediately (the breakdown bill was already
+   *  charged when it failed). Only the line's owner can order the repair. */
+  repairTrain(line: GLine, train: Train): boolean {
+    if (!train.broken || line.owner !== this.player || this.status !== 'playing') return false;
+    train.repair();
+    this.onBuilt?.();
+    return true;
   }
 
   /** Service each car at a berth: a car whose cargo the city demands unloads (paying
    *  the owner, scaled by the station's upgrade level), then every car tops up with its
    *  own assigned cargo from the city's stock. Typed cars only carry their own kind. */
-  private serviceTrain(owner: Company, train: Train, at: GStation): void {
+  private serviceTrain(line: GLine, train: Train, at: GStation): void {
+    const owner = line.owner;
+    line.trips += 1; // arriving at a berth completes a leg
     const bonus = 1 + at.level * STATION_BONUS;
     const wants = this.effectiveDemands(at); // own demands + the whole catchment's
     for (const car of train.consist) {
-      // Unload.
+      // Unload. The price paid falls as this market saturates on the cargo, then the
+      // delivery saturates it a little more (it recovers between trains, in update()).
       if (car.amount > 0 && wants.has(car.kind)) {
         const dist = car.origin.distanceTo(at.pos);
-        const rev = Math.round(haulRevenue(car.kind, car.amount, dist) * bonus);
+        const mult = marketMult(at.sat.get(car.kind) ?? 0);
+        const rev = Math.round(haulRevenue(car.kind, car.amount, dist) * bonus * mult);
+        at.sat.set(car.kind, Math.min(1, (at.sat.get(car.kind) ?? 0) + car.amount * SAT_PER_UNIT));
         owner.money += rev;
         at.revenue += rev; // per-stop earnings tally
+        line.earned += rev; // the line's own income, for its profit/trip readout
         if (!owner.isAI) {
           this.pushDelivery(`${Math.floor(car.amount)} ${car.kind} → ${at.name}`, rev);
           this.onRevenue?.(rev);
@@ -1073,12 +1136,17 @@ export class Network {
 
   update(dt: number): void {
     if (this.status !== 'playing') return;
+    this.clock += dt;
 
     for (const s of this.stations) {
       // Prosperity decays without service and is recomputed into a 1..3 multiplier.
       s.served = Math.max(0, s.served - s.served * 0.05 * dt);
       s.growth = 1 + Math.min(2, s.served / SERVE_FULL);
       this.maybeGrowCity(s);
+
+      // Markets recover toward fresh while they go unfed — the price they pay creeps
+      // back up, so a corridor abandoned for a while is lucrative to return to.
+      if (s.sat.size) for (const [k, v] of s.sat) if (v > 0) s.sat.set(k, Math.max(0, v - SAT_RECOVERY * dt));
 
       // Only depots accrue stock — gathering their whole catchment (already
       // prosperity-scaled). A city with no depot in range has no outlet for its cargo.

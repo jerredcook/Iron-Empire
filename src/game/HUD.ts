@@ -27,6 +27,7 @@ export class HUD {
   private ledgerKey = '';
 
   private qualityBtns = new Map<QualityLevel, HTMLButtonElement>();
+  private speedBtns: { v: number; btn: HTMLButtonElement }[] = [];
   private upkeep!: HTMLDivElement;
   private goalLine!: HTMLDivElement;
   private standings!: HTMLDivElement;
@@ -46,7 +47,8 @@ export class HUD {
     quality: QualityLevel,
     onQuality: (q: QualityLevel) => void,
     private onLoco: (l: LocoClass) => void,
-    onToggleSound: () => boolean
+    onToggleSound: () => boolean,
+    onSpeed: (scale: number) => void
   ) {
     this.selectedLoco = defaultLoco(network.year);
     this.root = el('div', {
@@ -243,6 +245,50 @@ export class HUD {
     });
     this.root.append(this.banner);
 
+    // Time controls, bottom-centre: pause / 1× / 2× / 3× (also Space and keys 1–3).
+    const speedBar = el('div', {
+      position: 'absolute',
+      bottom: '14px',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      display: 'flex',
+      gap: '4px',
+      padding: '5px',
+      background: 'rgba(18,22,28,0.72)',
+      borderRadius: '10px',
+      backdropFilter: 'blur(6px)',
+      boxShadow: '0 2px 18px rgba(0,0,0,0.35)',
+      pointerEvents: 'auto',
+    });
+    const speeds = [
+      { label: '❚❚', v: 0, title: 'Pause (Space)' },
+      { label: '▶', v: 1, title: '1× (1)' },
+      { label: '▶▶', v: 2, title: '2× (2)' },
+      { label: '▶▶▶', v: 3, title: '3× (3)' },
+    ];
+    for (const s of speeds) {
+      const btn = document.createElement('button');
+      Object.assign(btn.style, {
+        minWidth: '40px',
+        padding: '5px 8px',
+        pointerEvents: 'auto',
+        cursor: 'pointer',
+        border: '1px solid rgba(255,255,255,0.18)',
+        borderRadius: '6px',
+        background: 'transparent',
+        color: '#f4f0e6',
+        fontSize: '12px',
+        fontWeight: '600',
+      } as CSSStyleDeclaration);
+      btn.textContent = s.label;
+      btn.title = s.title;
+      btn.onclick = () => onSpeed(s.v);
+      this.speedBtns.push({ v: s.v, btn });
+      speedBar.append(btn);
+    }
+    this.root.append(speedBar);
+    this.setSpeed(1);
+
     // Delivery ledger, bottom-left.
     this.ledger = el('div', {
       position: 'absolute',
@@ -348,6 +394,16 @@ export class HUD {
   private markQuality(active: QualityLevel): void {
     for (const [key, btn] of this.qualityBtns) {
       const on = key === active;
+      btn.style.background = on ? 'rgba(143,255,168,0.18)' : 'transparent';
+      btn.style.borderColor = on ? 'rgba(143,255,168,0.6)' : 'rgba(255,255,255,0.18)';
+      btn.style.color = on ? '#8fffa8' : '#f4f0e6';
+    }
+  }
+
+  /** Highlight the active time-control button (driven by main's speed state). */
+  setSpeed(scale: number): void {
+    for (const { v, btn } of this.speedBtns) {
+      const on = v === scale;
       btn.style.background = on ? 'rgba(143,255,168,0.18)' : 'transparent';
       btn.style.borderColor = on ? 'rgba(143,255,168,0.6)' : 'rgba(255,255,255,0.18)';
       btn.style.color = on ? '#8fffa8' : '#f4f0e6';

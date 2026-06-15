@@ -13,7 +13,7 @@ import { HUD } from './game/HUD';
 import { Inspector } from './game/Inspector';
 import { Picker } from './game/Picker';
 import { Minimap } from './game/Minimap';
-import { LocoClass, defaultLoco } from './game/Locomotives';
+import { LocoClass, defaultLoco, LOCOS } from './game/Locomotives';
 import { AudioBus } from './game/Audio';
 import { chooseScenario, DIFFICULTIES, SCENARIOS, Difficulty } from './game/Scenarios';
 import { Auctioneer } from './game/Auction';
@@ -99,6 +99,16 @@ async function boot(cfg: BootCfg): Promise<void> {
   };
   window.addEventListener('pointerdown', () => audio.unlock(), { once: true });
 
+  // Time control: the sim runs at simScale × real time (0 = paused). The camera, HUD,
+  // and picking stay live at real time so a paused world is still fully inspectable.
+  let simScale = 1;
+  let lastRunSpeed = 1;
+  const applySpeed = (scale: number): void => {
+    simScale = scale;
+    if (scale > 0) lastRunSpeed = scale;
+    hud.setSpeed(scale);
+  };
+
   const hud = new HUD(
     network,
     () => builder.toggle(),
@@ -107,7 +117,8 @@ async function boot(cfg: BootCfg): Promise<void> {
     (loco) => {
       selectedLoco = loco;
     },
-    () => audio.toggle()
+    () => audio.toggle(),
+    applySpeed
   );
   builder.onStatus = (s) => hud.setBuildStatus(s);
   // Finishing a route: lay the track; if it has ≥2 city stops, configure a train for it.
@@ -155,7 +166,8 @@ async function boot(cfg: BootCfg): Promise<void> {
     (st) => {
       network.demolishStation(st);
       clearSelection();
-    }
+    },
+    (line, train) => network.repairTrain(line, train)
   );
   const auctioneer = new Auctioneer(network);
   const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());
@@ -165,7 +177,15 @@ async function boot(cfg: BootCfg): Promise<void> {
     minimap.setSelection(sel);
   };
   window.addEventListener('keydown', (e) => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
     if (e.key === 'Escape') followTrain = null;
+    // Time controls: Space toggles pause (restoring the last running speed), 1–3 set it.
+    else if (e.code === 'Space') {
+      e.preventDefault();
+      applySpeed(simScale === 0 ? lastRunSpeed : 0);
+    } else if (e.key === '1') applySpeed(1);
+    else if (e.key === '2') applySpeed(2);
+    else if (e.key === '3') applySpeed(3);
   });
   minimap.onPan = (x, z) => {
     const dx = x - rig.controls.target.x;
@@ -214,9 +234,13 @@ async function boot(cfg: BootCfg): Promise<void> {
     if (!diagEl) return;
     let goods = 0;
     let maxGrowth = 1;
+    let maxSat = 0;
+    let steelMade = 0;
     for (const s of network.stations) {
       goods += s.stock.get('goods') ?? 0;
       maxGrowth = Math.max(maxGrowth, s.growth);
+      for (const v of s.sat.values()) maxSat = Math.max(maxSat, v);
+      if (s.recipe?.output === 'steel') steelMade += s.stock.get('steel') ?? 0;
     }
     diagEl.textContent = JSON.stringify({
       year: network.year,
@@ -230,6 +254,8 @@ async function boot(cfg: BootCfg): Promise<void> {
       revenue: Math.round(diag.revenue),
       goodsWaiting: Math.round(goods),
       maxGrowth: +maxGrowth.toFixed(2),
+      maxSat: +maxSat.toFixed(3),
+      steelStock: +steelMade.toFixed(1),
       rivalNetWorth: Math.round(network.rivals[0]?.netWorth ?? 0),
     });
   };
@@ -272,10 +298,13 @@ async function boot(cfg: BootCfg): Promise<void> {
         rig.camera.position.set(rig.camera.position.x + dx, rig.camera.position.y + dy, rig.camera.position.z + dz);
       }
     }
+    // The simulation advances at the chosen speed (0 = paused); ambient water/scatter
+    // and everything below stay on real time so the view never freezes.
+    const sim = dt * simScale;
     water.update(dt);
     scatter.update(dt);
-    network.update(dt);
-    auctioneer.update(dt);
+    network.update(sim);
+    auctioneer.update(sim);
     renderer.render();
     hud.update(rig.camera, window.innerWidth, window.innerHeight);
     inspector.update(dt);
@@ -318,6 +347,46 @@ async function boot(cfg: BootCfg): Promise<void> {
       maxFrameStep: +maxStep.toFixed(2),
       movedOk: moved > 5 && maxStep < 20, // it travelled, and smoothly (no teleport)
       moneyChanged: network.money !== moneyStart,
+    });
+    document.body.append(el);
+  }
+
+  // Headless speed test: pause freezes the sim (no train motion, no money change), and
+  // 2× advances trains about twice as far as 1× over the same number of real frames.
+  if (location.search.includes('speedtest')) {
+    for (let i = 0; i < 60; i++) step(1 / 30); // warm up so trains are cruising
+    const measure = (n: number): number => {
+      const ts = network.lines.flatMap((l) => l.trains);
+      const prev = ts.map((t) => t.railDist);
+      let path = 0;
+      for (let i = 0; i < n; i++) {
+        step(1 / 30);
+        ts.forEach((t, k) => {
+          path += Math.abs(t.railDist - prev[k]);
+          prev[k] = t.railDist;
+        });
+      }
+      return path;
+    };
+    applySpeed(0);
+    const moneyAtPause = network.money;
+    const pausedPath = measure(40);
+    const pausedMoneyDelta = Math.abs(network.money - moneyAtPause);
+    applySpeed(1);
+    const d1 = measure(90);
+    applySpeed(2);
+    const d2 = measure(90);
+    applySpeed(1);
+    const el = document.createElement('pre');
+    el.id = 'ie-speed';
+    el.style.cssText = 'position:fixed;top:80px;left:0;z-index:99;font-size:10px;color:#0f0;background:#000;margin:0;padding:2px';
+    el.textContent = JSON.stringify({
+      pausedPath: +pausedPath.toFixed(3),
+      pausedMoneyDelta: +pausedMoneyDelta.toFixed(3),
+      d1: +d1.toFixed(1),
+      d2: +d2.toFixed(1),
+      frozeOnPause: pausedPath < 0.01 && pausedMoneyDelta < 0.01,
+      scales: d1 > 1 && d2 > d1 * 1.5,
     });
     document.body.append(el);
   }
@@ -645,6 +714,92 @@ function runUiTest(
     panelShown: lsPanelShown,
     removed: !network.lines.includes(lsLine) && network.lines.length < linesBeforeLS,
   };
+
+  // O) Dynamic pricing: a market pays full price when fresh and steeply less when glutted.
+  const pcCity = network.stations.find((s) => s.hasStation) ?? network.stations[0];
+  pcCity.sat.set('goods', 0);
+  const freshPrice = network.marketPrice(pcCity, 'goods');
+  pcCity.sat.set('goods', 1);
+  const gluttedPrice = network.marketPrice(pcCity, 'goods');
+  pcCity.sat.set('goods', 0); // restore
+  result.pricing = {
+    fresh: +freshPrice.toFixed(3),
+    glutted: +gluttedPrice.toFixed(3),
+    cheaperWhenGlutted: gluttedPrice < freshPrice - 0.1 && freshPrice > 0.95,
+  };
+
+  // P) Iron + steel chain: world-gen guaranteed a steelworks (coal+iron→steel), an iron
+  //    mine to feed it, and cities that want the steel.
+  const steelmill = network.stations.find((s) => s.recipe?.output === 'steel');
+  const ironmine = network.stations.find((s) => Object.keys(s.supplies).includes('iron'));
+  result.steelChain = {
+    hasSteelmill: !!steelmill,
+    steelmillConsumesIron: !!steelmill && steelmill.demands.has('iron') && steelmill.demands.has('coal'),
+    hasIronMine: !!ironmine,
+    citiesWantSteel: network.stations.some((s) => s.archetype.kind === 'City' && s.demands.has('steel')),
+  };
+
+  // Q) Profit-per-trip readout: a running line books earnings and reports a sane P/L.
+  //    Build a guaranteed trade — a grain farm to its nearest grain-eating city — then run
+  //    it (holding 'playing' so the amassed test cash doesn't trip the win condition and
+  //    freeze the sim), and read the line that earned the most.
+  network.status = 'playing';
+  const grainFarm = network.stations.find((s) => Object.keys(s.supplies).includes('grain'));
+  let grainCity: GStation | null = null;
+  let gd = Infinity;
+  if (grainFarm) {
+    for (const s of network.stations) {
+      if (s === grainFarm || !s.demands.has('grain')) continue;
+      const d = s.pos.distanceToSquared(grainFarm.pos);
+      if (d < gd) {
+        gd = d;
+        grainCity = s;
+      }
+    }
+  }
+  if (grainFarm && grainCity) {
+    if (!grainFarm.hasStation) network.buildStationAt(grainFarm);
+    if (!grainCity.hasStation) network.buildStationAt(grainCity);
+    network.buildLine([grainFarm.pos, grainCity.pos], [grainFarm, grainCity], loco, ['grain', 'grain']);
+  }
+  for (let i = 0; i < 2500; i++) {
+    network.status = 'playing';
+    network.update(1 / 30);
+  }
+  let plLine: (typeof network.lines)[number] | null = null;
+  let bestEarned = -1;
+  for (const l of network.player.lines) {
+    if (!l.through && l.earned > bestEarned) {
+      bestEarned = l.earned;
+      plLine = l;
+    }
+  }
+  if (plLine) {
+    const st = network.lineStats(plLine);
+    result.profit = {
+      earned: Math.round(st.earned),
+      trips: st.trips,
+      perTrip: Math.round(st.perTrip),
+      profitFinite: Number.isFinite(st.profitPerYear),
+      booked: st.earned > 0 && st.trips > 0 && st.perTrip > 0,
+    };
+  }
+
+  // R) Breakdown + repair: forcing a failure stops the engine and bills the owner; the
+  //    repair button clears it.
+  if (plLine && plLine.trains.length) {
+    network.status = 'playing';
+    const tr = plLine.trains[0];
+    const moneyBeforeBreak = network.player.money;
+    tr.forceBreakdown();
+    const brokeAndBilled = tr.broken && network.player.money < moneyBeforeBreak;
+    const repaired = network.repairTrain(plLine, tr);
+    result.breakdown = {
+      broke: brokeAndBilled,
+      repairedOk: repaired && !tr.broken,
+      reliabilityValid: LOCOS.every((l) => l.reliability > 0 && l.reliability <= 1),
+    };
+  }
 
   const el = document.createElement('pre');
   el.id = 'ie-uitest';

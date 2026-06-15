@@ -11,7 +11,10 @@ const ARCH_COLOR: Record<string, string> = {
   Town: '#d8c79a',
   Farmstead: '#9bd07a',
   'Mining Camp': '#9aa0a8',
+  'Iron Mine': '#b08160',
   'Timber Mill': '#c0824a',
+  Factory: '#d0703a',
+  Steelworks: '#8f9bab',
 };
 
 /**

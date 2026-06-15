@@ -107,6 +107,29 @@ async function main() {
       ui?.lineSelect?.panelShown && ui?.lineSelect?.removed,
       ui?.lineSelect
     );
+    check(
+      'ui: a glutted market pays steeply less than a fresh one (dynamic pricing)',
+      ui?.pricing?.cheaperWhenGlutted,
+      ui?.pricing
+    );
+    check(
+      'ui: iron+steel chain world-gens a steelworks, an iron mine, and steel-hungry cities',
+      ui?.steelChain?.hasSteelmill &&
+        ui?.steelChain?.steelmillConsumesIron &&
+        ui?.steelChain?.hasIronMine &&
+        ui?.steelChain?.citiesWantSteel,
+      ui?.steelChain
+    );
+    check(
+      'ui: a running line books earnings and reports a sane profit-per-trip',
+      ui?.profit?.booked && ui?.profit?.profitFinite,
+      ui?.profit
+    );
+    check(
+      'ui: forcing a breakdown stops + bills the engine; repair clears it',
+      ui?.breakdown?.broke && ui?.breakdown?.repairedOk && ui?.breakdown?.reliabilityValid,
+      ui?.breakdown
+    );
     check('ui: catchment assigns towns to their nearest in-range depot', ui?.catchment?.correct, ui?.catchment);
     check('ui: rail network reaches all stops on a line', ui?.network?.reachesAllStops, ui?.network);
     check(
@@ -137,6 +160,12 @@ async function main() {
     check('economy: deliveries occur', (ec?.deliveries ?? 0) > 0, ec);
     check('economy: rival stays solvent', (ec?.rivalNetWorth ?? -1e9) > -100_000, ec);
     check('economy: player state is sane', typeof ec?.money === 'number' && !!ec?.status, ec);
+    check('economy: markets actually saturate over a long run', (ec?.maxSat ?? 0) > 0, ec);
+
+    console.log('• Speed-control test…');
+    const sp = extract(chromeDump('autostart&speedtest'), 'ie-speed');
+    check('speed: pause freezes the sim (no train motion, no money change)', sp?.frozeOnPause, sp);
+    check('speed: 2× advances trains ~twice as far as 1×', sp?.scales, sp);
 
     console.log('• Soak test (~16 game-years, busy network)…');
     const sk = extract(chromeDump('autostart&soak'), 'ie-soak');

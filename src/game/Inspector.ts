@@ -31,7 +31,8 @@ export class Inspector {
     private onDemolishLine: (line: GLine) => void,
     private onBuildStation: (st: GStation) => void,
     private onThroughService: (st: GStation) => void,
-    private onDemolishStation: (st: GStation) => void
+    private onDemolishStation: (st: GStation) => void,
+    private onRepairTrain: (line: GLine, train: Train) => void
   ) {
     this.panel = document.createElement('div');
     Object.assign(this.panel.style, {
@@ -84,6 +85,8 @@ export class Inspector {
       if (sell) sell.onclick = () => this.onSellTrain(line, train);
       const demo = this.panel.querySelector('[data-demolish]') as HTMLElement | null;
       if (demo) demo.onclick = () => this.onDemolishLine(line);
+      const repair = this.panel.querySelector('[data-repair]') as HTMLElement | null;
+      if (repair) repair.onclick = () => this.onRepairTrain(line, train);
     }
     if (this.sel.kind === 'line') {
       const line = this.sel.line;
@@ -220,6 +223,24 @@ export class Inspector {
   }
 
   /** Panel for a rail line selected by clicking its track. */
+  /** The line's running profit-and-loss — the "is this route paying?" readout. */
+  private plHtml(line: GLine): string {
+    const s = this.network.lineStats(line);
+    const profit = Math.round(s.profitPerYear);
+    const col = profit >= 0 ? '#8fffa8' : '#ff7766';
+    const sign = profit >= 0 ? '+' : '−';
+    const money = (n: number): string => `$${Math.abs(Math.round(n)).toLocaleString()}`;
+    return (
+      `<div style="margin-top:8px;padding:7px 9px;border-radius:7px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1)">` +
+      `<div style="display:flex;justify-content:space-between;align-items:baseline">` +
+      `<span style="opacity:0.6;font-size:10.5px;text-transform:uppercase;letter-spacing:0.5px">Profit / year</span>` +
+      `<span style="color:${col};font-weight:700">${sign}${money(profit)}</span></div>` +
+      `<div style="display:flex;justify-content:space-between;font-size:11px;opacity:0.7;margin-top:3px">` +
+      `<span>${money(s.perTrip)}/trip · ${s.trips} trips</span>` +
+      `<span>−${money(s.upkeepPerYear)}/yr upkeep</span></div></div>`
+    );
+  }
+
   private lineHtml(line: GLine): string {
     const route = line.stops.length ? line.stops.map((s) => s.name).join(' → ') : 'Unconnected track';
     const oc = '#' + line.owner.color.toString(16).padStart(6, '0');
@@ -228,6 +249,7 @@ export class Inspector {
       `<span style="color:${oc}">${line.owner.name}</span><span>${line.trains.length} train${line.trains.length === 1 ? '' : 's'}</span>` +
       (line.through ? '' : `<span>value $${Math.round(line.value).toLocaleString()}</span>`) +
       `</div>`;
+    html += this.plHtml(line);
     if (!line.owner.isAI) {
       html += `<div data-demolish style="margin-top:10px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,119,102,0.5);color:#ff7766;font-size:12px">✕ Demolish line</div>`;
     }
@@ -242,6 +264,13 @@ export class Inspector {
       `<span>${lc.speed} mph</span><span>cap ${lc.capacity}</span><span>−$${(lc.upkeep / 1000).toFixed(0)}k/yr</span></div>`;
     const total = t.cargoTotal();
     html += this.bar('Load', '#8fffa8', total / t.capacity, `${Math.floor(total)} / ${t.capacity}`);
+    if (t.broken) {
+      html += `<div style="margin-top:8px;padding:6px 9px;border-radius:7px;background:rgba(255,119,102,0.12);border:1px solid rgba(255,119,102,0.4);color:#ff7766;font-size:12px;display:flex;align-items:center;justify-content:space-between">` +
+        `<span>⚠ Broken down — in the shop</span>` +
+        (line.owner.isAI ? '' : `<span data-repair style="cursor:pointer;pointer-events:auto;padding:3px 9px;border-radius:5px;border:1px solid rgba(255,226,138,0.6);color:#ffe28a">🔧 Repair</span>`) +
+        `</div>`;
+    }
+    html += this.plHtml(line);
 
     html += `<div style="opacity:0.55;font-size:10.5px;text-transform:uppercase;letter-spacing:0.5px;margin-top:10px">Consist (${t.consist.length} cars)</div>`;
     html += `<div style="margin-top:4px">`;

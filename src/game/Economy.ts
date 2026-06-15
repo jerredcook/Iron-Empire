@@ -36,7 +36,7 @@ export const ARCHETYPES: Record<string, Archetype> = {
     kind: 'City',
     houses: 22,
     supplies: { passengers: 1.6, mail: 1.1 },
-    demands: ['goods', 'grain', 'cattle', 'passengers', 'mail'],
+    demands: ['goods', 'grain', 'cattle', 'steel', 'passengers', 'mail'],
   },
   town: {
     kind: 'Town',
@@ -56,6 +56,12 @@ export const ARCHETYPES: Record<string, Archetype> = {
     supplies: { coal: 1.7 },
     demands: ['goods', 'lumber'],
   },
+  ironmine: {
+    kind: 'Iron Mine',
+    houses: 7,
+    supplies: { iron: 1.5 },
+    demands: ['goods', 'lumber'],
+  },
   mill: {
     kind: 'Timber Mill',
     houses: 8,
@@ -68,6 +74,13 @@ export const ARCHETYPES: Record<string, Archetype> = {
     supplies: {},
     demands: ['passengers', 'mail'],
     recipe: { inputs: { coal: 1, lumber: 1 }, output: 'goods', rate: 0.55 },
+  },
+  steelmill: {
+    kind: 'Steelworks',
+    houses: 10,
+    supplies: {},
+    demands: ['passengers', 'mail'],
+    recipe: { inputs: { coal: 1, iron: 1 }, output: 'steel', rate: 0.5 },
   },
 };
 
@@ -107,8 +120,8 @@ function catchment(key: string, field: Heightfield, x: number, z: number): numbe
       let v: number;
       if (key === 'farm') v = h > sea + 4 && h < 60 && s < 0.12 ? 1 : s < 0.2 ? 0.4 : 0;
       else if (key === 'mill') v = h > 40 && h < 165 && s > 0.04 && s < 0.42 ? 1 : 0.3;
-      else if (key === 'mine') v = h > 125 || s > 0.36 ? 1 : h > 80 ? 0.4 : 0;
-      else v = h > sea + 3 && s < 0.16 ? 1 : 0.5; // city / town / factory want buildable flats
+      else if (key === 'mine' || key === 'ironmine') v = h > 125 || s > 0.36 ? 1 : h > 80 ? 0.4 : 0;
+      else v = h > sea + 3 && s < 0.16 ? 1 : 0.5; // city / town / factory / steelmill want buildable flats
       score += v;
       n++;
     }
@@ -148,26 +161,44 @@ export function placeCities(field: Heightfield, seed: number, count: number): Ci
     // A few full cities anchor the map; the rest are smaller towns and industries
     // (the catchment fodder), biased by elevation.
     let key: keyof typeof ARCHETYPES;
-    if (h > 170) key = 'mine';
-    else if (h > 95) key = rng() > 0.5 ? 'mill' : 'mine';
+    if (h > 170) key = rng() > 0.5 ? 'mine' : 'ironmine';
+    else if (h > 95) key = rng() > 0.6 ? 'mill' : rng() > 0.5 ? 'mine' : 'ironmine';
     else if (h > 45) key = rng() > 0.4 ? 'farm' : 'mill';
-    else key = picks.length < 3 ? 'city' : rng() > 0.72 ? 'city' : rng() > 0.45 ? 'town' : rng() > 0.5 ? 'farm' : 'factory';
+    else
+      key =
+        picks.length < 3
+          ? 'city'
+          : rng() > 0.72
+            ? 'city'
+            : rng() > 0.48
+              ? 'town'
+              : rng() > 0.5
+                ? 'farm'
+                : rng() > 0.5
+                  ? 'factory'
+                  : 'steelmill';
     picks.push({ x, z, key });
   }
 
-  // Guarantee the chain can close: force in any missing link on the best-fitting site.
-  for (const need of ['mine', 'mill', 'factory'] as const) {
+  // Guarantee both chains can close — goods (coal+lumber) and steel (coal+iron) — by
+  // forcing any missing link onto the best-fitting site not already claimed this pass.
+  const forced = new Set<number>();
+  for (const need of ['mine', 'mill', 'factory', 'ironmine', 'steelmill'] as const) {
     if (picks.some((p) => p.key === need)) continue;
-    let bi = 0;
+    let bi = -1;
     let bs = -Infinity;
     for (let i = 0; i < picks.length; i++) {
+      if (forced.has(i)) continue;
       const s = catchment(need, field, picks[i].x, picks[i].z);
       if (s > bs) {
         bs = s;
         bi = i;
       }
     }
-    picks[bi].key = need;
+    if (bi >= 0) {
+      picks[bi].key = need;
+      forced.add(bi);
+    }
   }
 
   const sites: CitySite[] = [];

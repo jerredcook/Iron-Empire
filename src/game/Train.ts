@@ -10,6 +10,10 @@ const UP = new THREE.Vector3(0, 1, 0);
 const STOP_MARGIN = 9; // how close to the line's end the train berths
 const BLOCK_GAP = 16; // safe separation a following train keeps behind its leader
 export const CAR_CAP = 24; // units one freight car holds
+// Engines wear with every loaded mile, faster the heavier the load and the less reliable
+// the class; at the limit they fail and sit in the shop for REPAIR_TIME before resuming.
+const WEAR_LIMIT = 1800;
+const REPAIR_TIME = 6; // seconds a broken engine is stopped before it auto-repairs
 
 /** One car in a consist: a fixed cargo type and what it's currently carrying. */
 export interface Car {
@@ -33,6 +37,11 @@ export class Train {
   readonly capacity: number;
   /** Fired when the train berths at a stop, with that stop's index along the line. */
   onStop?: (stopIndex: number) => void;
+  /** Fired the moment the engine fails — the network bills the owner for repairs. */
+  onBreakdown?: () => void;
+
+  /** True while the engine is stopped in the shop after a failure. */
+  broken = false;
 
   /** The class this train is hauling with — its stats drive speed/capacity/upkeep. */
   readonly locoClass: LocoClass;
@@ -49,6 +58,10 @@ export class Train {
   private maxSpeed: number;
   private wheelAngle = 0;
   private dwell = 0;
+  /** Accumulated mechanical wear; a failure trips at WEAR_LIMIT. */
+  private wear = 0;
+  /** Seconds left in the shop after a failure. */
+  private downtime = 0;
 
   private _pos = new THREE.Vector3();
   private _tan = new THREE.Vector3();
@@ -169,10 +182,45 @@ export class Train {
     return t;
   }
 
+  /** Fraction of capacity in use (0..1) — heavier loads wear the engine faster. */
+  private loadFrac(): number {
+    return this.capacity > 0 ? Math.min(1, this.cargoTotal() / this.capacity) : 0;
+  }
+
+  /** The engine fails: it stops, books a repair bill via onBreakdown, and sits in the
+   *  shop until the downtime elapses (or the owner repairs it early). */
+  private breakdown(): void {
+    if (this.broken) return;
+    this.broken = true;
+    this.downtime = REPAIR_TIME;
+    this.speed = 0;
+    this.onBreakdown?.();
+  }
+
+  /** Force a failure now — used by the headless harness to exercise the repair path. */
+  forceBreakdown(): void {
+    this.breakdown();
+  }
+
+  /** Bring a broken engine back immediately, fresh from the shop. */
+  repair(): void {
+    this.broken = false;
+    this.downtime = 0;
+    this.wear = 0;
+  }
+
   update(dt: number): void {
     const len = this.track.length;
 
-    if (this.dwell > 0) {
+    if (this.broken) {
+      // Stopped in the shop: bleed down the repair clock, then roll back out fresh.
+      this.speed = 0;
+      this.downtime -= dt;
+      if (this.downtime <= 0) {
+        this.broken = false;
+        this.wear = 0;
+      }
+    } else if (this.dwell > 0) {
       this.dwell -= dt;
       this.speed = 0;
     } else {
@@ -189,10 +237,16 @@ export class Train {
       const target = Math.min(this.maxSpeed, Math.max(0, remaining * 0.9));
       this.speed += THREE.MathUtils.clamp(target - this.speed, -28 * dt, 12 * dt);
       this.speed = Math.max(0, this.speed);
-      this.dist += this.dir * this.speed * dt;
+      const moved = this.speed * dt;
+      this.dist += this.dir * moved;
       // Don't overshoot the limit (the held block or the stop).
       if (this.dir > 0) this.dist = Math.min(this.dist, limit);
       else this.dist = Math.max(this.dist, limit);
+
+      // Every loaded mile wears the engine, faster when heavy and when the class is
+      // unreliable; past the limit it fails and goes to the shop.
+      this.wear += moved * (1 + this.loadFrac()) * (1 - this.locoClass.reliability);
+      if (this.wear >= WEAR_LIMIT) this.breakdown();
 
       const reached = this.dir > 0 ? this.dist >= stop - 0.01 : this.dist <= stop + 0.01;
       if (reached) {
