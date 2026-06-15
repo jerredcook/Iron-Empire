@@ -15,6 +15,28 @@ export const CAR_CAP = 24; // units one freight car holds
 const WEAR_LIMIT = 1800;
 const REPAIR_TIME = 6; // seconds a broken engine is stopped before it auto-repairs
 
+// How terrain shapes a train's top speed.
+const GRADE_CLIMB = 4.5; // speed lost per unit of climbing grade (tangent.y, ~0.035 at a 3.5% grade)
+const GRADE_DESCEND = 1.5; // mild speed gained running downhill
+const CURVE_K = 11.5; // how hard a tight curve bites (curvature = 1/radius, ~0.125 at the sharpest)
+const CURVE_MIN = 0.32; // floor on the curve factor so a hairpin still creeps through
+const GRADE_MIN = 0.4; // floor on the grade factor
+const LOAD_PEN = 0.3; // top speed lost at a full load
+
+/**
+ * The cruise speed a locomotive can actually hold here, after the terrain and its load:
+ * climbing a grade and a heavy consist both cost top speed (a downgrade gives a little
+ * back), and a tight curve forces a slow order. `grade` is the track tangent's vertical
+ * component in the travel direction (+ uphill); `curvature` is 1/turn-radius in world
+ * units; `loadFrac` is 0..1. Pure so it can be unit-tested directly.
+ */
+export function effectiveSpeed(base: number, grade: number, curvature: number, loadFrac: number): number {
+  const gradeFactor = Math.max(GRADE_MIN, 1 - GRADE_CLIMB * Math.max(0, grade) + GRADE_DESCEND * Math.max(0, -grade));
+  const curveFactor = Math.max(CURVE_MIN, 1 / (1 + CURVE_K * Math.max(0, curvature)));
+  const loadFactor = 1 - LOAD_PEN * Math.min(1, Math.max(0, loadFrac));
+  return base * Math.min(1.25, gradeFactor) * curveFactor * loadFactor;
+}
+
 /** One car in a consist: a fixed cargo type and what it's currently carrying. */
 export interface Car {
   kind: CargoKind;
@@ -69,6 +91,11 @@ export class Train {
   private _quat = new THREE.Quaternion();
   private _head = new THREE.Vector3();
   private _tip = new THREE.Vector3();
+  private _gradeTan = new THREE.Vector3();
+  private _curveTan = new THREE.Vector3();
+  /** Cached terrain speed cap + the arc-length it was sampled at (refreshed as the train moves). */
+  private _cap = -1;
+  private _capAt = -1e9;
   /** Arc-length a same-line leader occupies ahead (precise same-line spacing), or null. */
   private block: number | null = null;
   /** Loco world heading (unit, x/z meaningful) — read by cross-line signalling. */
@@ -196,6 +223,38 @@ export class Train {
     return this.capacity > 0 ? Math.min(1, this.cargoTotal() / this.capacity) : 0;
   }
 
+  /** Top speed the engine can hold at its current spot — cached and refreshed only every
+   *  few units of travel, since grade/curve change slowly along a route (sampling the
+   *  curve tangent every frame for every train would be needless work). */
+  private terrainSpeedCap(): number {
+    if (this._cap < 0 || Math.abs(this.dist - this._capAt) > 4) {
+      this._capAt = this.dist;
+      this._cap = this.computeSpeedCap();
+    }
+    return this._cap;
+  }
+
+  private computeSpeedCap(): number {
+    const len = this.track.length;
+    const u = THREE.MathUtils.clamp(this.dist / len, 0, 1);
+    this.track.curve.getTangentAt(u, this._gradeTan);
+    const grade = this._gradeTan.y * this.dir; // + when climbing in the travel direction
+    // Curvature ≈ how fast the horizontal heading turns over a short look-ahead.
+    const du = Math.min(0.5, 3 / len);
+    this.track.curve.getTangentAt(THREE.MathUtils.clamp(u + du, 0, 1), this._curveTan);
+    const a1 = Math.atan2(this._gradeTan.z, this._gradeTan.x);
+    const a2 = Math.atan2(this._curveTan.z, this._curveTan.x);
+    let dTheta = Math.abs(a1 - a2);
+    if (dTheta > Math.PI) dTheta = 2 * Math.PI - dTheta;
+    const curvature = dTheta / Math.max(1, du * len);
+    return effectiveSpeed(this.maxSpeed, grade, curvature, this.loadFrac());
+  }
+
+  /** Current terrain-shaped speed cap, freshly computed — read by tests/UI. */
+  get speedCapNow(): number {
+    return this.computeSpeedCap();
+  }
+
   /** The engine fails: it stops, books a repair bill via onBreakdown, and sits in the
    *  shop until the downtime elapses (or the owner repairs it early). */
   private breakdown(): void {
@@ -256,7 +315,10 @@ export class Train {
       }
       if (this.worldHold) limit = this.dist; // cross-line hold pins it in place
       const remaining = Math.max(0, (limit - this.dist) * this.dir);
-      const target = Math.min(this.maxSpeed, Math.max(0, remaining * 0.9));
+      // Terrain shapes the cap: slow climbing a grade, slow through a tight curve, slow
+      // under a heavy load — so a flat, straight, empty run is the fast one.
+      const cap = this.terrainSpeedCap();
+      const target = Math.min(cap, Math.max(0, remaining * 0.9));
       this.speed += THREE.MathUtils.clamp(target - this.speed, -28 * dt, 12 * dt);
       this.speed = Math.max(0, this.speed);
       const moved = this.speed * dt;

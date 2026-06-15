@@ -145,6 +145,22 @@ async function main() {
       ui?.events
     );
     check(
+      'ui: terrain shapes speed — grade, curve, and load each slow a train (downgrade gives back)',
+      ui?.terrainSpeed?.flatIsFull &&
+        ui?.terrainSpeed?.climbSlows &&
+        ui?.terrainSpeed?.steeperIsSlower &&
+        ui?.terrainSpeed?.descendBoosts &&
+        ui?.terrainSpeed?.curveSlows &&
+        ui?.terrainSpeed?.loadSlowsCurve &&
+        ui?.terrainSpeed?.realTrainLoadSlows,
+      ui?.terrainSpeed
+    );
+    check(
+      'ui: first-connection bonus pays for a new city link, nothing for a redundant one',
+      ui?.firstConnect?.bonusOnNew && ui?.firstConnect?.noBonusRedundant,
+      ui?.firstConnect
+    );
+    check(
       'ui: station maintenance buildings — gating, charge, stock-cap+throughput, revenue, servicing, dwell, persist',
       ui?.stationBuildings?.builtAll &&
         ui?.stationBuildings?.chargedMoney &&

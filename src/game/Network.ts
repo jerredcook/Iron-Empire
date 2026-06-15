@@ -31,6 +31,8 @@ const HOTEL_MULT = 1.3; // passenger revenue bonus at a hotel
 const WAREHOUSE_STOCK = 1.6; // stockpile-cap multiplier at a warehouse
 const WAREHOUSE_LOAD = 1.5; // loading-throughput multiplier at a warehouse
 const HOTEL_GROWTH = 1.5; // prosperity accrual multiplier on passenger deliveries at a hotel
+const FIRST_CONNECT_BASE = 15_000; // flat grant for joining two cities for the first time
+const FIRST_CONNECT_PER_UNIT = 40; // plus this much per world-unit of distance between them
 
 export type GameStatus = 'playing' | 'won' | 'lost';
 
@@ -256,6 +258,8 @@ export class Network {
   private yearAccum = 0;
   /** Total elapsed sim-seconds — used to annualize a line's earnings into a rate. */
   private clock = 0;
+  /** City-pair keys the player has already been paid a first-connection bonus for. */
+  private firstConnected = new Set<string>();
   /** Newest first; the HUD shows the head of this list. */
   readonly deliveries: Delivery[] = [];
   /** A times-of-the-era price multiplier per cargo (booms, panics…), set by the
@@ -976,8 +980,28 @@ export class Network {
     const cost = this.routeCost(waypoints) + (runnable ? loco!.cost : 0);
     if (cost > owner.money) return false;
     owner.money -= cost;
+    // First-connection bonus (player only): a one-time grant for each pair of cities this
+    // line joins for the first time ever — the genre's reward for opening a new corridor.
+    // Tracked permanently (not just by current connectivity) so it can't be farmed by
+    // demolishing and rebuilding the same link.
+    let bonus = 0;
+    if (owner === this.player) {
+      for (let i = 0; i + 1 < stops.length; i++) {
+        const a = stops[i];
+        const b = stops[i + 1];
+        const key = a.id < b.id ? `${a.id}-${b.id}` : `${b.id}-${a.id}`;
+        if (!this.firstConnected.has(key) && !this.isConnected(a, b)) {
+          this.firstConnected.add(key);
+          bonus += FIRST_CONNECT_BASE + Math.round(a.pos.distanceTo(b.pos) * FIRST_CONNECT_PER_UNIT);
+        }
+      }
+    }
     const trains = runnable ? [{ loco: loco!, cars: cars ?? this.defaultConsist(stops, loco!) }] : [];
     this.layLine(owner, stops, waypoints, trains);
+    if (bonus > 0) {
+      owner.money += bonus;
+      this.pushDelivery(`First link: ${stops[0].name} ↔ ${stops[stops.length - 1].name}`, bonus);
+    }
     if (owner === this.player) this.onBuilt?.();
     return true;
   }

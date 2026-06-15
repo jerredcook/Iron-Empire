@@ -20,7 +20,7 @@ import { Auctioneer } from './game/Auction';
 import { EventDirector } from './game/Events';
 import { configureConsist } from './game/ConsistConfig';
 import { CargoKind, carCapacity, CARGO } from './game/Cargo';
-import { Train } from './game/Train';
+import { Train, effectiveSpeed } from './game/Train';
 
 const SIZE = 4096;
 const SEA = 0;
@@ -290,6 +290,7 @@ async function boot(cfg: BootCfg): Promise<void> {
   if (location.search.includes('soak')) {
     runSoak(network, selectedLoco);
   }
+
 
   // Headless AI test: on a fresh world with an open map, hand a rival capital and time and
   // confirm it plays smart — scales winners, sharpens depots, expands, invests, stays solvent.
@@ -908,6 +909,56 @@ function runUiTest(
       maintainsEngine,
       dwellHalved,
       persisted: sbCity.buildings.has('warehouse') && sbCity.buildings.has('hotel') && sbCity.buildings.size === 5,
+    };
+  }
+
+  // W) Terrain shapes speed: the pure speed-cap curve (flat/straight/empty = full; climbing,
+  //    a tight curve, and a heavy load each cost speed; a downgrade gives a little back), and
+  //    that a real train's cap drops when it's loaded at the same spot.
+  const flat = effectiveSpeed(40, 0, 0, 0);
+  const climb = effectiveSpeed(40, 0.035, 0, 0);
+  const steeper = effectiveSpeed(40, 0.1, 0, 0);
+  const descend = effectiveSpeed(40, -0.035, 0, 0);
+  const curve = effectiveSpeed(40, 0, 0.12, 0);
+  const loadedCurve = effectiveSpeed(40, 0, 0, 1);
+  const spTrain = network.player.lines.flatMap((l) => l.trains)[0] ?? null;
+  let loadSlows = false;
+  if (spTrain) {
+    for (const c of spTrain.consist) c.amount = 0;
+    const emptyCap = spTrain.speedCapNow;
+    for (const c of spTrain.consist) c.amount = 24;
+    const loadedCap = spTrain.speedCapNow;
+    loadSlows = emptyCap > 0 && loadedCap < emptyCap;
+    for (const c of spTrain.consist) c.amount = 0;
+  }
+  result.terrainSpeed = {
+    flatIsFull: Math.abs(flat - 40) < 0.01,
+    climbSlows: climb < 40,
+    steeperIsSlower: steeper < climb,
+    descendBoosts: descend >= 40,
+    curveSlows: curve < 40 * 0.6,
+    loadSlowsCurve: loadedCurve < 40,
+    realTrainLoadSlows: loadSlows,
+  };
+
+  // X) First-connection bonus: joining two previously-unconnected cities pays a grant;
+  //    a redundant line on an already-joined pair pays nothing.
+  network.status = 'playing';
+  const fc = network.stations.filter((s) => !s.hasStation);
+  if (fc.length >= 2 && !network.isConnected(fc[0], fc[1])) {
+    network.buildStationAt(fc[0]);
+    network.buildStationAt(fc[1]);
+    const cost1 = network.lineCost([fc[0].pos, fc[1].pos], loco);
+    const m0 = network.player.money;
+    network.buildLine([fc[0].pos, fc[1].pos], [fc[0], fc[1]], loco);
+    const paid1 = m0 - network.player.money; // = cost − bonus
+    const cost2 = network.lineCost([fc[0].pos, fc[1].pos], loco);
+    const m1 = network.player.money;
+    network.buildLine([fc[0].pos, fc[1].pos], [fc[0], fc[1]], loco); // pair already joined
+    const paid2 = m1 - network.player.money;
+    result.firstConnect = {
+      bonusOnNew: paid1 < cost1, // got a rebate on the first link
+      noBonusRedundant: paid2 >= cost2 - 1, // paid full fare for the redundant line
     };
   }
 
