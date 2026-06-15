@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { Track, TRACK_SIDE } from './Track';
 import { buildLocomotive, LocomotiveRig } from './Locomotive';
-import { buildBoxcar, FreightCar } from './Cars';
-import { CargoKind, CARGO } from './Cargo';
+import { buildCar, FreightCar } from './Cars';
+import { CargoKind, CARGO, carCapacity } from './Cargo';
 import { LocoClass } from './Locomotives';
 
 const FORWARD = new THREE.Vector3(0, 0, 1);
@@ -78,7 +78,7 @@ export class Train {
 
   constructor(private track: Track, scene: THREE.Scene, locoClass: LocoClass, stopFracs: number[], carKinds: CargoKind[]) {
     this.locoClass = locoClass;
-    this.capacity = carKinds.length * CAR_CAP;
+    this.capacity = carKinds.reduce((sum, k) => sum + carCapacity(k), 0);
     this.maxSpeed = locoClass.speed;
     const len = track.length;
     // Stops at their arc positions, ends pulled in to the berth margin, ascending.
@@ -87,9 +87,9 @@ export class Train {
       .sort((a, b) => a - b);
     this.loco = buildLocomotive();
     this.group.add(this.loco.group);
-    // One car per configured slot, permanently liveried to its cargo type.
+    // One car per configured slot, of that cargo's car type, liveried to its cargo.
     for (const kind of carKinds) {
-      const car = buildBoxcar();
+      const car = buildCar(CARGO[kind].car);
       car.setLivery(CARGO[kind].color);
       this.cars.push(car);
       this.group.add(car.group);
@@ -117,6 +117,8 @@ export class Train {
       const m = o as THREE.Mesh;
       if (m.geometry) m.geometry.dispose();
     });
+    // Each car owns a unique body material (the loco's are shared singletons — leave them).
+    for (const c of this.cars) c.dispose();
     this.smoke.dispose();
   }
 
@@ -170,7 +172,9 @@ export class Train {
       this.target = t;
     }
     for (let i = 0; i < this.consist.length && i < cargo.length; i++) {
-      this.consist[i].amount = cargo[i].amount;
+      // Clamp to the car's capacity — a save written under a different per-car cap could
+      // otherwise restore an overfilled car and trip the soak invariant.
+      this.consist[i].amount = Math.min(cargo[i].amount, carCapacity(this.consist[i].kind));
       this.consist[i].origin.set(cargo[i].origin[0], cargo[i].origin[1], cargo[i].origin[2]);
     }
   }

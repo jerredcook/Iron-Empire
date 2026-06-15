@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Heightfield } from '../world/Heightfield';
 import { Track, TRACK_SIDE } from './Track';
 import { Train, CAR_CAP } from './Train';
-import { CargoKind, ALL_CARGO, haulRevenue, marketMult } from './Cargo';
+import { CargoKind, ALL_CARGO, haulRevenue, marketMult, carCapacity } from './Cargo';
 import { Archetype, CitySite, Recipe, ARCHETYPES } from './Economy';
 import { buildTown, buildStation, buildFactory } from './Buildings';
 import { LocoClass, defaultLoco, LOCOS } from './Locomotives';
@@ -249,6 +249,9 @@ export class Network {
   private clock = 0;
   /** Newest first; the HUD shows the head of this list. */
   readonly deliveries: Delivery[] = [];
+  /** A times-of-the-era price multiplier per cargo (booms, panics…), set by the
+   *  EventDirector. Neutral by default so the economy runs fine without one. */
+  priceModifier: (kind: CargoKind) => number = () => 1;
   /** Fired when the player earns a delivery / completes a build (for audio). */
   onRevenue?: (amount: number) => void;
   onBuilt?: () => void;
@@ -1071,7 +1074,7 @@ export class Network {
       if (car.amount > 0 && wants.has(car.kind)) {
         const dist = car.origin.distanceTo(at.pos);
         const mult = marketMult(at.sat.get(car.kind) ?? 0);
-        const rev = Math.round(haulRevenue(car.kind, car.amount, dist) * bonus * mult);
+        const rev = Math.round(haulRevenue(car.kind, car.amount, dist) * bonus * mult * this.priceModifier(car.kind));
         at.sat.set(car.kind, Math.min(1, (at.sat.get(car.kind) ?? 0) + car.amount * SAT_PER_UNIT));
         owner.money += rev;
         at.revenue += rev; // per-stop earnings tally
@@ -1087,8 +1090,8 @@ export class Network {
         }
         car.amount = 0;
       }
-      // Load this car's assigned cargo from the city's stock.
-      const room = CAR_CAP - car.amount;
+      // Load this car's assigned cargo from the city's stock (up to its car's capacity).
+      const room = carCapacity(car.kind) - car.amount;
       if (room > 0) {
         const have = at.stock.get(car.kind) ?? 0;
         const take = Math.min(room, have, LOAD_PER_STOP);

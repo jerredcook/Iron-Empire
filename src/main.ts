@@ -17,9 +17,10 @@ import { LocoClass, defaultLoco, LOCOS } from './game/Locomotives';
 import { AudioBus } from './game/Audio';
 import { chooseScenario, DIFFICULTIES, SCENARIOS, Difficulty } from './game/Scenarios';
 import { Auctioneer } from './game/Auction';
+import { EventDirector } from './game/Events';
 import { configureConsist } from './game/ConsistConfig';
-import { CargoKind } from './game/Cargo';
-import { Train, CAR_CAP } from './game/Train';
+import { CargoKind, carCapacity, CARGO } from './game/Cargo';
+import { Train } from './game/Train';
 
 const SIZE = 4096;
 const SEA = 0;
@@ -170,6 +171,10 @@ async function boot(cfg: BootCfg): Promise<void> {
     (line, train) => network.repairTrain(line, train)
   );
   const auctioneer = new Auctioneer(network);
+  // Economic events (booms, panics, gold rushes) move freight prices for a while; wire
+  // their price multiplier into the Network and their headlines into the HUD news toast.
+  const events = new EventDirector((text, good) => hud.news(text, good));
+  network.priceModifier = (k) => events.priceMult(k);
   const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());
   picker.onSelect = (sel) => {
     followTrain = null; // selecting anything new stops following
@@ -305,6 +310,7 @@ async function boot(cfg: BootCfg): Promise<void> {
     scatter.update(dt);
     network.update(sim);
     auctioneer.update(sim);
+    events.update(sim);
     renderer.render();
     hud.update(rig.camera, window.innerWidth, window.innerHeight);
     inspector.update(dt);
@@ -801,6 +807,38 @@ function runUiTest(
     };
   }
 
+  // S) Distinct car types: each cargo maps to a car type with its own capacity, and a
+  //    train's total capacity is the sum of its cars' (not a flat per-car constant).
+  //    The hopper train built for the grain line above (28/car) lets us assert a concrete
+  //    capacity the old flat 24/car model would get wrong — not a tautology.
+  const coalCap = carCapacity('coal'); // hopper
+  const cattleCap = carCapacity('cattle'); // stock
+  const hopperTrain = network.player.lines
+    .flatMap((l) => l.trains)
+    .find((t) => t.consist.length > 0 && t.consist.every((c) => CARGO[c.kind].car === 'hopper'));
+  result.carTypes = {
+    coalIsHopper: CARGO.coal.car === 'hopper',
+    passengersIsCoach: CARGO.passengers.car === 'coach',
+    capacityVaries: coalCap !== cattleCap && coalCap > cattleCap && coalCap === 28 && cattleCap === 18,
+    concreteHopperCap: hopperTrain ? hopperTrain.capacity === 28 * hopperTrain.consist.length : false,
+    beatsOldFlatModel: hopperTrain ? hopperTrain.capacity !== 24 * hopperTrain.consist.length : false,
+  };
+
+  // T) Economic events: a boom raises a cargo's price, a panic lowers everything, and
+  //    every event reverts once its run is over. (auto=false so the scheduler stays quiet.)
+  const ed = new EventDirector(undefined, false);
+  ed.forceEvent('boom', 'steel');
+  const boomMult = ed.priceMult('steel');
+  ed.forceEvent('panic');
+  const panicMult = ed.priceMult('grain');
+  for (let i = 0; i < 6000; i++) ed.update(1 / 30); // 200 game-seconds — past every duration
+  result.events = {
+    boomRaises: boomMult > 1.3,
+    panicLowers: panicMult < 1,
+    revertsAfterRun: Math.abs(ed.priceMult('steel') - 1) < 0.001 && Math.abs(ed.priceMult('grain') - 1) < 0.001,
+    wiredToNetwork: typeof network.priceModifier === 'function',
+  };
+
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
   el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px;max-width:100vw;white-space:pre-wrap';
@@ -914,7 +952,7 @@ function runSoak(network: Network, loco: LocoClass): void {
     for (const l of network.lines) {
       for (const tr of l.trains) {
         for (const car of tr.consist) {
-          if (bad(car.amount) || car.amount < -0.5 || car.amount > CAR_CAP + 2) flag(`car ${car.kind}=${car.amount}`, t);
+          if (bad(car.amount) || car.amount < -0.5 || car.amount > carCapacity(car.kind) + 2) flag(`car ${car.kind}=${car.amount}`, t);
         }
         if (bad(tr.railDist)) flag('train railDist not finite', t);
       }

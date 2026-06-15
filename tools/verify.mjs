@@ -130,6 +130,20 @@ async function main() {
       ui?.breakdown?.broke && ui?.breakdown?.repairedOk && ui?.breakdown?.reliabilityValid,
       ui?.breakdown
     );
+    check(
+      'ui: cargoes ride distinct car types with per-type capacity (train cap ≠ old flat model)',
+      ui?.carTypes?.coalIsHopper &&
+        ui?.carTypes?.passengersIsCoach &&
+        ui?.carTypes?.capacityVaries &&
+        ui?.carTypes?.concreteHopperCap &&
+        ui?.carTypes?.beatsOldFlatModel,
+      ui?.carTypes
+    );
+    check(
+      'ui: economic events move prices (boom up, panic down) and revert after their run',
+      ui?.events?.boomRaises && ui?.events?.panicLowers && ui?.events?.revertsAfterRun && ui?.events?.wiredToNetwork,
+      ui?.events
+    );
     check('ui: catchment assigns towns to their nearest in-range depot', ui?.catchment?.correct, ui?.catchment);
     check('ui: rail network reaches all stops on a line', ui?.network?.reachesAllStops, ui?.network);
     check(

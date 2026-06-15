@@ -28,6 +28,8 @@ export class HUD {
 
   private qualityBtns = new Map<QualityLevel, HTMLButtonElement>();
   private speedBtns: { v: number; btn: HTMLButtonElement }[] = [];
+  private newsEl!: HTMLDivElement;
+  private newsToken = 0;
   private upkeep!: HTMLDivElement;
   private goalLine!: HTMLDivElement;
   private standings!: HTMLDivElement;
@@ -245,6 +247,24 @@ export class HUD {
     });
     this.root.append(this.banner);
 
+    // News toast — economic events scroll across just under the build banner.
+    this.newsEl = el('div', {
+      position: 'absolute',
+      top: '54px',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      padding: '8px 16px',
+      background: 'rgba(20,24,30,0.86)',
+      border: '1px solid rgba(255,226,138,0.45)',
+      borderRadius: '8px',
+      fontSize: '13px',
+      fontWeight: '600',
+      display: 'none',
+      whiteSpace: 'nowrap',
+      boxShadow: '0 2px 18px rgba(0,0,0,0.4)',
+    });
+    this.root.append(this.newsEl);
+
     // Time controls, bottom-centre: pause / 1× / 2× / 3× (also Space and keys 1–3).
     const speedBar = el('div', {
       position: 'absolute',
@@ -398,6 +418,18 @@ export class HUD {
       btn.style.borderColor = on ? 'rgba(143,255,168,0.6)' : 'rgba(255,255,255,0.18)';
       btn.style.color = on ? '#8fffa8' : '#f4f0e6';
     }
+  }
+
+  /** Flash an economic-event headline for a few seconds (green = good for the player). */
+  news(text: string, good: boolean): void {
+    this.newsEl.textContent = (good ? '📈 ' : '📉 ') + text;
+    this.newsEl.style.borderColor = good ? 'rgba(143,255,168,0.5)' : 'rgba(255,150,120,0.5)';
+    this.newsEl.style.color = good ? '#bff6c9' : '#ffc6b6';
+    this.newsEl.style.display = 'block';
+    const tok = ++this.newsToken;
+    setTimeout(() => {
+      if (tok === this.newsToken) this.newsEl.style.display = 'none';
+    }, 6500);
   }
 
   /** Highlight the active time-control button (driven by main's speed state). */

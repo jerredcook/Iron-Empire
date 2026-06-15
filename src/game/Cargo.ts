@@ -14,6 +14,27 @@ export type CargoKind =
   | 'iron'
   | 'steel';
 
+/** The kind of rolling stock a cargo rides in — distinct silhouette and capacity. */
+export type CarType = 'boxcar' | 'hopper' | 'stock' | 'coach' | 'flat';
+
+/** Units a car of each type holds — bulk hoppers carry the most, stock cars the least. */
+export const CAR_CAPACITY: Record<CarType, number> = {
+  coach: 20, // passengers & mail
+  boxcar: 24, // packaged goods
+  hopper: 28, // bulk: coal, ore, grain
+  stock: 18, // livestock
+  flat: 22, // lumber & steel
+};
+
+/** Human label for a car type — shown next to each car in the inspector. */
+export const CAR_LABEL: Record<CarType, string> = {
+  boxcar: 'Boxcar',
+  hopper: 'Hopper',
+  stock: 'Stock car',
+  coach: 'Coach',
+  flat: 'Flatcar',
+};
+
 export interface CargoDef {
   kind: CargoKind;
   label: string;
@@ -21,21 +42,28 @@ export interface CargoDef {
   color: number;
   /** Revenue per unit before the distance multiplier. */
   basePrice: number;
+  /** The kind of car that hauls it. */
+  car: CarType;
 }
 
 export const CARGO: Record<CargoKind, CargoDef> = {
-  passengers: { kind: 'passengers', label: 'Passengers', color: 0x6db4d6, basePrice: 46 },
-  mail: { kind: 'mail', label: 'Mail', color: 0xe8d27a, basePrice: 58 },
-  goods: { kind: 'goods', label: 'Goods', color: 0xc06a3a, basePrice: 64 },
-  grain: { kind: 'grain', label: 'Grain', color: 0xd9b24a, basePrice: 30 },
-  coal: { kind: 'coal', label: 'Coal', color: 0x303034, basePrice: 28 },
-  lumber: { kind: 'lumber', label: 'Lumber', color: 0x8a5a32, basePrice: 34 },
-  cattle: { kind: 'cattle', label: 'Cattle', color: 0xb89a7a, basePrice: 40 },
-  iron: { kind: 'iron', label: 'Iron Ore', color: 0x9a6b4f, basePrice: 32 },
-  steel: { kind: 'steel', label: 'Steel', color: 0x7f8a99, basePrice: 78 },
+  passengers: { kind: 'passengers', label: 'Passengers', color: 0x6db4d6, basePrice: 46, car: 'coach' },
+  mail: { kind: 'mail', label: 'Mail', color: 0xe8d27a, basePrice: 58, car: 'coach' },
+  goods: { kind: 'goods', label: 'Goods', color: 0xc06a3a, basePrice: 64, car: 'boxcar' },
+  grain: { kind: 'grain', label: 'Grain', color: 0xd9b24a, basePrice: 30, car: 'hopper' },
+  coal: { kind: 'coal', label: 'Coal', color: 0x303034, basePrice: 28, car: 'hopper' },
+  lumber: { kind: 'lumber', label: 'Lumber', color: 0x8a5a32, basePrice: 34, car: 'flat' },
+  cattle: { kind: 'cattle', label: 'Cattle', color: 0xb89a7a, basePrice: 40, car: 'stock' },
+  iron: { kind: 'iron', label: 'Iron Ore', color: 0x9a6b4f, basePrice: 32, car: 'hopper' },
+  steel: { kind: 'steel', label: 'Steel', color: 0x7f8a99, basePrice: 78, car: 'flat' },
 };
 
 export const ALL_CARGO = Object.keys(CARGO) as CargoKind[];
+
+/** Capacity of the car that hauls a given cargo. */
+export function carCapacity(kind: CargoKind): number {
+  return CAR_CAPACITY[CARGO[kind].car];
+}
 
 /**
  * What a delivery pays: the cargo's base price times the amount, scaled by how far

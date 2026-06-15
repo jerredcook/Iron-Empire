@@ -1,5 +1,5 @@
 import { Network, GStation, GLine, STOCK_CAP } from './Network';
-import { CARGO, CargoKind } from './Cargo';
+import { CARGO, CargoKind, CAR_LABEL, carCapacity } from './Cargo';
 import { Train } from './Train';
 
 export type Selection =
@@ -275,10 +275,11 @@ export class Inspector {
     html += `<div style="opacity:0.55;font-size:10.5px;text-transform:uppercase;letter-spacing:0.5px;margin-top:10px">Consist (${t.consist.length} cars)</div>`;
     html += `<div style="margin-top:4px">`;
     const routeWants = new Set(line.stops.flatMap((s) => [...s.demands]));
-    t.consist.forEach((car, i) => {
+    t.consist.forEach((car) => {
       const warn = !routeWants.has(car.kind);
+      const cap = carCapacity(car.kind);
       html += `<div style="display:flex;align-items:center;gap:6px;margin:3px 0">${this.dot(hex(CARGO[car.kind].color))}` +
-        `<span>Car ${i + 1}: ${CARGO[car.kind].label} — ${Math.floor(car.amount)} units</span>` +
+        `<span>${CAR_LABEL[CARGO[car.kind].car]} · ${CARGO[car.kind].label} — ${Math.floor(car.amount)}/${cap}</span>` +
         (warn ? `<span title="No stop on this line demands this cargo" style="color:#ffb454">⚠</span>` : '') +
         `</div>`;
     });
