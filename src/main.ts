@@ -168,7 +168,8 @@ async function boot(cfg: BootCfg): Promise<void> {
       network.demolishStation(st);
       clearSelection();
     },
-    (line, train) => network.repairTrain(line, train)
+    (line, train) => network.repairTrain(line, train),
+    (st, type) => network.addStationBuilding(st, type)
   );
   const auctioneer = new Auctioneer(network);
   // Economic events (booms, panics, gold rushes) move freight prices for a while; wire
@@ -839,6 +840,67 @@ function runUiTest(
     wiredToNetwork: typeof network.priceModifier === 'function',
   };
 
+  // U) Station maintenance buildings: each is a one-time player-depot purchase with a
+  //    concrete effect — gating, charge, stock-cap, revenue bonus, engine servicing, and
+  //    persistence across save/load.
+  network.status = 'playing';
+  const sbCity = network.stations.find((s) => !s.hasStation);
+  if (sbCity) {
+    network.buildStationAt(sbCity);
+    const moneyBeforeSB = network.player.money;
+    const builtAll =
+      network.addStationBuilding(sbCity, 'warehouse') &&
+      network.addStationBuilding(sbCity, 'postoffice') &&
+      network.addStationBuilding(sbCity, 'hotel') &&
+      network.addStationBuilding(sbCity, 'roundhouse') &&
+      network.addStationBuilding(sbCity, 'watertower');
+    const chargedMoney = network.player.money < moneyBeforeSB;
+    const dupRejected = !network.addStationBuilding(sbCity, 'warehouse'); // already built
+    const bareCity2 = network.stations.find((s) => !s.hasStation);
+    const gatedNoDepot = bareCity2 ? !network.addStationBuilding(bareCity2, 'warehouse') : true;
+    const bareForCompare = network.stations.find((s) => s.hasStation && !s.buildings.has('warehouse'));
+    const biggerStockCap =
+      network.stockCap(sbCity) > STOCK_CAP &&
+      (bareForCompare ? network.loadPerStop(sbCity) > network.loadPerStop(bareForCompare) : network.loadPerStop(sbCity) > 80);
+    const revenueBonus =
+      network.stationRevenueMult(sbCity, 'passengers') > 1 && network.stationRevenueMult(sbCity, 'goods') === 1;
+    const someTrain = network.player.lines.flatMap((l) => l.trains)[0] ?? null;
+    let maintainsEngine = false;
+    if (someTrain) {
+      someTrain.forceBreakdown();
+      someTrain.maintain();
+      maintainsEngine = !someTrain.broken;
+    }
+    // Water tower: expediteDwell halves an active berth dwell. Advance a train until it's
+    // dwelling, then assert the call cuts the dwell in half.
+    let dwellHalved = false;
+    const wtTrain = network.player.lines.flatMap((l) => l.trains).find((t) => t.consist.length > 0);
+    if (wtTrain) {
+      for (let i = 0; i < 2000; i++) {
+        network.status = 'playing';
+        network.update(1 / 30);
+        if (wtTrain.dwellRemaining > 0.6) break;
+      }
+      const before = wtTrain.dwellRemaining;
+      wtTrain.expediteDwell();
+      dwellHalved = before > 0.6 && Math.abs(wtTrain.dwellRemaining - before * 0.5) < 0.02;
+    }
+    network.save();
+    network.status = 'playing';
+    network.loadFromStorage();
+    result.stationBuildings = {
+      builtAll,
+      chargedMoney,
+      dupRejected,
+      gatedNoDepot,
+      biggerStockCap,
+      revenueBonus,
+      maintainsEngine,
+      dwellHalved,
+      persisted: sbCity.buildings.has('warehouse') && sbCity.buildings.has('hotel') && sbCity.buildings.size === 5,
+    };
+  }
+
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
   el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px;max-width:100vw;white-space:pre-wrap';
@@ -942,11 +1004,12 @@ function runSoak(network: Network, loco: LocoClass): void {
       if (bad(c.money) || bad(c.netWorth)) flag(`company ${c.name} money/netWorth not finite`, t);
     }
     for (const st of network.stations) {
+      const cap = network.stockCap(st) + 2; // a warehouse legitimately raises the ceiling
       for (const [k, amt] of st.stock) {
-        if (bad(amt) || amt < -0.5 || amt > STOCK_CAP + 2) flag(`stock ${st.name}/${k}=${amt}`, t);
+        if (bad(amt) || amt < -0.5 || amt > cap) flag(`stock ${st.name}/${k}=${amt}`, t);
       }
       for (const [k, amt] of st.input) {
-        if (bad(amt) || amt < -0.5 || amt > STOCK_CAP + 2) flag(`input ${st.name}/${k}=${amt}`, t);
+        if (bad(amt) || amt < -0.5 || amt > cap) flag(`input ${st.name}/${k}=${amt}`, t);
       }
     }
     for (const l of network.lines) {

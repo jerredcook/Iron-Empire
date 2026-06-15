@@ -1,5 +1,6 @@
 import { Network, GStation, GLine, STOCK_CAP } from './Network';
 import { CARGO, CargoKind, CAR_LABEL, carCapacity } from './Cargo';
+import { StationBuilding, STATION_BUILDINGS, STATION_BUILDING_ORDER } from './Depot';
 import { Train } from './Train';
 
 export type Selection =
@@ -32,7 +33,8 @@ export class Inspector {
     private onBuildStation: (st: GStation) => void,
     private onThroughService: (st: GStation) => void,
     private onDemolishStation: (st: GStation) => void,
-    private onRepairTrain: (line: GLine, train: Train) => void
+    private onRepairTrain: (line: GLine, train: Train) => void,
+    private onAddStationBuilding: (st: GStation, type: StationBuilding) => void
   ) {
     this.panel = document.createElement('div');
     Object.assign(this.panel.style, {
@@ -98,6 +100,13 @@ export class Inspector {
       const st = this.sel.station;
       ds.onclick = () => this.onDemolishStation(st);
     }
+    if (this.sel.kind === 'station') {
+      const st = this.sel.station;
+      this.panel.querySelectorAll('[data-building]').forEach((node) => {
+        const b = (node as HTMLElement).dataset.building as StationBuilding;
+        (node as HTMLElement).onclick = () => this.onAddStationBuilding(st, b);
+      });
+    }
     const ind = this.panel.querySelector('[data-industry]') as HTMLElement | null;
     if (ind && this.sel.kind === 'station') {
       const st = this.sel.station;
@@ -161,6 +170,23 @@ export class Inspector {
       }
       const reach = this.network.reachableFrom(st).size - 1;
       if (reach > 0) html += `<div style="font-size:11.5px;opacity:0.7;margin-bottom:4px">🌐 Network: reaches ${reach} other station${reach === 1 ? '' : 's'}</div>`;
+
+      // Maintenance facilities — built ones as green pills, the rest as buy buttons.
+      if (st.depotOwner === this.network.player) {
+        html += `<div style="opacity:0.55;font-size:10.5px;text-transform:uppercase;letter-spacing:0.5px;margin-top:8px">Facilities</div>`;
+        const owned = STATION_BUILDING_ORDER.filter((b) => st.buildings.has(b));
+        if (owned.length) {
+          html += `<div style="margin-top:3px">${owned
+            .map((b) => `<span style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;border-radius:10px;background:rgba(143,255,168,0.14);color:#bff6c9;font-size:11px">${STATION_BUILDINGS[b].icon} ${STATION_BUILDINGS[b].label}</span>`)
+            .join('')}</div>`;
+        }
+        for (const b of STATION_BUILDING_ORDER) {
+          if (st.buildings.has(b)) continue;
+          const def = STATION_BUILDINGS[b];
+          html += `<div data-building="${b}" title="${def.blurb}" style="margin-top:5px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;pointer-events:auto;padding:5px 8px;border-radius:6px;border:1px solid rgba(255,226,138,0.4);color:#ffe28a;font-size:11.5px">` +
+            `<span>${def.icon} ${def.label}</span><span style="opacity:0.8">$${(def.cost / 1000).toFixed(0)}k</span></div>`;
+        }
+      }
     } else {
       html += `<div style="font-size:12px;opacity:0.7;margin:2px 0 6px">No depot — build one to route trains here.</div>`;
     }

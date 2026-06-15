@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { terrainSet } from '../engine/Assets';
 import { mulberry32 } from '../world/Heightfield';
+import { StationBuilding } from './Depot';
 
 /**
  * Period architecture built face-by-face so every wall gets correctly-scaled
@@ -322,4 +323,76 @@ export function buildTown(seed: number, count: number, minR = 13, maxR = 47): TH
   }
   // Bake the whole town into one mesh per material — hundreds of draw calls become ~6.
   return flattenByMaterial(g);
+}
+
+/**
+ * A small maintenance structure that sits beside a depot when that building is bought —
+ * each type has a distinct silhouette so a built-up station reads its facilities at a
+ * glance. Geometry is per-instance (freed when the depot is demolished); materials are the
+ * shared mats() singletons (never disposed).
+ */
+export function buildStationStructure(type: StationBuilding): THREE.Group {
+  const m = mats();
+  const g = new THREE.Group();
+  const add = (mesh: THREE.Mesh, x: number, y: number, z: number): void => {
+    mesh.position.set(x, y, z);
+    g.add(mesh);
+  };
+
+  switch (type) {
+    case 'roundhouse': {
+      // Low round engine shed with a domed roof.
+      add(new THREE.Mesh(new THREE.CylinderGeometry(3.1, 3.1, 3.2, 12), m.brick), 0, 1.6, 0);
+      add(new THREE.Mesh(new THREE.ConeGeometry(3.5, 1.7, 12), m.roof), 0, 4.05, 0);
+      // A bay door arch facing out.
+      add(new THREE.Mesh(new THREE.BoxGeometry(1.8, 2.2, 0.3), m.door), 0, 1.4, 3.0);
+      break;
+    }
+    case 'watertower': {
+      // A tank raised on four legs.
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          add(new THREE.Mesh(new THREE.BoxGeometry(0.3, 4.0, 0.3), m.wood), sx * 1.3, 2.0, sz * 1.3);
+        }
+      }
+      add(new THREE.Mesh(new THREE.CylinderGeometry(2.0, 2.0, 2.6, 12), m.wood), 0, 5.3, 0);
+      add(new THREE.Mesh(new THREE.ConeGeometry(2.3, 1.0, 12), m.roof), 0, 7.1, 0);
+      break;
+    }
+    case 'warehouse': {
+      // A long low goods shed.
+      add(new THREE.Mesh(new THREE.BoxGeometry(8.0, 3.2, 4.0), m.plaster), 0, 1.6, 0);
+      add(new THREE.Mesh(new THREE.BoxGeometry(8.4, 0.5, 4.4), m.roof), 0, 3.4, 0);
+      add(new THREE.Mesh(new THREE.BoxGeometry(2.0, 2.2, 0.2), m.door), -2.4, 1.3, 2.05);
+      add(new THREE.Mesh(new THREE.BoxGeometry(2.0, 2.2, 0.2), m.door), 2.4, 1.3, 2.05);
+      break;
+    }
+    case 'postoffice': {
+      // A trim brick office with a flag.
+      add(new THREE.Mesh(new THREE.BoxGeometry(4.2, 3.6, 4.0), m.brick), 0, 1.8, 0);
+      add(new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.5, 4.4), m.roof), 0, 3.8, 0);
+      add(new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.9, 0.2), m.glass), 0, 2.0, 2.05);
+      add(new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 4.0, 6), m.trim), 1.8, 5.0, 0);
+      add(new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.8, 0.06), m.door), 2.45, 6.4, 0);
+      break;
+    }
+    case 'hotel':
+    default: {
+      // The tallest structure — a three-storey block with window bands.
+      add(new THREE.Mesh(new THREE.BoxGeometry(5.0, 7.5, 5.0), m.plaster), 0, 3.75, 0);
+      add(new THREE.Mesh(new THREE.BoxGeometry(5.4, 0.6, 5.4), m.roof), 0, 7.8, 0);
+      for (let f = 0; f < 3; f++) {
+        add(new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.8, 0.15), m.glass), 0, 1.9 + f * 2.2, 2.55);
+      }
+      break;
+    }
+  }
+
+  g.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+    }
+  });
+  return g;
 }

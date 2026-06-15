@@ -4,8 +4,9 @@ import { Track, TRACK_SIDE } from './Track';
 import { Train, CAR_CAP } from './Train';
 import { CargoKind, ALL_CARGO, haulRevenue, marketMult, carCapacity } from './Cargo';
 import { Archetype, CitySite, Recipe, ARCHETYPES } from './Economy';
-import { buildTown, buildStation, buildFactory } from './Buildings';
+import { buildTown, buildStation, buildFactory, buildStationStructure } from './Buildings';
 import { LocoClass, defaultLoco, LOCOS } from './Locomotives';
+import { StationBuilding, STATION_BUILDINGS, STATION_BUILDING_ORDER } from './Depot';
 
 export const STOCK_CAP = 120; // a city can only stockpile so much waiting freight
 const LOAD_PER_STOP = 80; // units a train can take on in one berth
@@ -24,6 +25,12 @@ const SERVE_FULL = 55; // banked service that yields full prosperity
 const GROWTH_TIERS = [1.55, 2.05, 2.55]; // growth thresholds that add a house ring
 const SAT_PER_UNIT = 0.0055; // market saturation added per delivered unit (a ~80-unit drop ≈ +0.44)
 const SAT_RECOVERY = 0.02; // saturation shed per second while a market goes unfed (~full in 30s)
+// Station maintenance-building effects.
+const POSTOFFICE_MULT = 1.3; // mail & passenger revenue bonus at a post office
+const HOTEL_MULT = 1.3; // passenger revenue bonus at a hotel
+const WAREHOUSE_STOCK = 1.6; // stockpile-cap multiplier at a warehouse
+const WAREHOUSE_LOAD = 1.5; // loading-throughput multiplier at a warehouse
+const HOTEL_GROWTH = 1.5; // prosperity accrual multiplier on passenger deliveries at a hotel
 
 export type GameStatus = 'playing' | 'won' | 'lost';
 
@@ -97,6 +104,8 @@ export interface GStation {
   depotOwner: Company | null;
   /** Nearby depot-less cities this station gathers cargo from (its catchment). */
   catchment: GStation[];
+  /** Maintenance buildings bought at this depot (roundhouse, warehouse, …). */
+  buildings: Set<StationBuilding>;
 }
 
 export interface GLine {
@@ -379,6 +388,7 @@ export class Network {
         revenue: Math.round(s.revenue),
         hasStation: s.hasStation,
         depotOwner: s.depotOwner ? ci(s.depotOwner) : -1,
+        buildings: [...s.buildings],
       })),
       lines: this.lines.map((l) => ({
         owner: ci(l.owner),
@@ -462,7 +472,16 @@ export class Network {
       if (s.owner) s.owner.industries.push(s);
       s.level = sd.level ?? 0;
       s.revenue = sd.revenue ?? 0;
-      if (sd.hasStation) this.placeDepot(s, sd.depotOwner >= 0 ? this.companies[sd.depotOwner] : this.player);
+      if (sd.hasStation) {
+        this.placeDepot(s, sd.depotOwner >= 0 ? this.companies[sd.depotOwner] : this.player);
+        s.buildings.clear(); // restore strictly from the save, not stale in-memory state
+        for (const b of (sd.buildings ?? []) as StationBuilding[]) {
+          s.buildings.add(b);
+          this.placeStationStructure(s, b);
+        }
+      } else {
+        s.buildings.clear();
+      }
     });
 
     for (const ld of data.lines) {
@@ -586,6 +605,7 @@ export class Network {
       depot: null,
       depotOwner: null,
       catchment: [],
+      buildings: new Set(),
     };
     this.stations.push(st);
 
@@ -641,6 +661,7 @@ export class Network {
     st.depotOwner = null;
     st.level = 0;
     st.revenue = 0;
+    st.buildings.clear(); // their meshes were children of the depot, freed above
     this.player.money += Math.round(STATION_COST * 0.4);
     this.assignCatchment();
     this.onBuilt?.();
@@ -649,6 +670,16 @@ export class Network {
 
   /** The depot building + flag at a city's station (also used on load). */
   private placeDepot(st: GStation, owner: Company): void {
+    // Re-placing over an existing depot (loading into an active game) — free the old mesh
+    // and its building children first, or they'd be orphaned in the scene.
+    if (st.depot) {
+      this.scene.remove(st.depot);
+      st.depot.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose();
+      });
+      st.depot = null;
+    }
     st.hasStation = true;
     st.depotOwner = owner;
     const depot = buildStation();
@@ -657,6 +688,48 @@ export class Network {
     this.scene.add(depot);
     st.depot = depot;
     this.assignCatchment();
+  }
+
+  /** Buy a maintenance building at a player-owned depot (one of each). */
+  addStationBuilding(st: GStation, type: StationBuilding): boolean {
+    if (!st.hasStation || st.depotOwner !== this.player || this.status !== 'playing') return false;
+    if (st.buildings.has(type)) return false;
+    const cost = STATION_BUILDINGS[type].cost;
+    if (cost > this.player.money) return false;
+    this.player.money -= cost;
+    st.buildings.add(type);
+    this.placeStationStructure(st, type);
+    this.onBuilt?.();
+    return true;
+  }
+
+  /** Set a maintenance structure beside the depot (laid out in a row in depot-local
+   *  space, so demolishing the depot frees it along with the depot's own geometry). */
+  private placeStationStructure(st: GStation, type: StationBuilding): void {
+    if (!st.depot) return;
+    const s = buildStationStructure(type);
+    const idx = STATION_BUILDING_ORDER.indexOf(type);
+    s.position.set(-18 + idx * 9, 0, -13);
+    st.depot.add(s);
+  }
+
+  /** Most this station can stockpile of any one cargo — a warehouse raises it. */
+  stockCap(st: GStation): number {
+    return STOCK_CAP * (st.buildings.has('warehouse') ? WAREHOUSE_STOCK : 1);
+  }
+
+  /** Units a train can take on in one berth here — a warehouse raises it. */
+  loadPerStop(st: GStation): number {
+    return LOAD_PER_STOP * (st.buildings.has('warehouse') ? WAREHOUSE_LOAD : 1);
+  }
+
+  /** Extra revenue multiplier from this station's buildings for a given cargo (post
+   *  office boosts mail & passengers, hotel boosts passengers). */
+  stationRevenueMult(st: GStation, kind: CargoKind): number {
+    let m = 1;
+    if (st.buildings.has('postoffice') && (kind === 'mail' || kind === 'passengers')) m *= POSTOFFICE_MULT;
+    if (st.buildings.has('hotel') && kind === 'passengers') m *= HOTEL_MULT;
+    return m;
   }
 
   /** Assign each depot-less city to its nearest depot within range — that depot then
@@ -1066,7 +1139,13 @@ export class Network {
   private serviceTrain(line: GLine, train: Train, at: GStation): void {
     const owner = line.owner;
     line.trips += 1; // arriving at a berth completes a leg
+    // Maintenance buildings: a roundhouse services the engine, a water tower speeds the
+    // turnaround. Both act on the train the moment it berths here.
+    if (at.buildings.has('roundhouse')) train.maintain();
+    if (at.buildings.has('watertower')) train.expediteDwell();
     const bonus = 1 + at.level * STATION_BONUS;
+    const inputCap = this.stockCap(at);
+    const loadCap = this.loadPerStop(at);
     const wants = this.effectiveDemands(at); // own demands + the whole catchment's
     for (const car of train.consist) {
       // Unload. The price paid falls as this market saturates on the cargo, then the
@@ -1074,7 +1153,9 @@ export class Network {
       if (car.amount > 0 && wants.has(car.kind)) {
         const dist = car.origin.distanceTo(at.pos);
         const mult = marketMult(at.sat.get(car.kind) ?? 0);
-        const rev = Math.round(haulRevenue(car.kind, car.amount, dist) * bonus * mult * this.priceModifier(car.kind));
+        const rev = Math.round(
+          haulRevenue(car.kind, car.amount, dist) * bonus * mult * this.priceModifier(car.kind) * this.stationRevenueMult(at, car.kind)
+        );
         at.sat.set(car.kind, Math.min(1, (at.sat.get(car.kind) ?? 0) + car.amount * SAT_PER_UNIT));
         owner.money += rev;
         at.revenue += rev; // per-stop earnings tally
@@ -1084,9 +1165,11 @@ export class Network {
           this.onRevenue?.(rev);
         }
         if (at.recipe && car.kind in at.recipe.inputs) {
-          at.input.set(car.kind, Math.min(STOCK_CAP, (at.input.get(car.kind) ?? 0) + car.amount));
+          at.input.set(car.kind, Math.min(inputCap, (at.input.get(car.kind) ?? 0) + car.amount));
         } else {
-          at.served += car.amount;
+          // A hotel turns served passengers into faster prosperity growth.
+          const grow = at.buildings.has('hotel') && car.kind === 'passengers' ? HOTEL_GROWTH : 1;
+          at.served += car.amount * grow;
         }
         car.amount = 0;
       }
@@ -1094,7 +1177,7 @@ export class Network {
       const room = carCapacity(car.kind) - car.amount;
       if (room > 0) {
         const have = at.stock.get(car.kind) ?? 0;
-        const take = Math.min(room, have, LOAD_PER_STOP);
+        const take = Math.min(room, have, loadCap);
         if (take >= 1) {
           at.stock.set(car.kind, have - take);
           if (car.amount === 0) car.origin.copy(at.pos);
@@ -1113,7 +1196,7 @@ export class Network {
     for (const k of Object.keys(rc.inputs) as CargoKind[]) {
       batch = Math.min(batch, (s.input.get(k) ?? 0) / rc.inputs[k]!);
     }
-    batch = Math.min(batch, STOCK_CAP - (s.stock.get(rc.output) ?? 0));
+    batch = Math.min(batch, this.stockCap(s) - (s.stock.get(rc.output) ?? 0));
     if (batch <= 0) return;
     for (const k of Object.keys(rc.inputs) as CargoKind[]) {
       s.input.set(k, (s.input.get(k) ?? 0) - rc.inputs[k]! * batch);
@@ -1154,9 +1237,10 @@ export class Network {
       // Only depots accrue stock — gathering their whole catchment (already
       // prosperity-scaled). A city with no depot in range has no outlet for its cargo.
       if (s.hasStation) {
+        const cap = this.stockCap(s);
         for (const [kind, rate] of this.effectiveSupplies(s)) {
           const cur = s.stock.get(kind) ?? 0;
-          if (cur < STOCK_CAP) s.stock.set(kind, Math.min(STOCK_CAP, cur + rate * dt));
+          if (cur < cap) s.stock.set(kind, Math.min(cap, cur + rate * dt));
         }
         // A factory ships finished goods only through its own depot.
         if (s.recipe) this.process(s, dt);

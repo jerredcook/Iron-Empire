@@ -133,6 +133,11 @@ export class Train {
     return this.speed;
   }
 
+  /** Seconds still dwelling at the current berth (0 while running) — read by tests/UI. */
+  get dwellRemaining(): number {
+    return this.dwell;
+  }
+
   /** Same-line block: the arc position of the leader ahead on this rail, or null. */
   setBlock(d: number | null): void {
     this.block = d;
@@ -211,6 +216,19 @@ export class Train {
     this.broken = false;
     this.downtime = 0;
     this.wear = 0;
+  }
+
+  /** Routine servicing at a roundhouse — sheds most accumulated wear (so the engine runs
+   *  far longer before failing) and frees it if it happened to break down right here. */
+  maintain(): void {
+    this.wear = Math.max(0, this.wear - WEAR_LIMIT * 0.6);
+    if (this.broken) this.repair();
+  }
+
+  /** A water-tower stop: top up fast and roll on, halving the berth dwell. Called from
+   *  onStop, after update() has set the standard dwell. */
+  expediteDwell(): void {
+    this.dwell *= 0.5;
   }
 
   update(dt: number): void {

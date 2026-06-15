@@ -144,6 +144,19 @@ async function main() {
       ui?.events?.boomRaises && ui?.events?.panicLowers && ui?.events?.revertsAfterRun && ui?.events?.wiredToNetwork,
       ui?.events
     );
+    check(
+      'ui: station maintenance buildings — gating, charge, stock-cap+throughput, revenue, servicing, dwell, persist',
+      ui?.stationBuildings?.builtAll &&
+        ui?.stationBuildings?.chargedMoney &&
+        ui?.stationBuildings?.dupRejected &&
+        ui?.stationBuildings?.gatedNoDepot &&
+        ui?.stationBuildings?.biggerStockCap &&
+        ui?.stationBuildings?.revenueBonus &&
+        ui?.stationBuildings?.maintainsEngine &&
+        ui?.stationBuildings?.dwellHalved &&
+        ui?.stationBuildings?.persisted,
+      ui?.stationBuildings
+    );
     check('ui: catchment assigns towns to their nearest in-range depot', ui?.catchment?.correct, ui?.catchment);
     check('ui: rail network reaches all stops on a line', ui?.network?.reachesAllStops, ui?.network);
     check(
