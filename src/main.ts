@@ -6,7 +6,7 @@ import { TerrainMesh } from './world/TerrainMesh';
 import { buildSky } from './world/Sky';
 import { WaterPlane } from './world/WaterPlane';
 import { Scatter } from './world/Scatter';
-import { Network, STOCK_CAP } from './game/Network';
+import { Network, STOCK_CAP, Company } from './game/Network';
 import { placeCities } from './game/Economy';
 import { TrackBuilder } from './game/TrackBuilder';
 import { HUD } from './game/HUD';
@@ -88,7 +88,7 @@ async function boot(cfg: BootCfg): Promise<void> {
   // Synthesized sound — unlocked on the first interaction, chimes on deliveries.
   const audio = new AudioBus();
   // Dev diagnostics: count deliveries/revenue so a headless run can confirm the loop.
-  const diag = { revenue: 0, deliveries: 0, builds: 0 };
+  const diag = { revenue: 0, deliveries: 0, builds: 0, peakSat: 0 };
   network.onRevenue = (amt) => {
     audio.chime();
     diag.revenue += amt;
@@ -261,6 +261,7 @@ async function boot(cfg: BootCfg): Promise<void> {
       goodsWaiting: Math.round(goods),
       maxGrowth: +maxGrowth.toFixed(2),
       maxSat: +maxSat.toFixed(3),
+      peakSat: +diag.peakSat.toFixed(3),
       steelStock: +steelMade.toFixed(1),
       rivalNetWorth: Math.round(network.rivals[0]?.netWorth ?? 0),
     });
@@ -272,6 +273,9 @@ async function boot(cfg: BootCfg): Promise<void> {
   for (let i = 0; i < simticks; i++) {
     network.update(1 / 30);
     auctioneer.update(1 / 30);
+    // Track peak market saturation over the whole run — robust to the final instant being
+    // quiet (a momentary lull would read 0 even though markets saturated throughout).
+    for (const s of network.stations) for (const v of s.sat.values()) if (v > diag.peakSat) diag.peakSat = v;
   }
   writeDiag();
 
@@ -285,6 +289,12 @@ async function boot(cfg: BootCfg): Promise<void> {
   // checking every tick for NaN, runaway, or out-of-bounds stock/cargo.
   if (location.search.includes('soak')) {
     runSoak(network, selectedLoco);
+  }
+
+  // Headless AI test: on a fresh world with an open map, hand a rival capital and time and
+  // confirm it plays smart — scales winners, sharpens depots, expands, invests, stays solvent.
+  if (location.search.includes('aitest')) {
+    runAiTest(network);
   }
 
   // One frame of the whole game — used by the live loop and the headless frame test.
@@ -1038,6 +1048,51 @@ function runSoak(network: Network, loco: LocoClass): void {
     trains: network.lines.reduce((a, l) => a + l.trains.length, 0),
     deliveries: 0,
   });
+  document.body.append(el);
+}
+
+/** Hand a rival real capital on a fresh, open map and confirm it plays smart: scales busy
+ *  lines, sharpens depots, expands the network, invests spare cash, and stays solvent. */
+function runAiTest(network: Network): void {
+  // Ensure a second rival exists so the AI→AI stock-market path (companyBuyShares with
+  // allowTakeover=true, accumulating toward absorbing another railroad) is exercised — the
+  // single-AI autostart config can only ever test a capped position in the player.
+  if (network.companies.filter((c) => c.isAI).length < 2) {
+    network.companies.push(new Company('Sierra & Gulf', 0x4dff8a, true, 600_000));
+  }
+  const ai = network.companies.find((c) => c.isAI);
+  let result: Record<string, unknown> = { hasAI: false };
+  if (ai) {
+    ai.money = 5_000_000;
+    const before = network.lines.filter((l) => l.owner.isAI).length;
+    for (let i = 0; i < 7000; i++) {
+      network.status = 'playing';
+      network.update(1 / 30);
+    }
+    const aiLines = network.lines.filter((l) => l.owner.isAI);
+    const maxTrains = aiLines.reduce((m, l) => Math.max(m, l.trains.length), 0);
+    const totalHoldings = network.companies.reduce(
+      (a, c) => a + [...c.holdings.values()].reduce((x, y) => x + y, 0),
+      0
+    );
+    const aiDepots = network.stations.filter((s) => !!s.depotOwner?.isAI);
+    const maxLevel = aiDepots.reduce((m, s) => Math.max(m, s.level), 0);
+    const anyWarehouse = aiDepots.some((s) => s.buildings.has('warehouse'));
+    const aliveAIs = network.companies.filter((c) => c.isAI && !c.defunct);
+    const defunctAIs = network.companies.filter((c) => c.isAI && c.defunct).length;
+    result = {
+      hasAI: true,
+      expands: aiLines.length > before,
+      reinforces: maxTrains >= 2,
+      upgrades: maxLevel >= 1 || anyWarehouse,
+      invests: totalHoldings > 0 || defunctAIs > 0,
+      solvent: aliveAIs.length > 0 && aliveAIs.every((c) => c.netWorth > -100_000 && Number.isFinite(c.money)),
+    };
+  }
+  const el = document.createElement('pre');
+  el.id = 'ie-ai';
+  el.style.cssText = 'position:fixed;top:120px;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px';
+  el.textContent = JSON.stringify(result);
   document.body.append(el);
 }
 

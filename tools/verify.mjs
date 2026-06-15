@@ -187,12 +187,20 @@ async function main() {
     check('economy: deliveries occur', (ec?.deliveries ?? 0) > 0, ec);
     check('economy: rival stays solvent', (ec?.rivalNetWorth ?? -1e9) > -100_000, ec);
     check('economy: player state is sane', typeof ec?.money === 'number' && !!ec?.status, ec);
-    check('economy: markets actually saturate over a long run', (ec?.maxSat ?? 0) > 0, ec);
+    check('economy: markets actually saturate over a long run', (ec?.peakSat ?? 0) > 0, ec);
 
     console.log('• Speed-control test…');
     const sp = extract(chromeDump('autostart&speedtest'), 'ie-speed');
     check('speed: pause freezes the sim (no train motion, no money change)', sp?.frozeOnPause, sp);
     check('speed: 2× advances trains ~twice as far as 1×', sp?.scales, sp);
+
+    console.log('• Smarter-AI test…');
+    const aiR = extract(chromeDump('autostart&aitest'), 'ie-ai');
+    check(
+      'ai: a funded rival reinforces, upgrades, expands, invests, and stays solvent',
+      aiR?.hasAI && aiR?.expands && aiR?.reinforces && aiR?.upgrades && aiR?.invests && aiR?.solvent,
+      aiR
+    );
 
     console.log('• Soak test (~16 game-years, busy network)…');
     const sk = extract(chromeDump('autostart&soak'), 'ie-soak');

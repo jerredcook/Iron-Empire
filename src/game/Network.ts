@@ -533,12 +533,18 @@ export class Network {
 
   /** Player buys shares of a company; crossing 50% triggers a takeover. */
   buyShares(target: Company, qty: number): boolean {
-    if (target.defunct || qty <= 0) return false;
+    return this.companyBuyShares(this.player, target, qty);
+  }
+
+  /** Any company buys shares of another. Crossing 50% triggers a takeover (unless the
+   *  buyer is forbidden it — an AI can take a position in the player but never absorb it). */
+  private companyBuyShares(buyer: Company, target: Company, qty: number, allowTakeover = true): boolean {
+    if (target.defunct || buyer === target || qty <= 0) return false;
     const cost = qty * target.sharePrice;
-    if (cost > this.player.money) return false;
-    this.player.money -= cost;
-    this.player.holdings.set(target, (this.player.holdings.get(target) ?? 0) + qty);
-    if (target !== this.player && this.stake(target) > 0.5) this.takeover(this.player, target);
+    if (cost > buyer.money) return false;
+    buyer.money -= cost;
+    buyer.holdings.set(target, (buyer.holdings.get(target) ?? 0) + qty);
+    if (allowTakeover && (buyer.holdings.get(target) ?? 0) / target.shares > 0.5) this.takeover(buyer, target);
     return true;
   }
 
@@ -1352,37 +1358,134 @@ export class Network {
    */
   private planAI(c: Company, dt: number): void {
     c.aiTimer -= dt;
-    if (c.aiTimer > 0 || c.lines.length >= 4) return;
+    if (c.aiTimer > 0) return;
     c.aiTimer = this.aiInterval;
-    // Don't expand into insolvency: only build while the existing fleet is sustainable.
-    if (c.money < this.aiReserve * 1.5) return;
+    if (c.defunct) return;
 
+    // One measured move per turn, in priority order: keep the books healthy, scale the
+    // winners, sharpen the network, then expand it, and finally park spare cash in stock.
+    if (c.debt > 0 && c.money > this.aiReserve * 4) {
+      c.repayDebt(Math.min(c.debt, c.money - this.aiReserve * 3));
+      return;
+    }
+    if (this.aiReinforce(c)) return;
+    if (this.aiUpgrade(c)) return;
+    if (this.aiExpand(c)) return;
+    this.aiInvest(c);
+  }
+
+  /** Put another train on a busy line of the AI's — one whose stops have a real backlog of
+   *  waiting cargo and that isn't already at its train cap. */
+  private aiReinforce(c: Company): boolean {
     const loco = defaultLoco(this.year);
-    const reserve = this.aiReserve;
+    if (loco.cost > c.money - this.aiReserve) return false;
+    let best: GLine | null = null;
+    let bestWaiting = 90; // need a genuine backlog before adding capacity
+    for (const l of c.lines) {
+      if (l.through || l.stops.length < 2) continue;
+      let waiting = 0;
+      for (const s of l.stops) for (const v of s.stock.values()) waiting += v;
+      // Capacity scales with the backlog, not the route length: a line drowning in waiting
+      // cargo earns another train even if it's short (a cheap line can still be a busy one).
+      const cap = Math.min(3, 1 + Math.floor(waiting / 140));
+      if (l.trains.length >= cap) continue;
+      if (waiting > bestWaiting) {
+        bestWaiting = waiting;
+        best = l;
+      }
+    }
+    return best ? this.addTrain(best, loco) : false;
+  }
+
+  /** Improve the AI's best-earning depot: raise its level, else add a warehouse. */
+  private aiUpgrade(c: Company): boolean {
+    let dep: GStation | null = null;
+    let bestRev = -1;
+    for (const s of this.stations) {
+      if (s.depotOwner === c && s.hasStation && s.revenue > bestRev) {
+        bestRev = s.revenue;
+        dep = s;
+      }
+    }
+    if (!dep) return false;
+    if (dep.level < MAX_STATION_LEVEL) {
+      const cost = this.stationUpgradeCost(dep);
+      if (cost <= c.money - this.aiReserve) {
+        c.money -= cost;
+        dep.level += 1;
+        return true;
+      }
+    }
+    if (!dep.buildings.has('warehouse')) {
+      const cost = STATION_BUILDINGS.warehouse.cost;
+      if (cost <= c.money - this.aiReserve) {
+        c.money -= cost;
+        dep.buildings.add('warehouse');
+        this.placeStationStructure(dep, 'warehouse');
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Build the cheapest unbuilt trading corridor, scaling the network cap with net worth
+   *  and floating a bond to cover a shortfall when the company is creditworthy. */
+  private aiExpand(c: Company): boolean {
+    const lineCap = Math.min(10, 3 + Math.floor(Math.max(0, c.netWorth) / 1_500_000));
+    if (c.lines.length >= lineCap) return false;
+    const loco = defaultLoco(this.year);
     let best: { a: GStation; b: GStation; cost: number } | null = null;
     for (let i = 0; i < this.stations.length; i++) {
       for (let j = i + 1; j < this.stations.length; j++) {
         const a = this.stations[i];
         const b = this.stations[j];
         if (c.connects(a, b)) continue;
-        const trades =
-          this.offersOf(a).some((k) => b.demands.has(k)) || this.offersOf(b).some((k) => a.demands.has(k));
-        if (!trades) continue;
-        // A line needs a depot at each end — factor any missing ones into the cost.
+        if (!this.offersOf(a).some((k) => b.demands.has(k)) && !this.offersOf(b).some((k) => a.demands.has(k))) continue;
         const depots = (a.hasStation ? 0 : STATION_COST) + (b.hasStation ? 0 : STATION_COST);
         const cost = this.lineCost([a.pos, b.pos], loco) + depots;
-        if (cost > c.money - reserve) continue;
         if (!best || cost < best.cost) best = { a, b, cost };
       }
     }
-    if (best) {
-      for (const st of [best.a, best.b]) {
-        if (!st.hasStation) {
-          c.money -= STATION_COST;
-          this.placeDepot(st, c);
-        }
-      }
-      this.buildLineFor(c, [best.a.pos, best.b.pos], [best.a, best.b], loco);
+    if (!best) return false;
+    // Fund a shortfall with a bond, but only a creditworthy, proportionate one.
+    const shortfall = best.cost - (c.money - this.aiReserve);
+    if (shortfall > 0 && shortfall <= c.creditLimit && best.cost < Math.max(0, c.netWorth) * 0.5) {
+      c.issueBond(Math.ceil(shortfall));
     }
+    if (best.cost > c.money - this.aiReserve) return false;
+    for (const st of [best.a, best.b]) {
+      if (!st.hasStation) {
+        c.money -= STATION_COST;
+        this.placeDepot(st, c);
+      }
+    }
+    return this.buildLineFor(c, [best.a.pos, best.b.pos], [best.a, best.b], loco);
+  }
+
+  /** Park spare cash in the cheapest rival's stock — accumulating toward a takeover of
+   *  another railroad, or a (capped) income position in the player. */
+  private aiInvest(c: Company): boolean {
+    const spare = c.money - this.aiReserve * 2.5;
+    if (spare < 60_000) return false;
+    let target: Company | null = null;
+    let cheapest = Infinity;
+    for (const o of this.companies) {
+      if (o === c || o.defunct || !o.isAI) continue;
+      if (o.sharePrice < cheapest) {
+        cheapest = o.sharePrice;
+        target = o;
+      }
+    }
+    const allowTakeover = !!target; // an AI rival can be absorbed; the player cannot
+    if (!target && !this.player.defunct) target = this.player;
+    if (!target) return false;
+    let qty = Math.min(Math.floor((spare * 0.5) / target.sharePrice), Math.floor(target.shares * 0.08));
+    if (!allowTakeover) {
+      // Cap a stake in the player to a quarter — a position, not a coup.
+      const room = Math.floor(target.shares * 0.25) - (c.holdings.get(target) ?? 0);
+      qty = Math.min(qty, Math.max(0, room));
+    }
+    if (qty < 100) return false;
+    return this.companyBuyShares(c, target, qty, allowTakeover);
   }
 }
