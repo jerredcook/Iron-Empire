@@ -1108,6 +1108,42 @@ export class Network {
     return true;
   }
 
+  /** What it costs to re-engine a train with a given class — the new loco less a
+   *  trade-in on the old one. */
+  reLocoCost(train: Train, newLoco: LocoClass): number {
+    return newLoco.cost - Math.round(train.locoClass.cost * 0.5);
+  }
+
+  /** Swap a train's locomotive for a different class in place — keeping its consist,
+   *  cargo, and position on the line — for the price difference (less a trade-in on the
+   *  old engine). The train's slot in the line is preserved. */
+  replaceLoco(line: GLine, train: Train, newLoco: LocoClass): boolean {
+    if (line.owner !== this.player || this.status !== 'playing') return false;
+    if (newLoco.id === train.locoClass.id) return false;
+    const idx = line.trains.indexOf(train);
+    if (idx < 0) return false;
+    const net = this.reLocoCost(train, newLoco);
+    if (net > line.owner.money) return false;
+    // Capture the old engine's consist, cargo, and exact position.
+    const carKinds = train.consist.map((c) => c.kind);
+    const cargo = train.consist.map((c) => ({
+      amount: c.amount,
+      origin: [c.origin.x, c.origin.y, c.origin.z] as [number, number, number],
+    }));
+    const dist = train.railDist;
+    const dir = train.heading;
+    line.owner.money -= net;
+    // Retire the old engine and roll the new one out into the same slot.
+    train.dispose(this.scene);
+    line.trains.splice(idx, 1);
+    this.spawnTrain(line, newLoco, carKinds);
+    const nt = line.trains.pop()!; // spawnTrain appended it
+    line.trains.splice(idx, 0, nt);
+    nt.restore(dist, dir, cargo);
+    this.onBuilt?.();
+    return true;
+  }
+
   /** Demolish a whole line: scrap its trains and rails, refund part of the grading. */
   demolishLine(line: GLine): boolean {
     for (const t of [...line.trains]) t.dispose(this.scene);

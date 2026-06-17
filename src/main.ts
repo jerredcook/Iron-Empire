@@ -174,7 +174,12 @@ async function boot(cfg: BootCfg): Promise<void> {
       clearSelection();
     },
     (line, train) => network.repairTrain(line, train),
-    (st, type) => network.addStationBuilding(st, type)
+    (st, type) => network.addStationBuilding(st, type),
+    (line, train) => {
+      const upgraded = network.replaceLoco(line, train, defaultLoco(network.year));
+      if (upgraded && followTrain === train) followTrain = null; // the old train object is gone
+      clearSelection();
+    }
   );
   const auctioneer = new Auctioneer(network);
   // Economic events (booms, panics, gold rushes) move freight prices for a while; wire
@@ -985,6 +990,43 @@ function runUiTest(
     rowNamesLoco,
     clickSelectsTrain: clickOpenedTrain,
   };
+
+  // Z) Engine in-place upgrade: re-engine a train, keeping its consist, cargo, and place
+  //    on the line, for the price difference.
+  network.status = 'playing';
+  const euCities = network.stations.filter((s) => !s.hasStation);
+  if (euCities.length >= 2) {
+    const c1 = euCities[0];
+    const c2 = euCities[1];
+    network.buildStationAt(c1);
+    network.buildStationAt(c2);
+    const oldLoco = LOCOS[0]; // Grasshopper
+    network.buildLine([c1.pos, c2.pos], [c1, c2], oldLoco, ['grain', 'grain']);
+    const euLine = network.lines[network.lines.length - 1];
+    const tr = euLine.trains[0];
+    for (let i = 0; i < 300; i++) {
+      network.status = 'playing';
+      network.update(1 / 30);
+    }
+    network.status = 'playing'; // the funded test trips the win condition; keep it live
+    tr.consist.forEach((c) => (c.amount = 12)); // give it real cargo to preserve
+    const beforeKinds = tr.consist.map((c) => c.kind).join(',');
+    const beforeCargo = tr.consist.reduce((a, c) => a + c.amount, 0);
+    const beforeDist = tr.railDist;
+    const newLoco = LOCOS[6]; // Mountain — a much better engine
+    const net = network.reLocoCost(tr, newLoco);
+    const m0 = network.player.money;
+    const ok = network.replaceLoco(euLine, tr, newLoco);
+    const nt = euLine.trains[0];
+    result.engineUpgrade = {
+      swapped: ok && nt.locoClass.id === newLoco.id && nt !== tr,
+      consistPreserved: nt.consist.map((c) => c.kind).join(',') === beforeKinds,
+      cargoPreserved: Math.abs(nt.consist.reduce((a, c) => a + c.amount, 0) - beforeCargo) < 1,
+      positionPreserved: Math.abs(nt.railDist - beforeDist) < 5,
+      charged: Math.abs(m0 - network.player.money - net) < 1,
+      trainCountSame: euLine.trains.length === 1,
+    };
+  }
 
   const el = document.createElement('pre');
   el.id = 'ie-uitest';

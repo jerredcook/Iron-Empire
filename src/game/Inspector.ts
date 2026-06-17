@@ -2,6 +2,7 @@ import { Network, GStation, GLine, STOCK_CAP } from './Network';
 import { CARGO, CargoKind, CAR_LABEL, carCapacity } from './Cargo';
 import { StationBuilding, STATION_BUILDINGS, STATION_BUILDING_ORDER } from './Depot';
 import { Train } from './Train';
+import { defaultLoco } from './Locomotives';
 
 export type Selection =
   | { kind: 'station'; station: GStation }
@@ -34,7 +35,8 @@ export class Inspector {
     private onThroughService: (st: GStation) => void,
     private onDemolishStation: (st: GStation) => void,
     private onRepairTrain: (line: GLine, train: Train) => void,
-    private onAddStationBuilding: (st: GStation, type: StationBuilding) => void
+    private onAddStationBuilding: (st: GStation, type: StationBuilding) => void,
+    private onUpgradeLoco: (line: GLine, train: Train) => void
   ) {
     this.panel = document.createElement('div');
     Object.assign(this.panel.style, {
@@ -89,6 +91,8 @@ export class Inspector {
       if (demo) demo.onclick = () => this.onDemolishLine(line);
       const repair = this.panel.querySelector('[data-repair]') as HTMLElement | null;
       if (repair) repair.onclick = () => this.onRepairTrain(line, train);
+      const upg = this.panel.querySelector('[data-upgradeloco]') as HTMLElement | null;
+      if (upg) upg.onclick = () => this.onUpgradeLoco(line, train);
     }
     if (this.sel.kind === 'line') {
       const line = this.sel.line;
@@ -328,6 +332,14 @@ export class Inspector {
       html += action('data-demolish', '✕ Demolish line', '#ff7766');
     }
     html += `</div>`;
+
+    // Modernise: re-engine this train with the best class the era offers, keeping its
+    // consist and place on the line, for the price difference.
+    const best = defaultLoco(this.network.year);
+    if (!line.owner.isAI && best.id !== lc.id) {
+      const net = this.network.reLocoCost(t, best);
+      html += `<div data-upgradeloco style="margin-top:6px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(109,180,214,0.5);color:#8fd0ff;font-size:11.5px">⬆ Re-engine → ${best.name} — $${Math.round(net / 1000)}k</div>`;
+    }
     return html;
   }
 

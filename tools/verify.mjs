@@ -166,6 +166,16 @@ async function main() {
       ui?.roster
     );
     check(
+      'ui: re-engine a train keeps its consist/cargo/position and charges the difference',
+      ui?.engineUpgrade?.swapped &&
+        ui?.engineUpgrade?.consistPreserved &&
+        ui?.engineUpgrade?.cargoPreserved &&
+        ui?.engineUpgrade?.positionPreserved &&
+        ui?.engineUpgrade?.charged &&
+        ui?.engineUpgrade?.trainCountSame,
+      ui?.engineUpgrade
+    );
+    check(
       'ui: station maintenance buildings — gating, charge, stock-cap+throughput, revenue, servicing, dwell, persist',
       ui?.stationBuildings?.builtAll &&
         ui?.stationBuildings?.chargedMoney &&
