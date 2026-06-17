@@ -989,6 +989,7 @@ export class Network {
       for (let i = 0; i + 1 < stops.length; i++) {
         const a = stops[i];
         const b = stops[i + 1];
+        if (a.id === b.id) continue; // a stop repeated on one line isn't a new connection
         const key = a.id < b.id ? `${a.id}-${b.id}` : `${b.id}-${a.id}`;
         if (!this.firstConnected.has(key) && !this.isConnected(a, b)) {
           this.firstConnected.add(key);
