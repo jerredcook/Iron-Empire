@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { Network, Company } from './Network';
+import { Network, Company, GLine } from './Network';
+import { Train } from './Train';
 import { BuildStatus } from './TrackBuilder';
 import { CARGO, CargoKind } from './Cargo';
 import { QUALITY, QualityLevel } from '../engine/Renderer';
@@ -18,6 +19,9 @@ export class HUD {
   private buildBtn: HTMLButtonElement;
   private banner: HTMLDivElement;
   private ledger: HTMLDivElement;
+  private roster!: HTMLDivElement;
+  private rosterKey = '';
+  private rosterTrains: { line: GLine; train: Train }[] = [];
   private labelLayer: HTMLDivElement;
   private labels = new Map<number, HTMLDivElement>();
   private popBars = new Map<number, HTMLDivElement>();
@@ -50,7 +54,8 @@ export class HUD {
     onQuality: (q: QualityLevel) => void,
     private onLoco: (l: LocoClass) => void,
     onToggleSound: () => boolean,
-    onSpeed: (scale: number) => void
+    onSpeed: (scale: number) => void,
+    private onSelectTrain: (line: GLine, train: Train) => void
   ) {
     this.selectedLoco = defaultLoco(network.year);
     this.root = el('div', {
@@ -323,6 +328,25 @@ export class HUD {
     });
     this.root.append(this.ledger);
 
+    // Fleet roster, bottom-right: every train at a glance, click to jump to it.
+    this.roster = el('div', {
+      position: 'absolute',
+      bottom: '14px',
+      right: '14px',
+      width: '244px',
+      maxHeight: '40vh',
+      overflowY: 'auto',
+      padding: '8px 10px',
+      background: 'rgba(18,22,28,0.72)',
+      borderRadius: '10px',
+      backdropFilter: 'blur(6px)',
+      boxShadow: '0 2px 18px rgba(0,0,0,0.35)',
+      pointerEvents: 'auto',
+      display: 'none',
+      fontSize: '12px',
+    });
+    this.root.append(this.roster);
+
     // Bottom-right controls hint.
     const help = el('div', {
       position: 'absolute',
@@ -418,6 +442,46 @@ export class HUD {
       btn.style.borderColor = on ? 'rgba(143,255,168,0.6)' : 'rgba(255,255,255,0.18)';
       btn.style.color = on ? '#8fffa8' : '#f4f0e6';
     }
+  }
+
+  /** Render the fleet roster from the current train list, wiring each row to select it. */
+  private rebuildRoster(fleet: { line: GLine; train: Train }[]): void {
+    if (!fleet.length) {
+      this.roster.style.display = 'none';
+      this.roster.innerHTML = '';
+      return;
+    }
+    this.roster.style.display = 'block';
+    const rows = fleet
+      .map(({ line, train }, i) => {
+        const lc = train.locoClass;
+        const route = line.stops.length ? `${line.stops[0].name} → ${line.stops[line.stops.length - 1].name}` : 'unrouted';
+        const load = train.capacity > 0 ? Math.round((train.cargoTotal() / train.capacity) * 100) : 0;
+        const profit = Math.round(this.network.lineStats(line).profitPerYear);
+        const pc = profit >= 0 ? '#8fffa8' : '#ff7766';
+        const money = `${profit >= 0 ? '+' : '−'}$${Math.abs(Math.round(profit / 1000))}k/yr`;
+        const badge = train.broken ? ` <span style="color:#ff7766">⚠</span>` : '';
+        return (
+          `<div data-rosterrow="${i}" style="cursor:pointer;pointer-events:auto;padding:5px 6px;border-radius:6px;margin:2px 0;border:1px solid rgba(255,255,255,0.08)">` +
+          `<div style="display:flex;justify-content:space-between;align-items:baseline">` +
+          `<span><b>${lc.name}</b> <span style="opacity:0.55">${lc.wheel}</span>${badge}</span>` +
+          `<span style="color:${pc};font-size:11px">${money}</span></div>` +
+          `<div style="opacity:0.65;font-size:11px;margin-top:1px">${route} · ${load}% load</div></div>`
+        );
+      })
+      .join('');
+    this.roster.innerHTML =
+      `<div style="opacity:0.6;font-size:11px;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:3px">Fleet (${fleet.length})</div>` +
+      rows;
+    this.roster.querySelectorAll('[data-rosterrow]').forEach((node) => {
+      const i = Number((node as HTMLElement).dataset.rosterrow);
+      // Read the current entry at click time — the array is refreshed every frame, so a
+      // row never points at a stale/disposed train even if the DOM wasn't rebuilt.
+      (node as HTMLElement).onclick = () => {
+        const entry = this.rosterTrains[i];
+        if (entry) this.onSelectTrain(entry.line, entry.train);
+      };
+    });
   }
 
   /** Flash an economic-event headline for a few seconds (green = good for the player). */
@@ -530,6 +594,25 @@ export class HUD {
       this.ledger.innerHTML =
         `<div style="opacity:0.6;font-size:11px;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:3px">Deliveries</div>` +
         (rows || '<div style="opacity:0.5">No shipments yet — build a line.</div>');
+    }
+
+    // Fleet roster: rebuilt only when its shape changes (a train added/removed/broken, or
+    // its load/profitability shifts) — the per-frame check is a cheap signature compare.
+    const fleet: { line: GLine; train: Train }[] = [];
+    for (const l of this.network.player.lines) for (const t of l.trains) fleet.push({ line: l, train: t });
+    this.rosterTrains = fleet; // keep click targets current even when the DOM isn't rebuilt
+    const rosterKey = fleet
+      .map(({ line, train }) => {
+        // Bucket the live figures so the row's displayed load% (~5%) and profit (~$10k)
+        // stay reasonably fresh without rebuilding the DOM every single frame.
+        const load = train.capacity > 0 ? Math.round((train.cargoTotal() / train.capacity) * 20) : 0;
+        const profit = Math.round(this.network.lineStats(line).profitPerYear / 10000);
+        return `${train.locoClass.id}${train.broken ? 'B' : ''}|${load}|${profit}`;
+      })
+      .join('~');
+    if (rosterKey !== this.rosterKey) {
+      this.rosterKey = rosterKey;
+      this.rebuildRoster(fleet);
     }
 
     for (const st of this.network.stations) {

@@ -161,6 +161,11 @@ async function main() {
       ui?.firstConnect
     );
     check(
+      'ui: fleet roster lists every train and a row click selects it',
+      ui?.roster?.rowsMatchFleet && ui?.roster?.rowNamesLoco && ui?.roster?.clickSelectsTrain,
+      ui?.roster
+    );
+    check(
       'ui: station maintenance buildings — gating, charge, stock-cap+throughput, revenue, servicing, dwell, persist',
       ui?.stationBuildings?.builtAll &&
         ui?.stationBuildings?.chargedMoney &&

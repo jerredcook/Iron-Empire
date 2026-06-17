@@ -119,7 +119,12 @@ async function boot(cfg: BootCfg): Promise<void> {
       selectedLoco = loco;
     },
     () => audio.toggle(),
-    applySpeed
+    applySpeed,
+    (line, train) => {
+      // Clicking a roster row selects that train and jumps the camera to follow it.
+      picker.onSelect?.({ kind: 'train', line, train });
+      followTrain = train;
+    }
   );
   builder.onStatus = (s) => hud.setBuildStatus(s);
   // Finishing a route: lay the track; if it has ≥2 city stops, configure a train for it.
@@ -282,7 +287,7 @@ async function boot(cfg: BootCfg): Promise<void> {
   // Headless UI test: drive the real consist modal DOM for both the add-train and
   // build-line paths, then report what actually happened in the model.
   if (location.search.includes('uitest')) {
-    runUiTest(network, builder, inspector, rig.camera, renderer.gl.domElement, selectedLoco);
+    runUiTest(network, builder, inspector, rig.camera, renderer.gl.domElement, selectedLoco, hud);
   }
 
   // Headless soak test: build an active multi-line economy and simulate many game-years,
@@ -481,7 +486,8 @@ function runUiTest(
   inspector: Inspector,
   camera: THREE.PerspectiveCamera,
   canvas: HTMLElement,
-  loco: LocoClass
+  loco: LocoClass,
+  hud: HUD
 ): void {
   const result: Record<string, unknown> = {};
   network.player.money = 5_000_000; // fund the test so nothing fails on affordability
@@ -961,6 +967,24 @@ function runUiTest(
       noBonusRedundant: paid2 >= cost2 - 1, // paid full fare for the redundant line
     };
   }
+
+  // Y) Fleet roster: the HUD lists every player train (loco name + route), and clicking a
+  //    row selects that train (the inspector opens its panel).
+  network.status = 'playing';
+  hud.update(camera, 1400, 900); // populate the roster (the live loop hasn't run in test mode)
+  const rosterRows = document.querySelectorAll('[data-rosterrow]');
+  const fleetCount = network.player.lines.reduce((a, l) => a + l.trains.length, 0);
+  const firstRow = rosterRows[0] as HTMLElement | undefined;
+  const rowNamesLoco = !!firstRow && network.player.lines.flatMap((l) => l.trains).some((t) => firstRow.textContent?.includes(t.locoClass.name));
+  inspector.select(null);
+  firstRow?.click();
+  inspector.update(1);
+  const clickOpenedTrain = !!document.querySelector('[data-follow]'); // the Follow button lives only in the train panel
+  result.roster = {
+    rowsMatchFleet: rosterRows.length > 0 && rosterRows.length === fleetCount,
+    rowNamesLoco,
+    clickSelectsTrain: clickOpenedTrain,
+  };
 
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
