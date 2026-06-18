@@ -27,6 +27,10 @@ export class EventDirector {
   private active: ActiveEvent[] = [];
   private timer = FIRST_DELAY;
 
+  /** Optional: trigger a physical disaster (a line washout) instead of a market swing.
+   *  Wired by the main loop to the Network; left unset in headless tests. */
+  onDisaster?: () => void;
+
   constructor(
     private onNews?: (text: string, good: boolean) => void,
     private auto = true
@@ -52,8 +56,13 @@ export class EventDirector {
     this.timer -= dt;
     if (this.timer <= 0) {
       this.timer = INTERVAL_MIN + Math.random() * INTERVAL_SPAN;
-      const kinds: EventKind[] = ['boom', 'glut', 'panic', 'goldrush'];
-      this.forceEvent(kinds[Math.floor(Math.random() * kinds.length)]);
+      // Some of the era's churn is physical, not financial — a storm takes out a line.
+      if (this.onDisaster && Math.random() < 0.4) {
+        this.onDisaster();
+      } else {
+        const kinds: EventKind[] = ['boom', 'glut', 'panic', 'goldrush'];
+        this.forceEvent(kinds[Math.floor(Math.random() * kinds.length)]);
+      }
     }
   }
 

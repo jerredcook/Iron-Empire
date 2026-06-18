@@ -322,6 +322,7 @@ export class Train {
       this.speed += THREE.MathUtils.clamp(target - this.speed, -28 * dt, 12 * dt);
       this.speed = Math.max(0, this.speed);
       const moved = this.speed * dt;
+      const prevDist = this.dist;
       this.dist += this.dir * moved;
       // Don't overshoot the limit (the held block or the stop).
       if (this.dir > 0) this.dist = Math.min(this.dist, limit);
@@ -332,7 +333,10 @@ export class Train {
       this.wear += moved * (1 + this.loadFrac()) * (1 - this.locoClass.reliability);
       if (this.wear >= WEAR_LIMIT) this.breakdown();
 
-      const reached = this.dir > 0 ? this.dist >= stop - 0.01 : this.dist <= stop + 0.01;
+      // Only an actual advance into the stop counts as an arrival — a train pinned at a
+      // berth (a washout or a held block) must not re-trigger service every dwell cycle.
+      const reached =
+        Math.abs(this.dist - prevDist) > 1e-4 && (this.dir > 0 ? this.dist >= stop - 0.01 : this.dist <= stop + 0.01);
       if (reached) {
         this.dist = stop;
         this.dwell = 2.2;

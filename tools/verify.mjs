@@ -176,6 +176,16 @@ async function main() {
       ui?.engineUpgrade
     );
     check(
+      'ui: a washout halts a line (no phantom trips), a paid repair resumes it, and it auto-rebuilds',
+      ui?.washout?.blocked &&
+        ui?.washout?.haltsTrains &&
+        ui?.washout?.noPhantomTrips &&
+        ui?.washout?.repairCharges &&
+        ui?.washout?.resumes &&
+        ui?.washout?.autoClears,
+      ui?.washout
+    );
+    check(
       'ui: station maintenance buildings — gating, charge, stock-cap+throughput, revenue, servicing, dwell, persist',
       ui?.stationBuildings?.builtAll &&
         ui?.stationBuildings?.chargedMoney &&

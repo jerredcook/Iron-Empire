@@ -179,13 +179,17 @@ async function boot(cfg: BootCfg): Promise<void> {
       const upgraded = network.replaceLoco(line, train, defaultLoco(network.year));
       if (upgraded && followTrain === train) followTrain = null; // the old train object is gone
       clearSelection();
-    }
+    },
+    (line) => network.repairLine(line)
   );
   const auctioneer = new Auctioneer(network);
   // Economic events (booms, panics, gold rushes) move freight prices for a while; wire
   // their price multiplier into the Network and their headlines into the HUD news toast.
+  // Some events are physical — a storm washes out a line — surfaced the same way.
   const events = new EventDirector((text, good) => hud.news(text, good));
   network.priceModifier = (k) => events.priceMult(k);
+  network.onNews = (text, good) => hud.news(text, good);
+  events.onDisaster = () => network.triggerRandomWashout();
   const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());
   picker.onSelect = (sel) => {
     followTrain = null; // selecting anything new stops following
@@ -1025,6 +1029,58 @@ function runUiTest(
       positionPreserved: Math.abs(nt.railDist - beforeDist) < 5,
       charged: Math.abs(m0 - network.player.money - net) < 1,
       trainCountSame: euLine.trains.length === 1,
+    };
+  }
+
+  // AA) Washout disaster: a storm halts a line's trains until it rebuilds or is repaired.
+  network.status = 'playing';
+  const woCities = network.stations.filter((s) => !s.hasStation);
+  if (woCities.length >= 2) {
+    const wa = woCities[0];
+    const wb = woCities[1];
+    network.buildStationAt(wa);
+    network.buildStationAt(wb);
+    network.buildLine([wa.pos, wb.pos], [wa, wb], loco, ['grain', 'grain']);
+    const woLine = network.lines[network.lines.length - 1];
+    const woTrain = woLine.trains[0];
+    const tick = (n: number): void => {
+      for (let i = 0; i < n; i++) {
+        network.status = 'playing';
+        network.update(1 / 30);
+      }
+    };
+    // Strike while the train is berthed, exercising the "held at a stop" path: a halted
+    // line must NOT keep re-servicing (booking phantom trips/revenue) every dwell cycle.
+    for (let i = 0; i < 3000; i++) {
+      network.status = 'playing';
+      network.update(1 / 30);
+      if (woTrain.dwellRemaining > 0.3) break;
+    }
+    network.status = 'playing';
+    const tripsAtStrike = woLine.trips;
+    const blocked = network.washoutLine(woLine) && network.isBlocked(woLine);
+    const d1 = woTrain.railDist;
+    tick(300); // ~10s halted at the berth — several would-be dwell cycles
+    const haltsTrains = Math.abs(woTrain.railDist - d1) < 1;
+    const noPhantomTrips = woLine.trips === tripsAtStrike;
+    network.status = 'playing'; // the funded test trips the win condition; keep it live
+    const m0 = network.player.money;
+    const repaired = network.repairLine(woLine);
+    const charged = network.player.money < m0;
+    const d3 = woTrain.railDist;
+    tick(220);
+    const resumes = Math.abs(woTrain.railDist - d3) > 5;
+    network.status = 'playing';
+    network.washoutLine(woLine, 0.5); // a half-second washout…
+    tick(60); // …2 sim-seconds later it has rebuilt itself
+    const autoClears = !network.isBlocked(woLine);
+    result.washout = {
+      blocked,
+      haltsTrains,
+      noPhantomTrips,
+      repairCharges: repaired && charged,
+      resumes,
+      autoClears,
     };
   }
 

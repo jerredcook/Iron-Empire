@@ -33,6 +33,9 @@ const WAREHOUSE_LOAD = 1.5; // loading-throughput multiplier at a warehouse
 const HOTEL_GROWTH = 1.5; // prosperity accrual multiplier on passenger deliveries at a hotel
 const FIRST_CONNECT_BASE = 15_000; // flat grant for joining two cities for the first time
 const FIRST_CONNECT_PER_UNIT = 40; // plus this much per world-unit of distance between them
+const WASHOUT_DURATION = 3 * SECONDS_PER_YEAR; // sim-seconds a washout takes to rebuild itself
+const WASHOUT_REPAIR_MIN = 25_000; // cheapest emergency repair to reopen a line at once
+const WASHOUT_REPAIR_FRAC = 0.12; // …or this share of the line's grading value, whichever is more
 
 export type GameStatus = 'playing' | 'won' | 'lost';
 
@@ -131,6 +134,8 @@ export interface GLine {
   waypoints: THREE.Vector3[];
   /** A through-service rides existing rails (movement-only track) — no new visuals. */
   through: boolean;
+  /** Sim-clock time a washout clears (0 = open). While clock < this, trains are halted. */
+  blockedUntil: number;
 }
 
 export interface Delivery {
@@ -268,6 +273,8 @@ export class Network {
   /** Fired when the player earns a delivery / completes a build (for audio). */
   onRevenue?: (amount: number) => void;
   onBuilt?: () => void;
+  /** Headline feed for world events (washouts and their repair) — wired to the HUD toast. */
+  onNews?: (text: string, good: boolean) => void;
 
   constructor(
     private scene: THREE.Scene,
@@ -1021,7 +1028,7 @@ export class Network {
     this.scene.add(track.group);
     const stopFracs = stops.map((s) => track.nearestU(s.pos));
     const value = through ? 0 : this.routeCost(waypoints);
-    const line: GLine = { stops, track, stopFracs, trains: [], owner, value, waypoints, through, earned: 0, trips: 0, bornClock: this.clock };
+    const line: GLine = { stops, track, stopFracs, trains: [], owner, value, waypoints, through, earned: 0, trips: 0, bornClock: this.clock, blockedUntil: 0 };
     this.lines.push(line);
     owner.lines.push(line);
     for (const t of trains) this.spawnTrain(line, t.loco, t.cars);
@@ -1140,6 +1147,52 @@ export class Network {
     const nt = line.trains.pop()!; // spawnTrain appended it
     line.trains.splice(idx, 0, nt);
     nt.restore(dist, dir, cargo);
+    this.onBuilt?.();
+    return true;
+  }
+
+  // ── Washouts: storms periodically knock out a line until it's rebuilt or repaired ──
+
+  /** A short, readable name for a line (its end cities) — used in headlines. */
+  private lineName(line: GLine): string {
+    return line.stops.length ? `${line.stops[0].name}↔${line.stops[line.stops.length - 1].name}` : 'a line';
+  }
+
+  /** Is this line currently washed out (trains halted)? */
+  isBlocked(line: GLine): boolean {
+    return line.blockedUntil > this.clock;
+  }
+
+  /** What an emergency repair to reopen a washed-out line costs. */
+  washoutRepairCost(line: GLine): number {
+    return Math.max(WASHOUT_REPAIR_MIN, Math.round(line.value * WASHOUT_REPAIR_FRAC));
+  }
+
+  /** Knock out a line: halt its trains until it rebuilds (or is repaired). */
+  washoutLine(line: GLine, duration = WASHOUT_DURATION): boolean {
+    if (line.through || this.isBlocked(line) || this.lines.indexOf(line) < 0) return false;
+    line.blockedUntil = this.clock + duration;
+    this.onNews?.(`⛈ Storm washes out the ${this.lineName(line)} line — service halted`, false);
+    this.onBuilt?.();
+    return true;
+  }
+
+  /** A storm strikes a random running line — the disaster the EventDirector occasionally
+   *  triggers in the live game. Picks a real, trafficked, not-already-stricken line. */
+  triggerRandomWashout(): boolean {
+    const candidates = this.lines.filter((l) => !l.through && l.trains.length > 0 && !this.isBlocked(l));
+    if (!candidates.length) return false;
+    return this.washoutLine(candidates[Math.floor(Math.random() * candidates.length)]);
+  }
+
+  /** Pay to reopen a washed-out line at once (the owner's call). */
+  repairLine(line: GLine): boolean {
+    if (!this.isBlocked(line) || line.owner !== this.player || this.status !== 'playing') return false;
+    const cost = this.washoutRepairCost(line);
+    if (cost > line.owner.money) return false;
+    line.owner.money -= cost;
+    line.blockedUntil = 0;
+    this.onNews?.(`The ${this.lineName(line)} line is repaired and running again`, true);
     this.onBuilt?.();
     return true;
   }
@@ -1336,7 +1389,19 @@ export class Network {
     // ahead on the same physical rail (world space), so services that share rails at
     // junctions don't telescope.
     this.signal();
-    for (const l of this.lines) for (const t of l.trains) t.update(dt);
+    for (const l of this.lines) {
+      // A washed-out line halts its trains where they stand until it rebuilds (clock
+      // passes blockedUntil) or the owner pays for an emergency repair.
+      if (l.blockedUntil > 0) {
+        if (this.clock >= l.blockedUntil) {
+          l.blockedUntil = 0;
+          this.onNews?.(`The ${this.lineName(l)} line has rebuilt and reopened`, true);
+        } else {
+          for (const t of l.trains) t.worldHold = true;
+        }
+      }
+      for (const t of l.trains) t.update(dt);
+    }
 
     // Maintenance and bond interest bleed every company's books continuously.
     for (const c of this.companies) {

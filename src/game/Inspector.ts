@@ -36,7 +36,8 @@ export class Inspector {
     private onDemolishStation: (st: GStation) => void,
     private onRepairTrain: (line: GLine, train: Train) => void,
     private onAddStationBuilding: (st: GStation, type: StationBuilding) => void,
-    private onUpgradeLoco: (line: GLine, train: Train) => void
+    private onUpgradeLoco: (line: GLine, train: Train) => void,
+    private onRepairLine: (line: GLine) => void
   ) {
     this.panel = document.createElement('div');
     Object.assign(this.panel.style, {
@@ -98,6 +99,8 @@ export class Inspector {
       const line = this.sel.line;
       const demo = this.panel.querySelector('[data-demolish]') as HTMLElement | null;
       if (demo) demo.onclick = () => this.onDemolishLine(line);
+      const fix = this.panel.querySelector('[data-repairline]') as HTMLElement | null;
+      if (fix) fix.onclick = () => this.onRepairLine(line);
     }
     const ds = this.panel.querySelector('[data-demolishstation]') as HTMLElement | null;
     if (ds && this.sel.kind === 'station') {
@@ -280,6 +283,14 @@ export class Inspector {
       (line.through ? '' : `<span>value $${Math.round(line.value).toLocaleString()}</span>`) +
       `</div>`;
     html += this.plHtml(line);
+    // A washed-out line: a halted-service banner plus a one-click emergency repair.
+    if (this.network.isBlocked(line)) {
+      const cost = this.network.washoutRepairCost(line);
+      html += `<div style="margin-top:8px;padding:7px 9px;border-radius:7px;background:rgba(255,150,90,0.12);border:1px solid rgba(255,150,90,0.45);color:#ffb784;font-size:12px">⛈ Washed out — service halted while it rebuilds.</div>`;
+      if (line.owner === this.network.player) {
+        html += `<div data-repairline style="margin-top:6px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,200,120,0.6);color:#ffd089;font-size:12px">🛠 Repair now — $${Math.round(cost / 1000)}k</div>`;
+      }
+    }
     if (!line.owner.isAI) {
       html += `<div data-demolish style="margin-top:10px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,119,102,0.5);color:#ff7766;font-size:12px">✕ Demolish line</div>`;
     }

@@ -30,6 +30,7 @@ export class Minimap {
   private terrain: HTMLCanvasElement;
   private sel: Selection = null;
   private eye = new THREE.Vector3();
+  private pulse = 0;
 
   constructor(private field: Heightfield, private network: Network) {
     this.canvas = document.createElement('canvas');
@@ -120,15 +121,24 @@ export class Minimap {
     const ctx = this.ctx;
     ctx.clearRect(0, 0, SIZE, SIZE);
     ctx.drawImage(this.terrain, 0, 0, SIZE, SIZE);
+    this.pulse += 0.12; // drives the washed-out-line flash
 
     // Rail lines, tinted by their owner, drawn through every stop. The selected line
-    // (via clicking its track or one of its trains) is highlighted white + thicker.
+    // (via clicking its track or one of its trains) is highlighted white + thicker; a
+    // washed-out line flashes orange so you can spot the trouble at a glance.
     const selLineDirect = this.sel?.kind === 'line' ? this.sel.line : null;
     const selLineViaTrain = this.sel?.kind === 'train' ? this.sel.line : null;
+    const flash = 0.5 + 0.5 * Math.sin(this.pulse);
     for (const l of this.network.lines) {
       const on = l === selLineDirect || l === selLineViaTrain;
-      ctx.strokeStyle = on ? '#ffffff' : '#' + l.owner.color.toString(16).padStart(6, '0');
-      ctx.lineWidth = on ? 3 : 1.6;
+      const blocked = this.network.isBlocked(l);
+      if (blocked) {
+        ctx.strokeStyle = `rgba(255,${Math.round(120 + 60 * flash)},60,${0.55 + 0.45 * flash})`;
+        ctx.lineWidth = 3;
+      } else {
+        ctx.strokeStyle = on ? '#ffffff' : '#' + l.owner.color.toString(16).padStart(6, '0');
+        ctx.lineWidth = on ? 3 : 1.6;
+      }
       ctx.beginPath();
       l.stops.forEach((s, i) => {
         const x = this.wx(s.pos.x);
