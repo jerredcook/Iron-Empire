@@ -1084,6 +1084,26 @@ function runUiTest(
     };
   }
 
+  // BB) Living world: a well-served settlement climbs the stage ladder to Metropolis,
+  //     picking up new cargo appetites on the way.
+  network.status = 'playing';
+  const grow =
+    network.stations.find((s) => s.archetype.kind === 'Town') ??
+    network.stations.find((s) => s.archetype.size < 2 && s.stage < 3 && s.demands.size < 6);
+  if (grow) {
+    const stage0 = grow.stage;
+    const demands0 = grow.demands.size;
+    grow.served = 240; // force full prosperity, then let one tick recompute growth
+    network.update(0.01);
+    result.cityEvolves = {
+      stageRose: grow.stage > stage0,
+      reachedMetropolis: grow.stage === 3,
+      titleMetropolis: network.stageName(grow) === 'Metropolis',
+      unlockedNewDemand: grow.demands.size > demands0,
+      labelShowsStage: network.stationLabel(grow).includes('Metropolis'),
+    };
+  }
+
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
   el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px;max-width:100vw;white-space:pre-wrap';

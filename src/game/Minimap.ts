@@ -162,7 +162,7 @@ export class Minimap {
         ctx.stroke();
       }
       ctx.beginPath();
-      ctx.arc(x, y, 3.2, 0, Math.PI * 2);
+      ctx.arc(x, y, 2.6 + s.stage * 0.7, 0, Math.PI * 2); // bigger dots for grown settlements
       ctx.fillStyle = ARCH_COLOR[s.archetype.kind] ?? '#ffffff';
       ctx.fill();
       ctx.strokeStyle = 'rgba(0,0,0,0.6)';

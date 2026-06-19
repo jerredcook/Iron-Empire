@@ -25,6 +25,7 @@ export class HUD {
   private labelLayer: HTMLDivElement;
   private labels = new Map<number, HTMLDivElement>();
   private popBars = new Map<number, HTMLDivElement>();
+  private stageLabels = new Map<number, HTMLElement>();
   private v = new THREE.Vector3();
   private lastMoney = NaN;
   private lastYear = NaN;
@@ -629,12 +630,13 @@ export class HUD {
           whiteSpace: 'nowrap',
         });
         label.innerHTML =
-          `<b>${st.name}</b> <span style="opacity:0.6">${st.archetype.kind}</span>` +
+          `<b>${st.name}</b> <span data-stage style="opacity:0.6">${this.network.stationLabel(st)}</span>` +
           this.cargoBadges(st) +
           `<div style="height:3px;margin-top:2px;background:rgba(255,255,255,0.15);border-radius:2px"><div data-pop style="height:100%;width:0;background:#9bd07a;border-radius:2px"></div></div>`;
         this.labelLayer.append(label);
         this.labels.set(st.id, label);
         this.popBars.set(st.id, label.querySelector('[data-pop]') as HTMLDivElement);
+        this.stageLabels.set(st.id, label.querySelector('[data-stage]') as HTMLElement);
       }
       this.v.copy(st.pos);
       this.v.y += 14;
@@ -646,6 +648,12 @@ export class HUD {
         label.style.top = `${(-this.v.y * 0.5 + 0.5) * h}px`;
         const pop = this.popBars.get(st.id);
         if (pop) pop.style.width = `${Math.min(100, ((st.growth - 1) / 2) * 100)}%`;
+        // Keep the plate's stage subtitle live as the settlement grows.
+        const sl = this.stageLabels.get(st.id);
+        if (sl) {
+          const txt = this.network.stationLabel(st);
+          if (sl.textContent !== txt) sl.textContent = txt;
+        }
       }
     }
   }

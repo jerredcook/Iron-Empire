@@ -186,6 +186,15 @@ async function main() {
       ui?.washout
     );
     check(
+      'ui: a served settlement grows through stages to a Metropolis and unlocks new demands',
+      ui?.cityEvolves?.stageRose &&
+        ui?.cityEvolves?.reachedMetropolis &&
+        ui?.cityEvolves?.titleMetropolis &&
+        ui?.cityEvolves?.unlockedNewDemand &&
+        ui?.cityEvolves?.labelShowsStage,
+      ui?.cityEvolves
+    );
+    check(
       'ui: station maintenance buildings — gating, charge, stock-cap+throughput, revenue, servicing, dwell, persist',
       ui?.stationBuildings?.builtAll &&
         ui?.stationBuildings?.chargedMoney &&

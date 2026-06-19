@@ -23,6 +23,8 @@ export interface Archetype {
   kind: string;
   /** Houses rendered in the town cluster. */
   houses: number;
+  /** Starting settlement size (0 hamlet … 2 city) — the floor of its growth stage. */
+  size: number;
   /** Raw extraction rate (units/sec) before catchment scaling. */
   supplies: Partial<Record<CargoKind, number>>;
   /** What it pays to receive and consume. */
@@ -31,46 +33,66 @@ export interface Archetype {
   recipe?: Recipe;
 }
 
+/** A settlement's growth stages — its size plus how well it's been served lifts it up
+ *  the ladder, and each rung brings new appetites (see STAGE_DEMANDS). */
+export const STAGES = ['Hamlet', 'Town', 'City', 'Metropolis'];
+
+/** Extra consumer cargo a place picks up on reaching each stage — a growing populace
+ *  wants manufactured goods, then food, then the steel to build itself bigger. */
+export const STAGE_DEMANDS: CargoKind[][] = [
+  [], // Hamlet — its base demands only
+  ['goods'], // Town
+  ['cattle'], // City
+  ['steel'], // Metropolis
+];
+
 export const ARCHETYPES: Record<string, Archetype> = {
   city: {
     kind: 'City',
     houses: 22,
+    size: 2,
     supplies: { passengers: 1.6, mail: 1.1 },
     demands: ['goods', 'grain', 'cattle', 'steel', 'passengers', 'mail'],
   },
   town: {
     kind: 'Town',
     houses: 11,
+    size: 1,
     supplies: { passengers: 0.9, mail: 0.6 },
     demands: ['goods', 'mail', 'passengers'],
   },
   farm: {
     kind: 'Farmstead',
     houses: 6,
+    size: 0,
     supplies: { grain: 1.4, cattle: 0.9 },
     demands: ['goods', 'mail'],
   },
   mine: {
     kind: 'Mining Camp',
     houses: 7,
+    size: 0,
     supplies: { coal: 1.7 },
     demands: ['goods', 'lumber'],
   },
   ironmine: {
     kind: 'Iron Mine',
     houses: 7,
+    size: 0,
     supplies: { iron: 1.5 },
     demands: ['goods', 'lumber'],
   },
   mill: {
     kind: 'Timber Mill',
     houses: 8,
+    size: 0,
     supplies: { lumber: 1.5 },
     demands: ['goods'],
   },
   factory: {
     kind: 'Factory',
     houses: 9,
+    size: 0,
     supplies: {},
     demands: ['passengers', 'mail'],
     recipe: { inputs: { coal: 1, lumber: 1 }, output: 'goods', rate: 0.55 },
@@ -78,6 +100,7 @@ export const ARCHETYPES: Record<string, Archetype> = {
   steelmill: {
     kind: 'Steelworks',
     houses: 10,
+    size: 0,
     supplies: {},
     demands: ['passengers', 'mail'],
     recipe: { inputs: { coal: 1, iron: 1 }, output: 'steel', rate: 0.5 },

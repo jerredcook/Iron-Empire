@@ -156,7 +156,7 @@ export class Inspector {
   }
 
   private stationHtml(st: GStation): string {
-    let html = this.header(st.name, st.archetype.kind);
+    let html = this.header(st.name, this.network.stationLabel(st));
 
     if (st.owner) {
       const c = '#' + st.owner.color.toString(16).padStart(6, '0');

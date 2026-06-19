@@ -3,7 +3,7 @@ import { Heightfield } from '../world/Heightfield';
 import { Track, TRACK_SIDE } from './Track';
 import { Train, CAR_CAP } from './Train';
 import { CargoKind, ALL_CARGO, haulRevenue, marketMult, carCapacity } from './Cargo';
-import { Archetype, CitySite, Recipe, ARCHETYPES } from './Economy';
+import { Archetype, CitySite, Recipe, ARCHETYPES, STAGES, STAGE_DEMANDS } from './Economy';
 import { buildTown, buildStation, buildFactory, buildStationStructure } from './Buildings';
 import { LocoClass, defaultLoco, LOCOS } from './Locomotives';
 import { StationBuilding, STATION_BUILDINGS, STATION_BUILDING_ORDER } from './Depot';
@@ -111,6 +111,9 @@ export interface GStation {
   catchment: GStation[];
   /** Maintenance buildings bought at this depot (roundhouse, warehouse, …). */
   buildings: Set<StationBuilding>;
+  /** Settlement growth stage (0 Hamlet … 3 Metropolis) — rises with sustained service
+   *  and unlocks new cargo demands. Starts at the archetype's base size. */
+  stage: number;
 }
 
 export interface GLine {
@@ -463,8 +466,9 @@ export class Network {
       s.input = new Map(sd.input);
       s.served = sd.served ?? 0;
       s.tier = 0; // re-grown below so the house rings reappear
+      s.stage = s.archetype.size; // …and the stage re-derived from the restored prosperity
       s.growth = 1 + Math.min(2, s.served / SERVE_FULL);
-      this.maybeGrowCity(s);
+      this.maybeGrowCity(s); // announce=false: no headlines while restoring a save
 
       // A factory founded by the player at runtime isn't in the seed — re-add it.
       if (sd.hasRecipe && !s.recipe) {
@@ -623,6 +627,7 @@ export class Network {
       depotOwner: null,
       catchment: [],
       buildings: new Set(),
+      stage: site.archetype.size,
     };
     this.stations.push(st);
 
@@ -1324,8 +1329,10 @@ export class Network {
     s.stock.set(rc.output, (s.stock.get(rc.output) ?? 0) + batch);
   }
 
-  /** Add an outer ring of houses each time a city crosses a growth milestone. */
-  private maybeGrowCity(s: GStation): void {
+  /** Add an outer ring of houses each time a city crosses a growth milestone, and lift it
+   *  up the settlement ladder — each new stage brings new appetites. `announce` posts a
+   *  headline for the notable milestones (suppressed when re-growing a loaded save). */
+  private maybeGrowCity(s: GStation, announce = false): void {
     while (s.tier < GROWTH_TIERS.length && s.growth >= GROWTH_TIERS[s.tier]) {
       const t = s.tier;
       const ring = buildTown(this.seed + s.id * 131 + (t + 1) * 7919, 5 + t, 50 + t * 16, 64 + t * 16);
@@ -1333,6 +1340,24 @@ export class Network {
       this.scene.add(ring);
       s.tier++;
     }
+    const target = Math.min(STAGES.length - 1, s.archetype.size + s.tier);
+    while (s.stage < target) {
+      s.stage += 1;
+      for (const k of STAGE_DEMANDS[s.stage]) s.demands.add(k); // new cargo it now buys
+      if (announce && s.stage >= 2) this.onNews?.(`${s.name} has grown into a ${STAGES[s.stage]}`, true);
+    }
+  }
+
+  /** A settlement's stage title (Hamlet … Metropolis). */
+  stageName(s: GStation): string {
+    return STAGES[Math.min(STAGES.length - 1, Math.max(0, s.stage))];
+  }
+
+  /** Display label combining a station's growth stage and its type, deduped so a plain
+   *  "City · City" reads simply as "City". */
+  stationLabel(s: GStation): string {
+    const stage = this.stageName(s);
+    return stage === s.archetype.kind ? stage : `${stage} · ${s.archetype.kind}`;
   }
 
   private pushDelivery(text: string, amount: number): void {
@@ -1348,7 +1373,7 @@ export class Network {
       // Prosperity decays without service and is recomputed into a 1..3 multiplier.
       s.served = Math.max(0, s.served - s.served * 0.05 * dt);
       s.growth = 1 + Math.min(2, s.served / SERVE_FULL);
-      this.maybeGrowCity(s);
+      this.maybeGrowCity(s, true);
 
       // Markets recover toward fresh while they go unfed — the price they pay creeps
       // back up, so a corridor abandoned for a while is lucrative to return to.
