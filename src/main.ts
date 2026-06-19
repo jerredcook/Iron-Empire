@@ -18,6 +18,7 @@ import { AudioBus } from './game/Audio';
 import { chooseScenario, DIFFICULTIES, SCENARIOS, Difficulty } from './game/Scenarios';
 import { Auctioneer } from './game/Auction';
 import { EventDirector } from './game/Events';
+import { Smokestacks } from './game/Smokestacks';
 import { configureConsist } from './game/ConsistConfig';
 import { CargoKind, carCapacity, CARGO } from './game/Cargo';
 import { Train, effectiveSpeed } from './game/Train';
@@ -183,6 +184,7 @@ async function boot(cfg: BootCfg): Promise<void> {
     (line) => network.repairLine(line)
   );
   const auctioneer = new Auctioneer(network);
+  const smokestacks = new Smokestacks(scene, network);
   // Economic events (booms, panics, gold rushes) move freight prices for a while; wire
   // their price multiplier into the Network and their headlines into the HUD news toast.
   // Some events are physical — a storm washes out a line — surfaced the same way.
@@ -334,6 +336,7 @@ async function boot(cfg: BootCfg): Promise<void> {
     const sim = dt * simScale;
     water.update(dt);
     scatter.update(dt);
+    smokestacks.update(dt); // ambient — keeps the chimneys alive even while paused
     network.update(sim);
     auctioneer.update(sim);
     events.update(sim);
@@ -379,6 +382,7 @@ async function boot(cfg: BootCfg): Promise<void> {
       maxFrameStep: +maxStep.toFixed(2),
       movedOk: moved > 5 && maxStep < 20, // it travelled, and smoothly (no teleport)
       moneyChanged: network.money !== moneyStart,
+      smokeStacks: smokestacks.count(), // chimneys lit over the run (industries are at work)
     });
     document.body.append(el);
   }

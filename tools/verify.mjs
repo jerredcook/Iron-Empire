@@ -231,6 +231,7 @@ async function main() {
     check('loop: 240 frames ran with no render errors', fr?.framesRun === 240 && fr?.renderErrors === 0, fr);
     check('loop: train moves smoothly across frames', fr?.movedOk, fr);
     check('loop: economy advances inside the loop', fr?.moneyChanged, fr);
+    check('loop: processing industries raise smokestacks', (fr?.smokeStacks ?? 0) > 0, fr);
 
     console.log('• Economy test…');
     const ec = extract(chromeDump('autostart&diag&simticks=12000'), 'ie-diag');

@@ -390,7 +390,7 @@ export class Train {
 }
 
 /** Soft sprite smoke: puffs rise, drift, grow and fade. */
-class Smoke {
+export class Smoke {
   readonly points: THREE.Points;
   private pos: Float32Array;
   private vel: Float32Array;
