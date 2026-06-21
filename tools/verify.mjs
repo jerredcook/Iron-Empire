@@ -195,6 +195,15 @@ async function main() {
       ui?.cityEvolves
     );
     check(
+      'ui: a haul contract can be accepted, fulfilled for its reward, and lapses at its deadline',
+      ui?.contract?.accepted &&
+        ui?.contract?.progressed &&
+        ui?.contract?.completed &&
+        ui?.contract?.rewardPaid &&
+        ui?.contract?.expires,
+      ui?.contract
+    );
+    check(
       'ui: station maintenance buildings — gating, charge, stock-cap+throughput, revenue, servicing, dwell, persist',
       ui?.stationBuildings?.builtAll &&
         ui?.stationBuildings?.chargedMoney &&

@@ -125,7 +125,8 @@ async function boot(cfg: BootCfg): Promise<void> {
       // Clicking a roster row selects that train and jumps the camera to follow it.
       picker.onSelect?.({ kind: 'train', line, train });
       followTrain = train;
-    }
+    },
+    (c) => network.acceptContract(c)
   );
   builder.onStatus = (s) => hud.setBuildStatus(s);
   // Finishing a route: lay the track; if it has ≥2 city stops, configure a train for it.
@@ -1105,6 +1106,34 @@ function runUiTest(
       titleMetropolis: network.stageName(grow) === 'Metropolis',
       unlockedNewDemand: grow.demands.size > demands0,
       labelShowsStage: network.stationLabel(grow).includes('Metropolis'),
+    };
+  }
+
+  // CC) Haul contracts: accept a job, deliver toward it to fulfil it for a reward, and an
+  //     unmet job lapses at its deadline.
+  network.status = 'playing';
+  const ccCity =
+    network.stations.find((s) => s.hasStation && s.demands.has('grain')) ??
+    network.stations.find((s) => s.hasStation && s.demands.size > 0);
+  if (ccCity) {
+    const cargo: CargoKind = ccCity.demands.has('grain') ? 'grain' : [...ccCity.demands][0];
+    const c = network.addContract(ccCity, cargo, 30, 50_000, network.year + 10);
+    const accepted = network.acceptContract(c);
+    const wasActive = c.status === 'active';
+    const m0 = network.player.money;
+    network.creditContracts(ccCity, cargo, 40); // deliver 40 (≥ the 30 required)
+    const rewardPaid = network.player.money === m0 + 50_000;
+    // A second job, already past its deadline, should lapse on the next tick.
+    const c2 = network.addContract(ccCity, cargo, 50, 30_000, network.year - 1);
+    network.acceptContract(c2);
+    network.status = 'playing';
+    network.update(0.01);
+    result.contract = {
+      accepted: accepted && wasActive,
+      progressed: c.delivered === 40,
+      completed: c.status === 'done',
+      rewardPaid,
+      expires: c2.status === 'failed',
     };
   }
 

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Heightfield } from '../world/Heightfield';
 import { Track, TRACK_SIDE } from './Track';
 import { Train, CAR_CAP } from './Train';
-import { CargoKind, ALL_CARGO, haulRevenue, marketMult, carCapacity } from './Cargo';
+import { CargoKind, CARGO, ALL_CARGO, haulRevenue, marketMult, carCapacity } from './Cargo';
 import { Archetype, CitySite, Recipe, ARCHETYPES, STAGES, STAGE_DEMANDS } from './Economy';
 import { buildTown, buildStation, buildFactory, buildStationStructure } from './Buildings';
 import { LocoClass, defaultLoco, LOCOS } from './Locomotives';
@@ -33,6 +33,11 @@ const WAREHOUSE_LOAD = 1.5; // loading-throughput multiplier at a warehouse
 const HOTEL_GROWTH = 1.5; // prosperity accrual multiplier on passenger deliveries at a hotel
 const FIRST_CONNECT_BASE = 15_000; // flat grant for joining two cities for the first time
 const FIRST_CONNECT_PER_UNIT = 40; // plus this much per world-unit of distance between them
+const CONTRACT_FIRST_DELAY = 1.5 * SECONDS_PER_YEAR; // before the first job is posted
+const CONTRACT_INTERVAL = 2.5 * SECONDS_PER_YEAR; // cadence of new postings (up to the cap)
+const CONTRACT_MAX_OFFERED = 3; // jobs sitting on the board at once
+const CONTRACT_MAX_ACTIVE = 3; // jobs the player can have under way at once
+const CONTRACT_REWARD_FACTOR = 3.2; // premium over an ordinary haul of the same cargo
 const WASHOUT_DURATION = 3 * SECONDS_PER_YEAR; // sim-seconds a washout takes to rebuild itself
 const WASHOUT_REPAIR_MIN = 25_000; // cheapest emergency repair to reopen a line at once
 const WASHOUT_REPAIR_FRAC = 0.12; // …or this share of the line's grading value, whichever is more
@@ -139,6 +144,19 @@ export interface GLine {
   through: boolean;
   /** Sim-clock time a washout clears (0 = open). While clock < this, trains are halted. */
   blockedUntil: number;
+}
+
+/** A time-limited haul contract: deliver `quantity` of `cargo` to `station` by
+ *  `deadlineYear` for a `reward`. Offered on the board, then accepted and worked. */
+export interface Contract {
+  id: number;
+  station: GStation;
+  cargo: CargoKind;
+  quantity: number;
+  delivered: number;
+  reward: number;
+  deadlineYear: number;
+  status: 'offered' | 'active' | 'done' | 'failed';
 }
 
 export interface Delivery {
@@ -268,6 +286,10 @@ export class Network {
   private clock = 0;
   /** City-pair keys the player has already been paid a first-connection bonus for. */
   private firstConnected = new Set<string>();
+  /** Haul contracts — offered on the board, then accepted and worked by the player. */
+  readonly contracts: Contract[] = [];
+  private contractTimer = CONTRACT_FIRST_DELAY;
+  private nextContractId = 1;
   /** Newest first; the HUD shows the head of this list. */
   readonly deliveries: Delivery[] = [];
   /** A times-of-the-era price multiplier per cargo (booms, panics…), set by the
@@ -1202,6 +1224,82 @@ export class Network {
     return true;
   }
 
+  // ── Haul contracts: time-limited delivery jobs for a premium reward ──
+
+  /** Post a contract on the board (used by the periodic generator and the test harness). */
+  addContract(station: GStation, cargo: CargoKind, quantity: number, reward: number, deadlineYear: number): Contract {
+    const c: Contract = {
+      id: this.nextContractId++,
+      station,
+      cargo,
+      quantity,
+      delivered: 0,
+      reward,
+      deadlineYear,
+      status: 'offered',
+    };
+    this.contracts.push(c);
+    return c;
+  }
+
+  /** How many contracts the player has under way right now. */
+  activeContracts(): number {
+    return this.contracts.filter((c) => c.status === 'active').length;
+  }
+
+  /** Take on an offered contract (limited slots). */
+  acceptContract(c: Contract): boolean {
+    if (c.status !== 'offered' || this.status !== 'playing') return false;
+    if (this.activeContracts() >= CONTRACT_MAX_ACTIVE) return false;
+    c.status = 'active';
+    this.onBuilt?.();
+    return true;
+  }
+
+  /** Count a player delivery toward any matching active contract; fulfilment pays out. */
+  creditContracts(station: GStation, cargo: CargoKind, amount: number): void {
+    for (const c of this.contracts) {
+      if (c.status !== 'active' || c.station !== station || c.cargo !== cargo) continue;
+      c.delivered += amount;
+      if (c.delivered >= c.quantity) {
+        c.status = 'done';
+        this.player.money += c.reward;
+        this.pushDelivery(`Contract: ${c.quantity} ${cargo} → ${station.name}`, c.reward);
+        this.onNews?.(`Contract fulfilled — ${c.quantity} ${cargo} to ${station.name}, +$${c.reward.toLocaleString()}`, true);
+        this.onBuilt?.();
+      }
+    }
+  }
+
+  /** Post new jobs up to the board cap, and resolve those whose deadline has passed. Only
+   *  meaningful in the live game — the player has to be there to accept and work them. */
+  private tickContracts(dt: number): void {
+    for (const c of this.contracts) {
+      if ((c.status === 'active' || c.status === 'offered') && this.year > c.deadlineYear) {
+        if (c.status === 'active') this.onNews?.(`Contract lapsed — ${c.cargo} to ${c.station.name}`, false);
+        c.status = 'failed';
+      }
+    }
+    // Keep the resolved tail from growing forever (board stays small).
+    while (this.contracts.length > 12 && (this.contracts[0].status === 'done' || this.contracts[0].status === 'failed')) {
+      this.contracts.shift();
+    }
+    this.contractTimer -= dt;
+    if (this.contractTimer > 0) return;
+    this.contractTimer = CONTRACT_INTERVAL;
+    if (this.contracts.filter((c) => c.status === 'offered').length >= CONTRACT_MAX_OFFERED) return;
+    // A depot city that wants something a railroad could bring it.
+    const cities = this.stations.filter((s) => s.hasStation && s.demands.size > 0);
+    if (!cities.length) return;
+    const city = cities[Math.floor(Math.random() * cities.length)];
+    const wants = [...city.demands];
+    const cargo = wants[Math.floor(Math.random() * wants.length)];
+    const quantity = 60 + Math.floor(Math.random() * 8) * 20; // 60…200, rounded
+    const reward = Math.round(quantity * CARGO[cargo].basePrice * CONTRACT_REWARD_FACTOR);
+    const deadlineYear = this.year + 5 + Math.floor(Math.random() * 6);
+    this.addContract(city, cargo, quantity, reward, deadlineYear);
+  }
+
   /** Demolish a whole line: scrap its trains and rails, refund part of the grading. */
   demolishLine(line: GLine): boolean {
     for (const t of [...line.trains]) t.dispose(this.scene);
@@ -1288,6 +1386,7 @@ export class Network {
         if (!owner.isAI) {
           this.pushDelivery(`${Math.floor(car.amount)} ${car.kind} → ${at.name}`, rev);
           this.onRevenue?.(rev);
+          this.creditContracts(at, car.kind, car.amount); // a delivery may fulfil a contract
         }
         if (at.recipe && car.kind in at.recipe.inputs) {
           at.input.set(car.kind, Math.min(inputCap, (at.input.get(car.kind) ?? 0) + car.amount));
@@ -1440,6 +1539,7 @@ export class Network {
       this.year += 1;
       this.payDividends();
     }
+    this.tickContracts(dt);
 
     // Resolve the player's objective.
     if (this.player.money < DEBT_LIMIT) this.status = 'lost';

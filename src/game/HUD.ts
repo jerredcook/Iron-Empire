@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Network, Company, GLine } from './Network';
+import { Network, Company, GLine, Contract } from './Network';
 import { Train } from './Train';
 import { BuildStatus } from './TrackBuilder';
 import { CARGO, CargoKind } from './Cargo';
@@ -22,6 +22,10 @@ export class HUD {
   private roster!: HTMLDivElement;
   private rosterKey = '';
   private rosterTrains: { line: GLine; train: Train }[] = [];
+  private contractsBtn!: HTMLButtonElement;
+  private contractsPanel!: HTMLDivElement;
+  private contractsOpen = false;
+  private contractsKey = '';
   private labelLayer: HTMLDivElement;
   private labels = new Map<number, HTMLDivElement>();
   private popBars = new Map<number, HTMLDivElement>();
@@ -56,7 +60,8 @@ export class HUD {
     private onLoco: (l: LocoClass) => void,
     onToggleSound: () => boolean,
     onSpeed: (scale: number) => void,
-    private onSelectTrain: (line: GLine, train: Train) => void
+    private onSelectTrain: (line: GLine, train: Train) => void,
+    private onAcceptContract: (c: Contract) => void
   ) {
     this.selectedLoco = defaultLoco(network.year);
     this.root = el('div', {
@@ -167,6 +172,44 @@ export class HUD {
     this.buildBtn.textContent = '🛤  Build Track  (B)';
     this.buildBtn.onclick = onBuildToggle;
     top.append(this.buildBtn);
+
+    // Contracts board: a toggle button (badged with how many jobs are on offer) and the
+    // centred panel it opens.
+    this.contractsBtn = document.createElement('button');
+    Object.assign(this.contractsBtn.style, {
+      marginTop: '6px',
+      width: '100%',
+      padding: '7px 10px',
+      pointerEvents: 'auto',
+      cursor: 'pointer',
+      border: '1px solid rgba(143,200,255,0.45)',
+      borderRadius: '7px',
+      background: 'rgba(143,200,255,0.1)',
+      color: '#bfe0ff',
+      fontWeight: '600',
+      fontSize: '12.5px',
+    } as CSSStyleDeclaration);
+    this.contractsBtn.textContent = '📋  Contracts';
+    this.contractsBtn.onclick = () => this.toggleContracts();
+    top.append(this.contractsBtn);
+
+    this.contractsPanel = el('div', {
+      position: 'absolute',
+      top: '60px',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      width: '380px',
+      maxHeight: '64vh',
+      overflowY: 'auto',
+      padding: '12px 14px',
+      background: 'rgba(16,20,26,0.92)',
+      borderRadius: '12px',
+      backdropFilter: 'blur(8px)',
+      boxShadow: '0 6px 28px rgba(0,0,0,0.5)',
+      pointerEvents: 'auto',
+      display: 'none',
+    });
+    this.root.append(this.contractsPanel);
 
     // Engine picker — the class a finished line will be staffed with.
     const eLabel = el('div', {
@@ -497,6 +540,78 @@ export class HUD {
     }, 6500);
   }
 
+  private toggleContracts(): void {
+    this.contractsOpen = !this.contractsOpen;
+    this.contractsPanel.style.display = this.contractsOpen ? 'block' : 'none';
+    if (this.contractsOpen) {
+      this.contractsKey = '';
+      this.refreshContracts();
+    }
+  }
+
+  /** Render the contracts board: jobs under way (with progress) and jobs on offer. */
+  private refreshContracts(): void {
+    const cs = this.network.contracts;
+    const active = cs.filter((c) => c.status === 'active');
+    const offered = cs.filter((c) => c.status === 'offered');
+    const atCap = this.network.activeContracts() >= 3;
+    const money = (n: number): string => `$${Math.round(n).toLocaleString()}`;
+    const label = (t: string): string =>
+      `<div style="opacity:0.55;font-size:10.5px;text-transform:uppercase;letter-spacing:0.6px;margin:10px 0 4px">${t}</div>`;
+    const card = (inner: string): string =>
+      `<div style="padding:8px 10px;border-radius:8px;margin:4px 0;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1)">${inner}</div>`;
+
+    let html =
+      `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">` +
+      `<b style="font-size:14px">📋 Contracts</b>` +
+      `<span data-closecontracts style="cursor:pointer;pointer-events:auto;opacity:0.6;font-size:16px">✕</span></div>`;
+
+    html += label(`Under way (${active.length})`);
+    html += active.length
+      ? active
+          .map((c) => {
+            const pct = Math.min(100, (c.delivered / c.quantity) * 100);
+            return card(
+              `<div>${c.quantity} ${c.cargo} → <b>${c.station.name}</b> <span style="opacity:0.55;font-size:11px">by ${c.deadlineYear}</span></div>` +
+                `<div style="display:flex;justify-content:space-between;font-size:11px;opacity:0.7;margin-top:2px"><span>${Math.floor(c.delivered)}/${c.quantity} delivered</span><span style="color:#8fffa8">${money(c.reward)}</span></div>` +
+                `<div style="height:5px;margin-top:3px;background:rgba(255,255,255,0.12);border-radius:3px"><div style="height:100%;width:${pct}%;background:#8fffa8;border-radius:3px"></div></div>`
+            );
+          })
+          .join('')
+      : `<div style="opacity:0.5;font-size:12px">None yet — accept a job below.</div>`;
+
+    html += label('On offer');
+    html += offered.length
+      ? offered
+          .map((c) =>
+            card(
+              `<div>Haul <b>${c.quantity} ${c.cargo}</b> → <b>${c.station.name}</b></div>` +
+                `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:3px">` +
+                `<span style="font-size:11px;opacity:0.7">Reward <span style="color:#8fffa8">${money(c.reward)}</span> · by ${c.deadlineYear}</span>` +
+                (atCap
+                  ? `<span style="font-size:11px;opacity:0.5">Slots full</span>`
+                  : `<span data-accept="${c.id}" style="cursor:pointer;pointer-events:auto;padding:3px 12px;border-radius:6px;border:1px solid rgba(143,255,168,0.5);color:#8fffa8;font-size:11.5px">Accept</span>`) +
+                `</div>`
+            )
+          )
+          .join('')
+      : `<div style="opacity:0.5;font-size:12px">The board is empty — check back soon.</div>`;
+
+    this.contractsPanel.innerHTML = html;
+    const close = this.contractsPanel.querySelector('[data-closecontracts]') as HTMLElement | null;
+    if (close) close.onclick = () => this.toggleContracts();
+    this.contractsPanel.querySelectorAll('[data-accept]').forEach((node) => {
+      const id = Number((node as HTMLElement).dataset.accept);
+      const c = this.network.contracts.find((x) => x.id === id);
+      if (c)
+        (node as HTMLElement).onclick = () => {
+          this.onAcceptContract(c);
+          this.contractsKey = '';
+          this.refreshContracts();
+        };
+    });
+  }
+
   /** Highlight the active time-control button (driven by main's speed state). */
   setSpeed(scale: number): void {
     for (const { v, btn } of this.speedBtns) {
@@ -614,6 +729,19 @@ export class HUD {
     if (rosterKey !== this.rosterKey) {
       this.rosterKey = rosterKey;
       this.rebuildRoster(fleet);
+    }
+
+    // Contracts: badge the toggle with how many jobs are on offer, and refresh the board
+    // (only when its shape changes) while it's open.
+    const offeredCount = this.network.contracts.filter((c) => c.status === 'offered').length;
+    this.contractsBtn.textContent = offeredCount ? `📋  Contracts (${offeredCount})` : '📋  Contracts';
+    this.contractsBtn.style.borderColor = offeredCount ? 'rgba(143,200,255,0.8)' : 'rgba(143,200,255,0.45)';
+    if (this.contractsOpen) {
+      const ckey = this.network.contracts.map((c) => `${c.id}${c.status}${Math.floor(c.delivered)}`).join('|');
+      if (ckey !== this.contractsKey) {
+        this.contractsKey = ckey;
+        this.refreshContracts();
+      }
     }
 
     for (const st of this.network.stations) {
