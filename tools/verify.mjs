@@ -204,6 +204,11 @@ async function main() {
       ui?.contract
     );
     check(
+      'ui: victory medals — tiers, gold early-win, runs past bronze, right medal at the deadline',
+      ui?.medals?.tiersCorrect && ui?.medals?.goldEarlyWin && ui?.medals?.noEarlyBronzeEnd && ui?.medals?.byYearMedal,
+      ui?.medals
+    );
+    check(
       'ui: station maintenance buildings — gating, charge, stock-cap+throughput, revenue, servicing, dwell, persist',
       ui?.stationBuildings?.builtAll &&
         ui?.stationBuildings?.chargedMoney &&

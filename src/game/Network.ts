@@ -43,6 +43,9 @@ const WASHOUT_REPAIR_MIN = 25_000; // cheapest emergency repair to reopen a line
 const WASHOUT_REPAIR_FRAC = 0.12; // …or this share of the line's grading value, whichever is more
 
 export type GameStatus = 'playing' | 'won' | 'lost';
+export type Medal = 'gold' | 'silver' | 'bronze' | 'none';
+const SILVER_MULT = 1.6; // silver net-worth threshold = target × this
+const GOLD_MULT = 2.5; // gold net-worth threshold = target × this
 
 export interface Goal {
   targetCash: number;
@@ -274,6 +277,8 @@ export class Network {
   readonly companies: Company[];
   year = 1862;
   status: GameStatus = 'playing';
+  /** The victory medal earned when the game is won (else 'none'). */
+  earnedMedal: Medal = 'none';
   readonly goal: Goal = { targetCash: 2_500_000, byYear: 1890 };
   /** Generation parameters, stored so a save reloads an identical world. */
   cities = 0;
@@ -406,6 +411,7 @@ export class Network {
       year: this.year,
       goal: { targetCash: this.goal.targetCash, byYear: this.goal.byYear },
       status: this.status,
+      earnedMedal: this.earnedMedal,
       companies: this.companies.map((c) => ({
         money: c.money,
         debt: c.debt,
@@ -461,6 +467,7 @@ export class Network {
 
     this.year = data.year;
     this.status = data.status ?? 'playing';
+    this.earnedMedal = data.earnedMedal ?? 'none';
     if (data.goal) {
       this.goal.targetCash = data.goal.targetCash;
       this.goal.byYear = data.goal.byYear;
@@ -1541,10 +1548,39 @@ export class Network {
     }
     this.tickContracts(dt);
 
-    // Resolve the player's objective.
-    if (this.player.money < DEBT_LIMIT) this.status = 'lost';
-    else if (this.player.netWorth >= this.goal.targetCash) this.status = 'won';
-    else if (this.year > this.goal.byYear) this.status = 'lost';
+    // Resolve the player's objective. The game now runs toward the top medal (or the
+    // deadline) rather than ending the instant it crosses the bronze line, so the medal
+    // earned reflects how well the railroad actually did.
+    const { bronze, gold } = this.medalThresholds();
+    const worth = this.player.netWorth;
+    if (this.player.money < DEBT_LIMIT) {
+      this.status = 'lost';
+    } else if (worth >= gold) {
+      this.status = 'won';
+      this.earnedMedal = 'gold';
+    } else if (this.year > this.goal.byYear) {
+      if (worth >= bronze) {
+        this.status = 'won';
+        this.earnedMedal = this.medalFor(worth);
+      } else {
+        this.status = 'lost';
+      }
+    }
+  }
+
+  /** The net-worth bars for each victory medal (bronze is the scenario target). */
+  medalThresholds(): { bronze: number; silver: number; gold: number } {
+    const bronze = this.goal.targetCash;
+    return { bronze, silver: bronze * SILVER_MULT, gold: bronze * GOLD_MULT };
+  }
+
+  /** The medal a given net worth would earn (none below the bronze target). */
+  medalFor(netWorth: number): Medal {
+    const { bronze, silver, gold } = this.medalThresholds();
+    if (netWorth >= gold) return 'gold';
+    if (netWorth >= silver) return 'silver';
+    if (netWorth >= bronze) return 'bronze';
+    return 'none';
   }
 
   /** Cross-line collision signalling in world space: a train holds when another train

@@ -902,19 +902,36 @@ function runUiTest(
       someTrain.maintain();
       maintainsEngine = !someTrain.broken;
     }
-    // Water tower: expediteDwell halves an active berth dwell. Advance a train until it's
-    // dwelling, then assert the call cuts the dwell in half.
+    // Water tower: expediteDwell halves an active berth dwell. Build a dedicated SHORT line
+    // (closest free pair) so its lone train berths quickly and reliably — independent of
+    // whatever state the rest of the test has accumulated — then assert the call halves it.
     let dwellHalved = false;
-    const wtTrain = network.player.lines.flatMap((l) => l.trains).find((t) => t.consist.length > 0);
-    if (wtTrain) {
-      for (let i = 0; i < 2000; i++) {
+    const wfree = network.stations.filter((s) => !s.hasStation);
+    if (wfree.length >= 2) {
+      let wa = wfree[0];
+      let wb = wfree[1];
+      let wbd = Infinity;
+      for (let i = 0; i < wfree.length; i++)
+        for (let j = i + 1; j < wfree.length; j++) {
+          const d = wfree[i].pos.distanceToSquared(wfree[j].pos);
+          if (d < wbd) {
+            wbd = d;
+            wa = wfree[i];
+            wb = wfree[j];
+          }
+        }
+      network.buildStationAt(wa);
+      network.buildStationAt(wb);
+      network.buildLine([wa.pos, wb.pos], [wa, wb], loco);
+      const wtTrain = network.lines[network.lines.length - 1].trains[0];
+      for (let i = 0; i < 3000 && wtTrain; i++) {
         network.status = 'playing';
         network.update(1 / 30);
         if (wtTrain.dwellRemaining > 0.6) break;
       }
-      const before = wtTrain.dwellRemaining;
-      wtTrain.expediteDwell();
-      dwellHalved = before > 0.6 && Math.abs(wtTrain.dwellRemaining - before * 0.5) < 0.02;
+      const before = wtTrain ? wtTrain.dwellRemaining : 0;
+      wtTrain?.expediteDwell();
+      dwellHalved = !!wtTrain && before > 0.6 && Math.abs(wtTrain.dwellRemaining - before * 0.5) < 0.02;
     }
     network.save();
     network.status = 'playing';
@@ -1136,6 +1153,44 @@ function runUiTest(
       expires: c2.status === 'failed',
     };
   }
+
+  // DD) Victory medals: gold/silver/bronze tiers, an early win on reaching gold, the game
+  //     NOT ending the instant it crosses bronze, and the right medal awarded at the deadline.
+  const th = network.medalThresholds();
+  const tiersCorrect =
+    network.medalFor(0) === 'none' &&
+    network.medalFor(th.bronze) === 'bronze' &&
+    network.medalFor(th.silver) === 'silver' &&
+    network.medalFor(th.gold) === 'gold' &&
+    th.silver > th.bronze &&
+    th.gold > th.silver;
+  // (`as string` casts below break TS's literal-narrowing of status/earnedMedal across the
+  //  update() calls — the methods mutate them but TS can't see that.)
+  const stat = (): string => network.status;
+  const med = (): string => network.earnedMedal;
+  // Overwhelming net worth wins immediately with gold, even before the deadline.
+  network.status = 'playing';
+  network.earnedMedal = 'none';
+  network.player.money = th.gold * 3;
+  network.year = network.goal.byYear - 5;
+  network.update(0.01);
+  const goldEarlyWin = stat() === 'won' && med() === 'gold';
+  // Above bronze but below gold, before the deadline: the game keeps running (no early end).
+  network.status = 'playing';
+  network.earnedMedal = 'none';
+  network.player.money = th.bronze;
+  network.year = network.goal.byYear - 5;
+  network.update(0.01);
+  const noEarlyBronzeEnd = network.player.netWorth >= th.gold ? stat() === 'won' : stat() === 'playing';
+  // At the deadline with at least bronze: win with the medal that matches net worth.
+  network.status = 'playing';
+  network.earnedMedal = 'none';
+  network.player.money = th.bronze;
+  network.year = network.goal.byYear + 1;
+  const expectedMedal = network.medalFor(network.player.netWorth);
+  network.update(0.01);
+  const byYearMedal = expectedMedal === 'none' ? stat() === 'lost' : stat() === 'won' && med() === expectedMedal;
+  result.medals = { tiersCorrect, goldEarlyWin, noEarlyBronzeEnd, byYearMedal };
 
   const el = document.createElement('pre');
   el.id = 'ie-uitest';

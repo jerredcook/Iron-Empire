@@ -451,6 +451,13 @@ export class HUD {
   /** Render the end-of-game overlay for the resolved objective. */
   private showEnd(): void {
     const won = this.network.status === 'won';
+    const medal = this.network.earnedMedal;
+    const medalLine: Record<string, string> = {
+      gold: '🥇 Gold — a transcontinental triumph',
+      silver: '🥈 Silver — a railroad to be proud of',
+      bronze: '🥉 Bronze — the target met',
+      none: '',
+    };
     const title = won ? 'Empire Secured' : 'Railroad Bankrupt';
     const sub = won
       ? `You reached $${Math.round(this.network.netWorth).toLocaleString()} net worth by ${this.network.year}.`
@@ -458,6 +465,7 @@ export class HUD {
         ? `The treasury collapsed in ${this.network.year}.`
         : `The deadline of ${this.network.goal.byYear} passed short of the target.`;
     this.overlay.innerHTML =
+      (won && medal !== 'none' ? `<div style="font-size:30px;font-weight:700">${medalLine[medal]}</div>` : '') +
       `<div style="font-size:40px;font-weight:800;color:${won ? '#8fffa8' : '#ff7766'}">${title}</div>` +
       `<div style="font-size:15px;opacity:0.85;max-width:420px">${sub}</div>`;
     const again = document.createElement('button');
@@ -653,10 +661,23 @@ export class HUD {
     const up = Math.round(this.network.upkeepPerYear);
     this.upkeep.textContent = up > 0 ? `Upkeep −$${up.toLocaleString()}/yr` : 'No fleet in service';
     const g = this.network.goal;
-    const pct = Math.max(0, Math.min(100, (this.network.netWorth / g.targetCash) * 100));
-    this.goalLine.innerHTML = `🎯 $${(g.targetCash / 1e6).toFixed(1)}M net worth by ${g.byYear}<br><span style="opacity:0.7">${pct.toFixed(
-      0
-    )}% &middot; worth $${Math.round(this.network.netWorth).toLocaleString()}</span>`;
+    const worth = this.network.netWorth;
+    const th = this.network.medalThresholds();
+    const here = this.network.medalFor(worth);
+    const pct = Math.max(0, Math.min(100, (worth / th.gold) * 100));
+    const tier = (icon: string, value: number, reached: boolean): string =>
+      `<span style="opacity:${reached ? 1 : 0.45};${reached ? 'color:#8fffa8' : ''}">${icon}$${(value / 1e6).toFixed(1)}M</span>`;
+    this.goalLine.innerHTML =
+      `🎯 Net worth by ${g.byYear}` +
+      `<div style="display:flex;gap:8px;font-size:11px;margin-top:3px">${tier('🥉', th.bronze, worth >= th.bronze)} ${tier(
+        '🥈',
+        th.silver,
+        worth >= th.silver
+      )} ${tier('🥇', th.gold, worth >= th.gold)}</div>` +
+      `<div style="height:4px;margin-top:3px;background:rgba(255,255,255,0.12);border-radius:2px"><div style="height:100%;width:${pct}%;background:#ffe28a;border-radius:2px"></div></div>` +
+      `<span style="opacity:0.7;font-size:11px">worth $${Math.round(worth).toLocaleString()}${
+        here !== 'none' ? ` · ${here} so far` : ''
+      }</span>`;
 
     const debt = Math.round(this.network.debt);
     this.debtLine.innerHTML =
