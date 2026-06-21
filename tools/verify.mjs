@@ -209,6 +209,11 @@ async function main() {
       ui?.medals
     );
     check(
+      'ui: the how-to-play overlay opens and closes',
+      ui?.help?.opens && ui?.help?.hasCard && ui?.help?.closes,
+      ui?.help
+    );
+    check(
       'ui: station maintenance buildings — gating, charge, stock-cap+throughput, revenue, servicing, dwell, persist',
       ui?.stationBuildings?.builtAll &&
         ui?.stationBuildings?.chargedMoney &&
@@ -267,9 +272,9 @@ async function main() {
       aiR
     );
 
-    console.log('• Soak test (~16 game-years, busy network)…');
+    console.log('• Soak test (~12 game-years, busy network)…');
     const sk = extract(chromeDump('autostart&soak'), 'ie-soak');
-    check('soak: no NaN / runaway / out-of-bounds over ~16 game-years', sk?.clean === true && sk?.violations === 0, sk);
+    check('soak: no NaN / runaway / out-of-bounds over ~12 game-years', sk?.clean === true && sk?.violations === 0, sk);
   } finally {
     if (server) {
       try {

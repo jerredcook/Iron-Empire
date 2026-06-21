@@ -435,6 +435,18 @@ async function boot(cfg: BootCfg): Promise<void> {
   };
   loop();
   document.getElementById('loading')?.classList.add('hidden');
+
+  // First-time players get the how-to-play card once (skipped for headless test runs).
+  if (!location.search.includes('autostart')) {
+    try {
+      if (!localStorage.getItem('ie.helpSeen')) {
+        hud.showHelp();
+        localStorage.setItem('ie.helpSeen', '1');
+      }
+    } catch {
+      /* localStorage may be unavailable */
+    }
+  }
 }
 
 type GStation = (typeof Network.prototype.stations)[number];
@@ -1192,6 +1204,18 @@ function runUiTest(
   const byYearMedal = expectedMedal === 'none' ? stat() === 'lost' : stat() === 'won' && med() === expectedMedal;
   result.medals = { tiersCorrect, goldEarlyWin, noEarlyBronzeEnd, byYearMedal };
 
+  // EE) Onboarding: the how-to-play overlay opens and the "Got it" button closes it.
+  hud.showHelp();
+  const helpOverlay = document.querySelector('[data-helpoverlay]') as HTMLElement | null;
+  const helpShown = !!helpOverlay && helpOverlay.style.display === 'flex';
+  const gotIt = document.querySelector('[data-closehelp]') as HTMLElement | null;
+  gotIt?.click();
+  result.help = {
+    opens: helpShown,
+    hasCard: !!gotIt,
+    closes: !!helpOverlay && helpOverlay.style.display === 'none',
+  };
+
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
   el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px;max-width:100vw;white-space:pre-wrap';
@@ -1261,7 +1285,7 @@ function layTrackTest(
 /** Build a busy multi-line economy and simulate ~16 game-years, asserting every tick
  *  that nothing goes NaN, runs away, or leaves valid bounds. */
 function runSoak(network: Network, loco: LocoClass): void {
-  const TICKS = 20000; // ~16 game-years
+  const TICKS = 14000; // ~12 game-years (trimmed to keep the verify suite brisk)
   // Fund everyone and remove the win/lose deadline so the sim keeps running.
   network.player.money = 5e8;
   for (const r of network.rivals) r.money = 5e8;

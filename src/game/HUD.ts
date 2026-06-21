@@ -26,6 +26,7 @@ export class HUD {
   private contractsPanel!: HTMLDivElement;
   private contractsOpen = false;
   private contractsKey = '';
+  private helpOverlay!: HTMLDivElement;
   private labelLayer: HTMLDivElement;
   private labels = new Map<number, HTMLDivElement>();
   private popBars = new Map<number, HTMLDivElement>();
@@ -391,7 +392,7 @@ export class HUD {
     });
     this.root.append(this.roster);
 
-    // Bottom-right controls hint.
+    // Bottom-centre controls hint — click it (or the ❓) to open the full how-to-play card.
     const help = el('div', {
       position: 'absolute',
       bottom: '14px',
@@ -403,9 +404,59 @@ export class HUD {
       fontSize: '11.5px',
       opacity: '0.8',
       textAlign: 'center',
+      pointerEvents: 'auto',
+      cursor: 'pointer',
     });
-    help.innerHTML = 'Drag pan · Right-drag orbit · Wheel zoom · WASD<br>B build track · Esc cancel';
+    help.innerHTML =
+      'Drag pan · Right-drag orbit · Wheel zoom · WASD · Space pause<br>B build track · Esc cancel · <b style="color:#bfe0ff">❓ How to play</b>';
+    help.onclick = () => this.showHelp();
     this.root.append(help);
+
+    // How-to-play overlay (shown once for a new player; reopenable from the hint).
+    this.helpOverlay = el('div', {
+      position: 'absolute',
+      inset: '0',
+      display: 'none',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: 'rgba(8,10,14,0.55)',
+      pointerEvents: 'auto',
+      zIndex: '50',
+    });
+    const card = el('div', {
+      width: '460px',
+      maxWidth: '88vw',
+      maxHeight: '82vh',
+      overflowY: 'auto',
+      padding: '22px 26px',
+      background: 'rgba(18,22,28,0.97)',
+      borderRadius: '14px',
+      boxShadow: '0 10px 40px rgba(0,0,0,0.6)',
+      lineHeight: '1.5',
+    });
+    card.innerHTML =
+      `<div style="font-size:22px;font-weight:800;margin-bottom:2px">Iron Empire</div>` +
+      `<div style="opacity:0.7;font-size:13px;margin-bottom:12px">Build a railroad empire — connect the country, carry what it needs, grow rich.</div>` +
+      [
+        ['🎯', '<b>The goal</b> — grow your net worth to the medal target by the deadline (top-left). The higher you reach, the better the medal: 🥉 → 🥈 → 🥇.'],
+        ['🛤', '<b>Build track</b> — press <b>B</b> (or “Build Track”) and click cities to lay a route. A city needs a <b>Station</b> before trains can stop there — build one from its panel.'],
+        ['🚂', '<b>Run goods</b> — each city <b>wants</b> certain cargo (the ringed dots over it). Carry what it wants from where it’s produced; deliveries pay — most for long hauls of fresh freight.'],
+        ['📋', '<b>Contracts</b> — accept time-limited haul jobs for a premium reward (the Contracts button, top-left).'],
+        ['🔍', '<b>Inspect</b> — click a train, a length of track, or a city for details. The fleet list (bottom-right) jumps the camera to any train.'],
+        ['⏱', '<b>Pace it</b> — Space pauses; 1 / 2 / 3 set speed. Watch out for storms that wash out a line — repair it or wait it out.'],
+      ]
+        .map(
+          ([icon, text]) =>
+            `<div style="display:flex;gap:10px;margin:8px 0"><span style="font-size:16px">${icon}</span><span style="font-size:13px;opacity:0.92">${text}</span></div>`
+        )
+        .join('') +
+      `<div data-closehelp style="margin-top:16px;text-align:center;cursor:pointer;pointer-events:auto;padding:9px;border-radius:8px;border:1px solid rgba(143,255,168,0.5);color:#8fffa8;font-weight:700">Got it — let’s build</div>`;
+    this.helpOverlay.append(card);
+    this.helpOverlay.onclick = (e) => {
+      if (e.target === this.helpOverlay || (e.target as HTMLElement).dataset.closehelp !== undefined) this.hideHelp();
+    };
+    this.helpOverlay.setAttribute('data-helpoverlay', '');
+    this.root.append(this.helpOverlay);
 
     this.labelLayer = el('div', { position: 'absolute', inset: '0' });
     this.root.append(this.labelLayer);
@@ -534,6 +585,15 @@ export class HUD {
         if (entry) this.onSelectTrain(entry.line, entry.train);
       };
     });
+  }
+
+  /** Open the how-to-play card. */
+  showHelp(): void {
+    this.helpOverlay.style.display = 'flex';
+  }
+
+  private hideHelp(): void {
+    this.helpOverlay.style.display = 'none';
   }
 
   /** Flash an economic-event headline for a few seconds (green = good for the player). */
