@@ -114,6 +114,7 @@ async function boot(cfg: BootCfg): Promise<void> {
   const hud = new HUD(
     network,
     () => builder.toggle(),
+    () => builder.commit(),
     renderer.quality,
     applyQuality,
     (loco) => {
@@ -130,11 +131,23 @@ async function boot(cfg: BootCfg): Promise<void> {
   );
   builder.onStatus = (s) => hud.setBuildStatus(s);
   // Finishing a route: lay the track; if it has ≥2 city stops, configure a train for it.
+  // A train earns nothing at a city without a depot, so if any stop still lacks a station
+  // we say so plainly — the silent "why isn't my train making money?" trap, made loud.
+  const warnIfStationless = (stops: GStation[]): void => {
+    const bare = stops.filter((s) => !s.hasStation);
+    if (bare.length) {
+      const names = bare.map((s) => s.name).join(' & ');
+      hud.news(`${names} ${bare.length > 1 ? 'have' : 'has'} no Station yet — trains won’t stop there. Click the city → Build Station.`, false);
+    }
+  };
   builder.onCommit = (nodes) => {
     const waypoints = nodes.map((n) => n.pos);
     const stops = nodes.filter((n) => n.station).map((n) => n.station!);
     if (stops.length >= 2) {
-      configureConsist(network, stops, selectedLoco, (cars) => network.buildLine(waypoints, stops, selectedLoco, cars));
+      configureConsist(network, stops, selectedLoco, (cars) => {
+        network.buildLine(waypoints, stops, selectedLoco, cars);
+        warnIfStationless(stops);
+      });
     } else {
       network.buildLine(waypoints, stops); // track only — no complete route yet
     }
@@ -1260,6 +1273,35 @@ function runUiTest(
     result.objectives = { cargoZero, cargoProg, cargoWin, contractsProg, connectProg, connected };
   }
 
+  // GG) Build guidance: committing a line to a city that has no depot warns the player in
+  //     plain language, so a train that earns nothing isn't a silent mystery.
+  {
+    network.status = 'playing';
+    network.player.money = 5_000_000;
+    // Earlier tests have given most cities depots, so deliberately strip two back to bare
+    // to exercise the station-missing warning path deterministically.
+    const x = network.stations[0];
+    const y = network.stations[1];
+    network.demolishStation(x);
+    network.demolishStation(y);
+    const newsEl = document.querySelector('[data-news]') as HTMLElement | null;
+    let warnedStationless = false;
+    if (!x.hasStation && !y.hasStation && newsEl) {
+      newsEl.textContent = '';
+      builder.onCommit?.([
+        { pos: x.pos, station: x },
+        { pos: y.pos, station: y },
+      ]);
+      driveConsistModal('goods'); // confirm the train → fires the warning
+      warnedStationless = /station/i.test(newsEl.textContent ?? '');
+    }
+    result.buildGuidance = {
+      warnedStationless,
+      finishButton: !!document.querySelector('[data-finishroute]'),
+      bothBare: !x.hasStation && !y.hasStation,
+    };
+  }
+
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
   el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px;max-width:100vw;white-space:pre-wrap';
@@ -1313,7 +1355,10 @@ function layTrackTest(
   builder.start();
   clickCanvas(canvas, sa.x, sa.y); // first stop
   clickCanvas(canvas, sb.x, sb.y); // second stop (snaps to the city)
-  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); // finish → consist modal
+  // Finish via the on-screen ✓ button — the discoverable primary path (not the Enter shortcut).
+  const finishBtn = document.querySelector('[data-finishroute]') as HTMLButtonElement | null;
+  const finishReady = !!finishBtn && !finishBtn.disabled;
+  finishBtn?.click(); // commit → consist modal
   const consistClosed = driveConsistModal('goods');
   const built = network.lines.length === linesBefore + 1;
   const nl = network.lines[network.lines.length - 1];
@@ -1323,6 +1368,7 @@ function layTrackTest(
     lineBuilt: built,
     connectsChosenCities: built ? nl.stops.includes(a) && nl.stops.includes(b) : false,
     consistCommitted: consistClosed,
+    finishButtonReady: finishReady,
   };
 }
 

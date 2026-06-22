@@ -238,8 +238,12 @@ export class Inspector {
 
     const btn = (attr: string, label: string): string =>
       `<div ${attr} style="margin-top:8px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,226,138,0.5);color:#ffe28a;font-size:12px">${label}</div>`;
-    // The core station-first step: a city can't be routed to without a depot.
-    if (!st.hasStation) html += btn('data-buildstation', '🚉 Build Station — $70k');
+    // The core station-first step: a city can't be routed to without a depot. Rendered as a
+    // filled green primary action so a new player sees it's the thing to do here.
+    if (!st.hasStation) {
+      html += `<div data-buildstation style="margin-top:8px;text-align:center;cursor:pointer;pointer-events:auto;padding:9px;border-radius:7px;border:1px solid rgba(143,255,168,0.7);background:rgba(143,255,168,0.16);color:#8fffa8;font-size:13px;font-weight:700">🚉 Build Station — $70k</div>` +
+        `<div style="font-size:11px;opacity:0.6;text-align:center;margin-top:3px">Trains can stop here once this is built.</div>`;
+    }
     // Run one train across the whole connected network through its junctions.
     if (st.hasStation && this.network.reachableFrom(st).size > 1) {
       html += btn('data-through', '🚆 Run Through-Service across network');

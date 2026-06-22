@@ -92,7 +92,7 @@ async function main() {
     check('ui: build-line consist modal commits a line', ui?.buildLine?.lineBuilt && ui?.buildLine?.hasPassengerCar, ui?.buildLine);
     check('ui: depot upgrade button raises level', ui?.upgradeDepot?.upgraded, ui?.upgradeDepot);
     check('ui: build-factory button founds an owned industry', ui?.buildFactory?.nowHasRecipe && ui?.buildFactory?.ownedByPlayer, ui?.buildFactory);
-    check('ui: canvas track-laying builds the right line', ui?.trackLay?.lineBuilt && ui?.trackLay?.connectsChosenCities, ui?.trackLay);
+    check('ui: canvas track-laying builds the right line (finished via the ✓ button)', ui?.trackLay?.lineBuilt && ui?.trackLay?.connectsChosenCities && ui?.trackLay?.finishButtonReady, ui?.trackLay);
     check('ui: sell train removes it from the line', ui?.sellTrain?.sold, ui?.sellTrain);
     check('ui: demolish line removes it', ui?.demolishLine?.removed, ui?.demolishLine);
     check('ui: free track lays rail with no stations (no train)', ui?.freeTrack?.trackLaidWithoutStops && ui?.freeTrack?.noStops && ui?.freeTrack?.noTrain, ui?.freeTrack);
@@ -221,6 +221,11 @@ async function main() {
         ui?.objectives?.contractsProg &&
         ui?.objectives?.connectProg,
       ui?.objectives
+    );
+    check(
+      'ui: build guidance — ✓ Finish button exists + station-less line warns the player',
+      ui?.buildGuidance?.finishButton && ui?.buildGuidance?.warnedStationless,
+      ui?.buildGuidance
     );
     check(
       'ui: station maintenance buildings — gating, charge, stock-cap+throughput, revenue, servicing, dwell, persist',

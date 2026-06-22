@@ -3,7 +3,7 @@ import { Network, GStation } from './Network';
 import { LocoClass } from './Locomotives';
 
 const SNAP = 60; // ground-distance within which the cursor latches to a city
-const CLICK_SLOP = 6; // px of pointer travel still counted as a click, not a drag
+const CLICK_SLOP = 9; // px of pointer travel still counted as a click, not a drag (forgiving on trackpads)
 
 /** One point on a route under construction: a city stop, or a free terrain point. */
 export interface RouteNode {
@@ -16,6 +16,8 @@ export interface BuildStatus {
   fromName: string | null;
   cost: number;
   affordable: boolean;
+  /** True once the route has enough points to commit (the ✓ Finish button lights up). */
+  canFinish: boolean;
   /** Short instruction shown in the HUD banner. */
   hint: string;
 }
@@ -112,6 +114,11 @@ export class TrackBuilder {
   toggle(): void {
     if (this.active) this.cancel();
     else this.start();
+  }
+
+  /** Commit the current route (the HUD ✓ Finish button calls this). No-op under 2 points. */
+  commit(): void {
+    this.finish();
   }
 
   private onKey = (e: KeyboardEvent): void => {
@@ -218,18 +225,26 @@ export class TrackBuilder {
     const route = this.routePoints();
     const cost = this.nodes.length && route.length >= 2 ? this.network.lineCost(route, this.getLoco()) : 0;
     const stops = this.nodes.filter((n) => n.station).length;
+    const canFinish = route.length >= 2; // at least two points laid (committing a real route)
     this.onStatus?.({
       active: this.active,
       fromName: this.nodes.find((n) => n.station)?.station?.name ?? null,
       cost,
       affordable: cost <= this.network.money,
-      hint: !this.active
-        ? ''
-        : this.nodes.length === 0
-          ? 'Click anywhere to start laying track · click a city to make it a stop'
-          : this.snapTarget
-            ? `Click ${this.snapTarget.name} to add it as a stop · Enter to finish`
-            : `Click to lay track (${stops} stop${stops === 1 ? '' : 's'}) · click a city for a stop · Enter to finish · Esc cancels`,
+      canFinish,
+      hint: !this.active ? '' : this.routingHint(stops),
     });
+  }
+
+  /** The contextual instruction in the build banner. Calls out a city that still needs a
+   *  Station, since a stop there earns nothing until one is built. */
+  private routingHint(stops: number): string {
+    if (this.snapTarget) {
+      return this.snapTarget.hasStation
+        ? `Click <b>${this.snapTarget.name}</b> to add it as a stop, then ✓ Finish.`
+        : `Click <b>${this.snapTarget.name}</b> to route through it — ⚠ it needs a <b>Station</b> first (click the city → Build Station).`;
+    }
+    if (this.nodes.length === 0) return 'Click your <b>stationed</b> cities in order to lay a route. (Build a Station from a city’s panel first.)';
+    return `Route: ${stops} stop${stops === 1 ? '' : 's'} — click more cities, then <b>✓ Finish</b> · <b>✕ Cancel</b> to discard.`;
   }
 }

@@ -18,6 +18,8 @@ export class HUD {
   private year: HTMLDivElement;
   private buildBtn: HTMLButtonElement;
   private banner: HTMLDivElement;
+  private bannerText!: HTMLDivElement;
+  private finishBtn!: HTMLButtonElement;
   private ledger: HTMLDivElement;
   private roster!: HTMLDivElement;
   private rosterKey = '';
@@ -56,6 +58,7 @@ export class HUD {
   constructor(
     private network: Network,
     onBuildToggle: () => void,
+    onFinishRoute: () => void,
     quality: QualityLevel,
     onQuality: (q: QualityLevel) => void,
     private onLoco: (l: LocoClass) => void,
@@ -281,20 +284,32 @@ export class HUD {
     this.markQuality(quality);
     this.root.append(top);
 
-    // Build-mode banner, centred at top.
+    // Build-mode banner, centred at top: an instruction line plus explicit Finish/Cancel
+    // controls so finishing a route never depends on knowing the Enter shortcut.
     this.banner = el('div', {
       position: 'absolute',
       top: '16px',
       left: '50%',
       transform: 'translateX(-50%)',
       padding: '9px 16px',
-      background: 'rgba(20,28,22,0.82)',
+      background: 'rgba(20,28,22,0.86)',
       border: '1px solid rgba(143,255,168,0.4)',
       borderRadius: '8px',
       fontSize: '13px',
       display: 'none',
-      whiteSpace: 'nowrap',
+      flexDirection: 'column',
+      alignItems: 'center',
+      gap: '7px',
+      maxWidth: '560px',
+      textAlign: 'center',
     });
+    this.bannerText = el('div', { lineHeight: '1.45' }) as HTMLDivElement;
+    const bannerBtns = el('div', { display: 'flex', gap: '8px', pointerEvents: 'auto' });
+    this.finishBtn = bannerButton('✓ Finish line', '#8fffa8', onFinishRoute);
+    this.finishBtn.setAttribute('data-finishroute', '');
+    const cancelRouteBtn = bannerButton('✕ Cancel', '#ff9a86', onBuildToggle);
+    bannerBtns.append(this.finishBtn, cancelRouteBtn);
+    this.banner.append(this.bannerText, bannerBtns);
     this.root.append(this.banner);
 
     // News toast — economic events scroll across just under the build banner.
@@ -313,6 +328,7 @@ export class HUD {
       whiteSpace: 'nowrap',
       boxShadow: '0 2px 18px rgba(0,0,0,0.4)',
     });
+    this.newsEl.setAttribute('data-news', '');
     this.root.append(this.newsEl);
 
     // Time controls, bottom-centre: pause / 1× / 2× / 3× (also Space and keys 1–3).
@@ -438,9 +454,10 @@ export class HUD {
       `<div style="font-size:22px;font-weight:800;margin-bottom:2px">Iron Empire</div>` +
       `<div style="opacity:0.7;font-size:13px;margin-bottom:12px">Build a railroad empire — connect the country, carry what it needs, grow rich.</div>` +
       [
-        ['🎯', '<b>The goal</b> — grow your net worth to the medal target by the deadline (top-left). The higher you reach, the better the medal: 🥉 → 🥈 → 🥇.'],
-        ['🛤', '<b>Build track</b> — press <b>B</b> (or “Build Track”) and click cities to lay a route. A city needs a <b>Station</b> before trains can stop there — build one from its panel.'],
-        ['🚂', '<b>Run goods</b> — each city <b>wants</b> certain cargo (the ringed dots over it). Carry what it wants from where it’s produced; deliveries pay — most for long hauls of fresh freight.'],
+        ['🎯', '<b>The goal</b> — reach the medal target by the deadline (top-left). The objective varies by scenario: net worth, cargo hauled, cities linked, or contracts filled. 🥉 → 🥈 → 🥇.'],
+        ['🚉', '<b>Step 1 — Stations.</b> Click a city, then <b>Build Station — $70k</b> in its panel. Trains only stop where you’ve built a station, so do this at each city you want to serve.'],
+        ['🛤', '<b>Step 2 — Track.</b> Click <b>Build Track</b> (or <b>B</b>), click your stationed cities in order, then press <b>✓ Finish line</b>. You’ll pick a train to run the route.'],
+        ['🚂', '<b>Step 3 — Run goods.</b> Each city <b>wants</b> certain cargo (the ringed dots over it). Carry what it wants from where it’s produced; long hauls of fresh freight pay most. (Add more trains from a line’s panel: <b>+ Add train</b>.)'],
         ['📋', '<b>Contracts</b> — accept time-limited haul jobs for a premium reward (the Contracts button, top-left).'],
         ['🔍', '<b>Inspect</b> — click a train, a length of track, or a city for details. The fleet list (bottom-right) jumps the camera to any train.'],
         ['⏱', '<b>Pace it</b> — Space pauses; 1 / 2 / 3 set speed. Watch out for storms that wash out a line — repair it or wait it out.'],
@@ -700,10 +717,15 @@ export class HUD {
       this.banner.style.display = 'none';
       return;
     }
-    this.banner.style.display = 'block';
+    this.banner.style.display = 'flex';
     const cost = s.cost > 0 ? `  —  $${s.cost.toLocaleString()}${s.affordable ? '' : ' (too expensive)'}` : '';
-    this.banner.innerHTML = `${s.hint}${cost}`;
+    this.bannerText.innerHTML = `${s.hint}${cost}`;
     this.banner.style.borderColor = s.cost > 0 && !s.affordable ? 'rgba(255,119,102,0.7)' : 'rgba(143,255,168,0.4)';
+    // The ✓ Finish button only lights up once the route can actually be committed.
+    const ready = s.canFinish && s.affordable;
+    this.finishBtn.disabled = !ready;
+    this.finishBtn.style.opacity = ready ? '1' : '0.4';
+    this.finishBtn.style.cursor = ready ? 'pointer' : 'not-allowed';
   }
 
   /** Per-frame: refresh treasury/ledger and reposition the city name plates. */
@@ -920,6 +942,24 @@ function financeBtn(label: string, onClick: () => void): HTMLButtonElement {
     color: '#f4f0e6',
     fontSize: '11px',
     fontWeight: '600',
+  } as CSSStyleDeclaration);
+  b.textContent = label;
+  b.onclick = onClick;
+  return b;
+}
+
+function bannerButton(label: string, color: string, onClick: () => void): HTMLButtonElement {
+  const b = document.createElement('button');
+  Object.assign(b.style, {
+    padding: '7px 16px',
+    pointerEvents: 'auto',
+    cursor: 'pointer',
+    border: `1px solid ${color}88`,
+    borderRadius: '7px',
+    background: `${color}22`,
+    color,
+    fontSize: '13px',
+    fontWeight: '700',
   } as CSSStyleDeclaration);
   b.textContent = label;
   b.onclick = onClick;
