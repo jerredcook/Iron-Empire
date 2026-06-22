@@ -214,6 +214,15 @@ async function main() {
       ui?.help
     );
     check(
+      'ui: varied objectives — cargo/contracts/connect progress + cargo gold win',
+      ui?.objectives?.cargoZero &&
+        ui?.objectives?.cargoProg &&
+        ui?.objectives?.cargoWin &&
+        ui?.objectives?.contractsProg &&
+        ui?.objectives?.connectProg,
+      ui?.objectives
+    );
+    check(
       'ui: station maintenance buildings — gating, charge, stock-cap+throughput, revenue, servicing, dwell, persist',
       ui?.stationBuildings?.builtAll &&
         ui?.stationBuildings?.chargedMoney &&

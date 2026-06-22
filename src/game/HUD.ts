@@ -510,11 +510,13 @@ export class HUD {
       none: '',
     };
     const title = won ? 'Empire Secured' : 'Railroad Bankrupt';
+    const reached = this.network.formatObjective(this.network.objectiveProgress());
+    const target = this.network.formatObjective(this.network.goal.bronze);
     const sub = won
-      ? `You reached $${Math.round(this.network.netWorth).toLocaleString()} net worth by ${this.network.year}.`
+      ? `${reached} by ${this.network.year} — objective complete.`
       : this.network.money < 0
         ? `The treasury collapsed in ${this.network.year}.`
-        : `The deadline of ${this.network.goal.byYear} passed short of the target.`;
+        : `By ${this.network.goal.byYear} you reached only ${reached}, short of the ${target} target.`;
     this.overlay.innerHTML =
       (won && medal !== 'none' ? `<div style="font-size:30px;font-weight:700">${medalLine[medal]}</div>` : '') +
       `<div style="font-size:40px;font-weight:800;color:${won ? '#8fffa8' : '#ff7766'}">${title}</div>` +
@@ -720,23 +722,22 @@ export class HUD {
 
     const up = Math.round(this.network.upkeepPerYear);
     this.upkeep.textContent = up > 0 ? `Upkeep −$${up.toLocaleString()}/yr` : 'No fleet in service';
-    const g = this.network.goal;
-    const worth = this.network.netWorth;
+    const progress = this.network.objectiveProgress();
     const th = this.network.medalThresholds();
-    const here = this.network.medalFor(worth);
-    const pct = Math.max(0, Math.min(100, (worth / th.gold) * 100));
+    const here = this.network.medalFor(progress);
+    const pct = Math.max(0, Math.min(100, (progress / th.gold) * 100));
     const tier = (icon: string, value: number, reached: boolean): string =>
-      `<span style="opacity:${reached ? 1 : 0.45};${reached ? 'color:#8fffa8' : ''}">${icon}$${(value / 1e6).toFixed(1)}M</span>`;
+      `<span style="opacity:${reached ? 1 : 0.45};${reached ? 'color:#8fffa8' : ''}">${icon}${this.network.formatObjective(value)}</span>`;
     this.goalLine.innerHTML =
-      `🎯 Net worth by ${g.byYear}` +
-      `<div style="display:flex;gap:8px;font-size:11px;margin-top:3px">${tier('🥉', th.bronze, worth >= th.bronze)} ${tier(
+      `🎯 ${this.network.objectiveLabel()}` +
+      `<div style="display:flex;gap:8px;font-size:11px;margin-top:3px">${tier('🥉', th.bronze, progress >= th.bronze)} ${tier(
         '🥈',
         th.silver,
-        worth >= th.silver
-      )} ${tier('🥇', th.gold, worth >= th.gold)}</div>` +
+        progress >= th.silver
+      )} ${tier('🥇', th.gold, progress >= th.gold)}</div>` +
       `<div style="height:4px;margin-top:3px;background:rgba(255,255,255,0.12);border-radius:2px"><div style="height:100%;width:${pct}%;background:#ffe28a;border-radius:2px"></div></div>` +
-      `<span style="opacity:0.7;font-size:11px">worth $${Math.round(worth).toLocaleString()}${
-        here !== 'none' ? ` · ${here} so far` : ''
+      `<span style="opacity:0.7;font-size:11px">${this.network.formatObjective(progress)} so far${
+        here !== 'none' ? ` · ${here}` : ''
       }</span>`;
 
     const debt = Math.round(this.network.debt);

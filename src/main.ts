@@ -6,7 +6,7 @@ import { TerrainMesh } from './world/TerrainMesh';
 import { buildSky } from './world/Sky';
 import { WaterPlane } from './world/WaterPlane';
 import { Scatter } from './world/Scatter';
-import { Network, STOCK_CAP, Company } from './game/Network';
+import { Network, STOCK_CAP, Company, Goal, networthGoal } from './game/Network';
 import { placeCities } from './game/Economy';
 import { TrackBuilder } from './game/TrackBuilder';
 import { HUD } from './game/HUD';
@@ -31,7 +31,7 @@ interface BootCfg {
   year: number;
   startMoney: number;
   cities: number;
-  goal: { targetCash: number; byYear: number };
+  goal: Goal;
   difficulty: Difficulty;
   player: { name: string; color: number };
   ais: { name: string; color: number }[];
@@ -1216,6 +1216,50 @@ function runUiTest(
     closes: !!helpOverlay && helpOverlay.style.display === 'none',
   };
 
+  // FF) Varied objectives: each kind reports the right progress and resolves win/lose
+  //     through the same medal logic — cargo by cumulative deliveries, contracts by count,
+  //     connect by the largest linked component of the player's own lines.
+  {
+    const saved = network.goal;
+    network.player.money = 5_000_000;
+
+    // Cargo — cumulative player deliveries of the target cargo.
+    network.status = 'playing';
+    network.earnedMedal = 'none';
+    network.goal = { kind: 'cargo', cargo: 'coal', byYear: network.year + 20, bronze: 100, silver: 200, gold: 400 };
+    network.cargoHauled.set('coal', 0);
+    const cargoZero = network.objectiveProgress() === 0;
+    network.cargoHauled.set('coal', 250);
+    const cargoProg = network.objectiveProgress() === 250 && network.medalFor(250) === 'silver';
+    network.cargoHauled.set('coal', 450); // crossing gold before the deadline wins immediately
+    network.update(0.01);
+    const cargoWin = stat() === 'won' && med() === 'gold';
+
+    // Contracts — fulfilled-contract counter.
+    network.status = 'playing';
+    network.earnedMedal = 'none';
+    network.goal = { kind: 'contracts', byYear: network.year + 20, bronze: 2, silver: 4, gold: 6 };
+    network.contractsDone = 5;
+    const contractsProg = network.objectiveProgress() === 5 && network.medalFor(5) === 'silver';
+
+    // Connect — largest set of cities linked into one of the player's networks.
+    network.status = 'playing';
+    network.earnedMedal = 'none';
+    network.goal = { kind: 'connect', byYear: network.year + 20, bronze: 2, silver: 3, gold: 4 };
+    const a = network.stations[0];
+    const b = network.stations[1];
+    const c = network.stations[2];
+    network.buildLine([a.pos, b.pos], [a, b]);
+    network.buildLine([b.pos, c.pos], [b, c]);
+    const connected = network.playerCitiesConnected();
+    const connectProg = network.objectiveProgress() === connected && connected >= 3;
+
+    network.goal = saved;
+    network.status = 'playing';
+    network.earnedMedal = 'none';
+    result.objectives = { cargoZero, cargoProg, cargoWin, contractsProg, connectProg, connected };
+  }
+
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
   el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px;max-width:100vw;white-space:pre-wrap';
@@ -1289,8 +1333,7 @@ function runSoak(network: Network, loco: LocoClass): void {
   // Fund everyone and remove the win/lose deadline so the sim keeps running.
   network.player.money = 5e8;
   for (const r of network.rivals) r.money = 5e8;
-  network.goal.byYear = 99999;
-  network.goal.targetCash = Number.MAX_SAFE_INTEGER;
+  network.goal = networthGoal(Number.MAX_SAFE_INTEGER, 99999);
 
   // Lay a web of lines across the map, double a few up.
   const s = network.stations;
@@ -1401,7 +1444,9 @@ function runAiTest(network: Network): void {
   document.body.append(el);
 }
 
-const FALLBACK_GOAL = { targetCash: 2_500_000, byYear: 1890 };
+// Only used as the boot-config goal when Continuing a save — load() then overwrites it
+// with the saved objective, so the exact value here is immaterial.
+const FALLBACK_GOAL: Goal = networthGoal(2_500_000, 1890);
 
 /** Show the start menu, then boot the chosen setup — or regenerate the saved world and
  *  restore it when the player chooses Continue. */

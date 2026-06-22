@@ -47,9 +47,23 @@ export type Medal = 'gold' | 'silver' | 'bronze' | 'none';
 const SILVER_MULT = 1.6; // silver net-worth threshold = target × this
 const GOLD_MULT = 2.5; // gold net-worth threshold = target × this
 
+/** What the player is playing toward. The same gold/silver/bronze tiering applies to
+ *  every kind — only the measured quantity differs. */
+export type ObjectiveKind = 'networth' | 'cargo' | 'connect' | 'contracts';
 export interface Goal {
-  targetCash: number;
+  kind: ObjectiveKind;
   byYear: number;
+  /** Tier thresholds in the objective's own units ($, cargo units, cities, jobs). */
+  bronze: number;
+  silver: number;
+  gold: number;
+  /** The cargo to haul, for kind === 'cargo'. */
+  cargo?: CargoKind;
+}
+
+/** Build a classic net-worth objective (bronze = target, silver/gold scaled above it). */
+export function networthGoal(targetCash: number, byYear: number): Goal {
+  return { kind: 'networth', byYear, bronze: targetCash, silver: targetCash * SILVER_MULT, gold: targetCash * GOLD_MULT };
 }
 
 /** Difficulty knobs the Network actually consumes (structurally a Scenarios.Difficulty). */
@@ -279,7 +293,11 @@ export class Network {
   status: GameStatus = 'playing';
   /** The victory medal earned when the game is won (else 'none'). */
   earnedMedal: Medal = 'none';
-  readonly goal: Goal = { targetCash: 2_500_000, byYear: 1890 };
+  goal: Goal = networthGoal(2_500_000, 1890);
+  /** Cumulative units of each cargo the player has delivered (for cargo objectives). */
+  readonly cargoHauled = new Map<CargoKind, number>();
+  /** How many contracts the player has fulfilled (for contract objectives). */
+  contractsDone = 0;
   /** Generation parameters, stored so a save reloads an identical world. */
   cities = 0;
   aiCount = 1;
@@ -324,8 +342,7 @@ export class Network {
     this.difficultyId = diff.id;
     this.aiInterval = diff.aiInterval;
     this.aiReserve = diff.aiReserve;
-    this.goal.targetCash = cfg.goal.targetCash;
-    this.goal.byYear = cfg.goal.byYear;
+    this.goal = { ...cfg.goal };
   }
 
   /** The AI companies still in play. */
@@ -409,7 +426,9 @@ export class Network {
       player: { name: this.player.name, color: this.player.color },
       ais: this.companies.filter((c) => c.isAI).map((c) => ({ name: c.name, color: c.color })),
       year: this.year,
-      goal: { targetCash: this.goal.targetCash, byYear: this.goal.byYear },
+      goal: { ...this.goal },
+      cargoHauled: [...this.cargoHauled],
+      contractsDone: this.contractsDone,
       status: this.status,
       earnedMedal: this.earnedMedal,
       companies: this.companies.map((c) => ({
@@ -469,9 +488,13 @@ export class Network {
     this.status = data.status ?? 'playing';
     this.earnedMedal = data.earnedMedal ?? 'none';
     if (data.goal) {
-      this.goal.targetCash = data.goal.targetCash;
-      this.goal.byYear = data.goal.byYear;
+      // Back-compat: pre-objective saves stored only { targetCash, byYear }. Default any
+      // missing field so a truncated save can't produce NaN tier thresholds.
+      this.goal = data.goal.kind ? { ...data.goal } : networthGoal(data.goal.targetCash ?? 2_500_000, data.goal.byYear ?? 1890);
     }
+    this.cargoHauled.clear();
+    for (const [k, v] of (data.cargoHauled ?? [])) this.cargoHauled.set(k, v);
+    this.contractsDone = data.contractsDone ?? 0;
     this.clearLines();
 
     this.companies.forEach((c, i) => {
@@ -1270,6 +1293,7 @@ export class Network {
       c.delivered += amount;
       if (c.delivered >= c.quantity) {
         c.status = 'done';
+        this.contractsDone += 1; // counts toward a contracts objective
         this.player.money += c.reward;
         this.pushDelivery(`Contract: ${c.quantity} ${cargo} → ${station.name}`, c.reward);
         this.onNews?.(`Contract fulfilled — ${c.quantity} ${cargo} to ${station.name}, +$${c.reward.toLocaleString()}`, true);
@@ -1309,6 +1333,7 @@ export class Network {
 
   /** Demolish a whole line: scrap its trains and rails, refund part of the grading. */
   demolishLine(line: GLine): boolean {
+    if (this.status !== 'playing') return false; // no teardown once the game is decided (matches the other mutators)
     for (const t of [...line.trains]) t.dispose(this.scene);
     line.trains.length = 0;
     this.scene.remove(line.track.group);
@@ -1394,6 +1419,7 @@ export class Network {
           this.pushDelivery(`${Math.floor(car.amount)} ${car.kind} → ${at.name}`, rev);
           this.onRevenue?.(rev);
           this.creditContracts(at, car.kind, car.amount); // a delivery may fulfil a contract
+          this.cargoHauled.set(car.kind, (this.cargoHauled.get(car.kind) ?? 0) + car.amount); // toward a cargo objective
         }
         if (at.recipe && car.kind in at.recipe.inputs) {
           at.input.set(car.kind, Math.min(inputCap, (at.input.get(car.kind) ?? 0) + car.amount));
@@ -1548,39 +1574,119 @@ export class Network {
     }
     this.tickContracts(dt);
 
-    // Resolve the player's objective. The game now runs toward the top medal (or the
-    // deadline) rather than ending the instant it crosses the bronze line, so the medal
-    // earned reflects how well the railroad actually did.
+    // Resolve the player's objective. The game runs toward the top medal (or the deadline)
+    // rather than ending the instant it crosses the bronze line, so the medal earned reflects
+    // how well the railroad actually did. Bankruptcy is a loss regardless of objective kind.
     const { bronze, gold } = this.medalThresholds();
-    const worth = this.player.netWorth;
+    const progress = this.objectiveProgress();
     if (this.player.money < DEBT_LIMIT) {
       this.status = 'lost';
-    } else if (worth >= gold) {
+    } else if (progress >= gold) {
       this.status = 'won';
       this.earnedMedal = 'gold';
     } else if (this.year > this.goal.byYear) {
-      if (worth >= bronze) {
+      if (progress >= bronze) {
         this.status = 'won';
-        this.earnedMedal = this.medalFor(worth);
+        this.earnedMedal = this.medalFor(progress);
       } else {
         this.status = 'lost';
       }
     }
   }
 
-  /** The net-worth bars for each victory medal (bronze is the scenario target). */
-  medalThresholds(): { bronze: number; silver: number; gold: number } {
-    const bronze = this.goal.targetCash;
-    return { bronze, silver: bronze * SILVER_MULT, gold: bronze * GOLD_MULT };
+  /** Current value of the active objective, in its own units (dollars / cargo / cities / jobs). */
+  objectiveProgress(): number {
+    switch (this.goal.kind) {
+      case 'cargo':
+        return this.goal.cargo ? this.cargoHauled.get(this.goal.cargo) ?? 0 : 0;
+      case 'connect':
+        return this.playerCitiesConnected();
+      case 'contracts':
+        return this.contractsDone;
+      default:
+        return this.player.netWorth;
+    }
   }
 
-  /** The medal a given net worth would earn (none below the bronze target). */
-  medalFor(netWorth: number): Medal {
+  /** The largest set of cities the player has linked into one continuous network. */
+  playerCitiesConnected(): number {
+    const lines = this.player.lines.filter((l) => !l.through && l.stops.length >= 2);
+    if (!lines.length) return 0;
+    const adj = new Map<GStation, Set<GStation>>();
+    const link = (a: GStation, b: GStation) => {
+      let set = adj.get(a);
+      if (!set) adj.set(a, (set = new Set()));
+      set.add(b);
+    };
+    for (const l of lines) {
+      for (let i = 0; i < l.stops.length; i++) {
+        for (let j = i + 1; j < l.stops.length; j++) {
+          link(l.stops[i], l.stops[j]);
+          link(l.stops[j], l.stops[i]);
+        }
+      }
+    }
+    const seen = new Set<GStation>();
+    let best = 0;
+    for (const start of adj.keys()) {
+      if (seen.has(start)) continue;
+      let n = 0;
+      const queue = [start];
+      seen.add(start);
+      while (queue.length) {
+        const s = queue.pop()!;
+        n++;
+        for (const nb of adj.get(s) ?? []) if (!seen.has(nb)) { seen.add(nb); queue.push(nb); }
+      }
+      best = Math.max(best, n);
+    }
+    return best;
+  }
+
+  /** The tier bars for each victory medal, in the objective's own units. */
+  medalThresholds(): { bronze: number; silver: number; gold: number } {
+    return { bronze: this.goal.bronze, silver: this.goal.silver, gold: this.goal.gold };
+  }
+
+  /** The medal a given objective value would earn (none below the bronze tier). */
+  medalFor(progress: number): Medal {
     const { bronze, silver, gold } = this.medalThresholds();
-    if (netWorth >= gold) return 'gold';
-    if (netWorth >= silver) return 'silver';
-    if (netWorth >= bronze) return 'bronze';
+    if (progress >= gold) return 'gold';
+    if (progress >= silver) return 'silver';
+    if (progress >= bronze) return 'bronze';
     return 'none';
+  }
+
+  /** One-line description of what the player is playing toward. */
+  objectiveLabel(): string {
+    const o = this.goal;
+    switch (o.kind) {
+      case 'cargo':
+        return `Haul ${o.cargo && CARGO[o.cargo] ? CARGO[o.cargo].label.toLowerCase() : 'cargo'} by ${o.byYear}`;
+      case 'connect':
+        return `Link cities into one network by ${o.byYear}`;
+      case 'contracts':
+        return `Fulfil haul contracts by ${o.byYear}`;
+      default:
+        return `Build net worth by ${o.byYear}`;
+    }
+  }
+
+  /** Format a value in the active objective's units (e.g. "$2.5M", "400 coal", "8 cities"). */
+  formatObjective(value: number): string {
+    const o = this.goal;
+    switch (o.kind) {
+      case 'cargo':
+        // Cargo labels are mass/collective nouns ("coal", "steel", "passengers"), so they
+        // take no plural 's' — "600 coal" is correct, "600 coals" would not be.
+        return `${Math.floor(value)} ${o.cargo && CARGO[o.cargo] ? CARGO[o.cargo].label.toLowerCase() : ''}`.trim();
+      case 'connect':
+        return `${Math.floor(value)} ${Math.floor(value) === 1 ? 'city' : 'cities'}`;
+      case 'contracts':
+        return `${Math.floor(value)} ${Math.floor(value) === 1 ? 'contract' : 'contracts'}`;
+      default:
+        return `$${(value / 1e6).toFixed(value >= 1e6 ? 1 : 2)}M`;
+    }
   }
 
   /** Cross-line collision signalling in world space: a train holds when another train

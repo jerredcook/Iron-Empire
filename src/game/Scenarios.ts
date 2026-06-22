@@ -1,9 +1,11 @@
-import { Network, CompanySetup } from './Network';
+import { Network, CompanySetup, Goal, networthGoal } from './Network';
+import { CARGO } from './Cargo';
 
 /**
- * A starting situation: the world that's generated and the default terms of victory.
- * The setup screen seeds its fields from the chosen scenario, then lets the player
- * override map size, victory terms, their own identity, and the AI field.
+ * A starting situation: the world that's generated and the objective that defines victory.
+ * Different scenarios set different *kinds* of objective — amass net worth, haul a cargo,
+ * link cities into one network, or fulfil contracts — which is what makes them play
+ * differently rather than just being the same race with a different map.
  */
 export interface Scenario {
   id: string;
@@ -13,7 +15,7 @@ export interface Scenario {
   year: number;
   startMoney: number;
   cities: number;
-  goal: { targetCash: number; byYear: number };
+  goal: Goal;
 }
 
 /** How hard the contest is: capital on both sides and how driven the rivals are. */
@@ -40,25 +42,38 @@ export interface GameSetup {
   ais: CompanySetup[];
   cities: number;
   seed: number;
-  goal: { targetCash: number; byYear: number };
+  goal: Goal;
   difficulty: Difficulty;
 }
 
 export type StartChoice = { kind: 'new'; setup: GameSetup } | { kind: 'continue' };
 
 export const SCENARIOS: Scenario[] = [
-  { id: 'pioneer', name: 'Pioneer Valley', blurb: 'A temperate frontier of farms and forests.', seed: 20260611, year: 1862, startMoney: 850_000, cities: 20, goal: { targetCash: 2_500_000, byYear: 1890 } },
-  { id: 'coal', name: 'Coal Country', blurb: 'A rugged mining belt — feed the factories.', seed: 7771234, year: 1855, startMoney: 700_000, cities: 28, goal: { targetCash: 3_000_000, byYear: 1888 } },
-  { id: 'golden', name: 'Golden State', blurb: 'A booming coast. Big cities, bigger ambitions.', seed: 5550987, year: 1872, startMoney: 1_100_000, cities: 36, goal: { targetCash: 4_000_000, byYear: 1898 } },
-  { id: 'gambit', name: "Tycoon's Gambit", blurb: 'Thin capital and hungry rivals.', seed: 9123456, year: 1860, startMoney: 500_000, cities: 14, goal: { targetCash: 3_500_000, byYear: 1885 } },
+  { id: 'pioneer', name: 'Pioneer Valley', blurb: 'A temperate frontier. Grow a railroad worth a fortune.', seed: 20260611, year: 1862, startMoney: 850_000, cities: 20, goal: networthGoal(2_500_000, 1890) },
+  { id: 'coal', name: 'Coal Country', blurb: 'A rugged mining belt — keep the furnaces fed with coal.', seed: 7771234, year: 1855, startMoney: 700_000, cities: 28, goal: { kind: 'cargo', cargo: 'coal', byYear: 1888, bronze: 1500, silver: 3500, gold: 6000 } },
+  { id: 'ironroad', name: 'The Iron Road', blurb: 'Span the territory — knit its cities into one network.', seed: 4242777, year: 1866, startMoney: 950_000, cities: 32, goal: { kind: 'connect', byYear: 1894, bronze: 9, silver: 13, gold: 18 } },
+  { id: 'contractor', name: 'The Contractor', blurb: 'Make your name fulfilling hauls the cities put out to bid.', seed: 3318890, year: 1864, startMoney: 800_000, cities: 24, goal: { kind: 'contracts', byYear: 1895, bronze: 3, silver: 6, gold: 9 } },
+  { id: 'golden', name: 'Golden State', blurb: 'A booming coast. Big cities, bigger ambitions.', seed: 5550987, year: 1872, startMoney: 1_100_000, cities: 36, goal: networthGoal(4_000_000, 1898) },
+  { id: 'gambit', name: "Tycoon's Gambit", blurb: 'Thin capital and hungry rivals. A fortune, fast.', seed: 9123456, year: 1860, startMoney: 500_000, cities: 14, goal: networthGoal(3_500_000, 1885) },
 ];
+
+/** A short human description of an objective's tiers, e.g. "Net worth · 🥉 $2.5M  🥈 $4.0M  🥇 $6.3M".
+ *  The heading names the unit (cargo / cities / contracts) so the bare tier numbers read clearly. */
+export function describeGoal(g: Goal): string {
+  const fmt = (v: number): string => (g.kind === 'networth' ? `$${(v / 1e6).toFixed(1)}M` : `${v}`);
+  const head =
+    g.kind === 'cargo' ? `Haul ${g.cargo && CARGO[g.cargo] ? CARGO[g.cargo].label.toLowerCase() : 'cargo'}`
+    : g.kind === 'connect' ? 'Cities linked'
+    : g.kind === 'contracts' ? 'Contracts filled'
+    : 'Net worth';
+  return `${head} · 🥉 ${fmt(g.bronze)}  🥈 ${fmt(g.silver)}  🥇 ${fmt(g.gold)} · by ${g.byYear}`;
+}
 
 const LIVERIES = [0x8fffa8, 0x6db4d6, 0xffe28a, 0xff8a4d, 0xff7766, 0xc792ea, 0x9bd07a, 0xb89a7a];
 const AI_NAMES = ['Atlas & Pacific', 'Great Northern', 'Union Central'];
 const AI_COLORS = [0xff8a4d, 0x6db4d6, 0xc792ea];
 const SANDBOX_YEAR = 9999;
 const CITY_OPTIONS = [14, 20, 28, 36];
-const TARGET_OPTIONS = [1_500_000, 2_500_000, 4_000_000, 6_000_000];
 
 /** Show the setup screen and resolve with the chosen setup, or 'continue' to resume. */
 export function chooseScenario(): Promise<StartChoice> {
@@ -111,7 +126,12 @@ export function chooseScenario(): Promise<StartChoice> {
     const scenarioCards: { card: HTMLElement; s: Scenario }[] = [];
     for (const s of SCENARIOS) {
       const card = el('button', cardStyle());
-      card.innerHTML = `<div style="font-weight:700">${s.name}</div><div style="font-size:11.5px;opacity:0.7">${s.blurb}</div>`;
+      const tag =
+        s.goal.kind === 'cargo' ? '🚚 Cargo'
+        : s.goal.kind === 'connect' ? '🕸 Network'
+        : s.goal.kind === 'contracts' ? '📋 Contracts'
+        : '💰 Net worth';
+      card.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-weight:700">${s.name}</span><span style="font-size:10.5px;opacity:0.6">${tag}</span></div><div style="font-size:11.5px;opacity:0.7">${s.blurb}</div>`;
       card.onclick = () => {
         setup.scenario = s;
         if (!randomMap) setup.seed = s.seed;
@@ -177,29 +197,18 @@ export function chooseScenario(): Promise<StartChoice> {
       }
       playerSwatches.mark(setup.player.color);
 
-      // Victory.
+      // Victory. The objective is set by the scenario; the player can swap it for a free
+      // sandbox. (Difficulty, map and opponents are tuned separately.)
       victoryBody.innerHTML = '';
-      const sandboxSeg = segmented(['Net-worth goal', 'Sandbox'], sandbox ? 1 : 0, (i) => {
+      const sandboxSeg = segmented(['Scenario goal', 'Sandbox'], sandbox ? 1 : 0, (i) => {
         sandbox = i === 1;
-        if (sandbox) setup.goal = { targetCash: 1e12, byYear: SANDBOX_YEAR };
+        if (sandbox) setup.goal = { kind: 'networth', byYear: SANDBOX_YEAR, bronze: 1e12, silver: 1e12, gold: 1e12 };
         else setup.goal = { ...setup.scenario.goal };
         refresh();
       });
       victoryBody.append(sandboxSeg);
       if (!sandbox) {
-        const targetSeg = segmented(
-          TARGET_OPTIONS.map((t) => `$${(t / 1e6).toFixed(1)}M`),
-          Math.max(0, TARGET_OPTIONS.indexOf(setup.goal.targetCash)),
-          (i) => (setup.goal.targetCash = TARGET_OPTIONS[i])
-        );
-        const minYear = setup.scenario.year + 10;
-        if (setup.goal.byYear < minYear || setup.goal.byYear === SANDBOX_YEAR) setup.goal.byYear = setup.scenario.goal.byYear;
-        const yearStep = stepper(
-          () => `by ${setup.goal.byYear}`,
-          () => (setup.goal.byYear = Math.max(minYear, setup.goal.byYear - 5)),
-          () => (setup.goal.byYear = Math.min(setup.scenario.year + 80, setup.goal.byYear + 5))
-        );
-        victoryBody.append(sub('Target'), targetSeg, sub('Deadline'), yearStep);
+        victoryBody.append(hint(describeGoal(setup.scenario.goal)));
       } else {
         victoryBody.append(hint('Build freely — no deadline. (You can still go bankrupt.)'));
       }
@@ -347,32 +356,6 @@ function segmented(labels: string[], initial: number, onPick: (i: number) => voi
     row.append(b);
   });
   mark(initial);
-  return row;
-}
-
-function stepper(label: () => string, dec: () => void, inc: () => void): HTMLElement {
-  const row = el('div', { display: 'flex', gap: '5px', alignItems: 'center' });
-  const val = el('div', { flex: '1', textAlign: 'center', fontSize: '13px' });
-  val.textContent = label();
-  const mk = (t: string, fn: () => void): HTMLElement => {
-    const b = el('button', {
-      width: '34px',
-      padding: '6px 0',
-      cursor: 'pointer',
-      borderRadius: '6px',
-      border: '1px solid rgba(255,255,255,0.18)',
-      background: 'rgba(255,255,255,0.05)',
-      color: '#f4f0e6',
-      fontWeight: '700',
-    });
-    b.textContent = t;
-    b.onclick = () => {
-      fn();
-      val.textContent = label();
-    };
-    return b;
-  };
-  row.append(mk('−', dec), val, mk('+', inc));
   return row;
 }
 
