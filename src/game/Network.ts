@@ -127,6 +127,8 @@ export interface GStation {
   hasStation: boolean;
   /** The depot building (for removal on demolish), or null. */
   depot: THREE.Object3D | null;
+  /** True once the depot has been sat beside a serving line's rails (so it isn't re-moved). */
+  depotAligned: boolean;
   /** The company that built the depot — only it may demolish it. */
   depotOwner: Company | null;
   /** Nearby depot-less cities this station gathers cargo from (its catchment). */
@@ -579,6 +581,8 @@ export class Network {
         tr.restore(td.dist, td.dir, cargo);
       });
     }
+    // Depots were placed before the lines existed; now snap each onto its line's rails.
+    for (const s of this.stations) if (s.depot) { s.depotAligned = false; this.alignDepot(s); }
     return true;
   }
 
@@ -677,6 +681,7 @@ export class Network {
       hasStation: false,
       depot: null,
       depotOwner: null,
+      depotAligned: false,
       catchment: [],
       buildings: new Set(),
       stage: site.archetype.size,
@@ -756,12 +761,49 @@ export class Network {
     }
     st.hasStation = true;
     st.depotOwner = owner;
+    st.depotAligned = false;
     const depot = buildStation();
-    depot.position.set(st.pos.x + 16, this.field.height(st.pos.x + 16, st.pos.z), st.pos.z);
-    depot.rotation.y = Math.atan2(st.pos.x - depot.position.x, st.pos.z - depot.position.z);
     this.scene.add(depot);
     st.depot = depot;
+    this.alignDepot(st); // sit it beside an existing line's rails, or face the nearest city
     this.assignCatchment();
+  }
+
+  /** Place the depot beside the rails of a line that stops here, with its platform running
+   *  along the track so the station reads as part of the line. With no line yet, it faces
+   *  the nearest neighbouring city as a sensible default until one arrives. Purely visual —
+   *  catchment and the economy key off st.pos, never the depot mesh. */
+  private alignDepot(st: GStation): void {
+    if (!st.depot) return;
+    const at = new THREE.Vector3();
+    const dir = new THREE.Vector3();
+    const line = this.lines.find((l) => !l.through && l.stops.includes(st) && l.track.group.children.length > 0);
+    if (line) {
+      const u = Math.max(0, Math.min(1, line.stopFracs[line.stops.indexOf(st)]));
+      line.track.curve.getPointAt(u, at);
+      line.track.curve.getTangentAt(u, dir);
+      dir.y = 0;
+      st.depotAligned = true;
+    } else {
+      at.copy(st.pos);
+      let near: GStation | null = null;
+      let best = Infinity;
+      for (const o of this.stations) {
+        if (o === st) continue;
+        const d = o.pos.distanceToSquared(st.pos);
+        if (d < best) { best = d; near = o; }
+      }
+      if (near) dir.set(near.pos.x - st.pos.x, 0, near.pos.z - st.pos.z);
+    }
+    if (dir.lengthSq() < 1e-6) dir.set(1, 0, 0);
+    dir.normalize();
+    // Sit the depot one side of the track; its platform's track edge (+X local) then faces
+    // the rails, and its long axis (+Z local) runs parallel to them.
+    const SIDE = 11;
+    const px = at.x - dir.z * SIDE;
+    const pz = at.z + dir.x * SIDE;
+    st.depot.position.set(px, this.field.height(px, pz), pz);
+    st.depot.rotation.y = Math.atan2(dir.x, dir.z);
   }
 
   /** Buy a maintenance building at a player-owned depot (one of each). */
@@ -1063,6 +1105,8 @@ export class Network {
     }
     const trains = runnable ? [{ loco: loco!, cars: cars ?? this.defaultConsist(stops, loco!) }] : [];
     this.layLine(owner, stops, waypoints, trains);
+    // Snap each stop's depot onto this line's rails the first time a line serves it.
+    for (const st of stops) if (st.depot && !st.depotAligned) this.alignDepot(st);
     if (bonus > 0) {
       owner.money += bonus;
       this.pushDelivery(`First link: ${stops[0].name} ↔ ${stops[stops.length - 1].name}`, bonus);

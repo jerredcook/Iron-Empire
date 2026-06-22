@@ -228,6 +228,15 @@ async function main() {
       ui?.buildGuidance
     );
     check(
+      'ui: selection marker shows/hides on a city + a built line sits the depot beside the rails',
+      ui?.selectionUI?.startsHidden &&
+        ui?.selectionUI?.shown &&
+        ui?.selectionUI?.hidden &&
+        ui?.selectionUI?.depotAligned &&
+        ui?.selectionUI?.besideTrack,
+      ui?.selectionUI
+    );
+    check(
       'ui: station maintenance buildings — gating, charge, stock-cap+throughput, revenue, servicing, dwell, persist',
       ui?.stationBuildings?.builtAll &&
         ui?.stationBuildings?.chargedMoney &&

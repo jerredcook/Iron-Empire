@@ -12,6 +12,7 @@ import { TrackBuilder } from './game/TrackBuilder';
 import { HUD } from './game/HUD';
 import { Inspector } from './game/Inspector';
 import { Picker } from './game/Picker';
+import { SelectionMarker } from './game/SelectionMarker';
 import { Minimap } from './game/Minimap';
 import { LocoClass, defaultLoco, LOCOS } from './game/Locomotives';
 import { AudioBus } from './game/Audio';
@@ -156,10 +157,12 @@ async function boot(cfg: BootCfg): Promise<void> {
 
   // Inspection: minimap + click-to-select + detail panel, all reading live state.
   const minimap = new Minimap(field, network);
+  const selectionMarker = new SelectionMarker(scene);
   let followTrain: Train | null = null;
   const clearSelection = (): void => {
     inspector.select(null);
     minimap.setSelection(null);
+    selectionMarker.hide();
   };
   const inspector = new Inspector(
     network,
@@ -211,6 +214,9 @@ async function boot(cfg: BootCfg): Promise<void> {
     followTrain = null; // selecting anything new stops following
     inspector.select(sel);
     minimap.setSelection(sel);
+    // Mark the selected city in the world; clear it for line/train/empty selections.
+    if (sel?.kind === 'station') selectionMarker.show(sel.station.pos);
+    else selectionMarker.hide();
   };
   window.addEventListener('keydown', (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
@@ -351,6 +357,7 @@ async function boot(cfg: BootCfg): Promise<void> {
     water.update(dt);
     scatter.update(dt);
     smokestacks.update(dt); // ambient — keeps the chimneys alive even while paused
+    selectionMarker.update(dt); // pulse/bob on real time, even while paused
     network.update(sim);
     auctioneer.update(sim);
     events.update(sim);
@@ -1300,6 +1307,37 @@ function runUiTest(
       finishButton: !!document.querySelector('[data-finishroute]'),
       bothBare: !x.hasStation && !y.hasStation,
     };
+  }
+
+  // HH) Selection + station visuals: the city marker shows/hides on demand, and building a
+  //     line snaps the stop's depot beside the rails so it reads as connected to the track.
+  {
+    const sc = new THREE.Scene();
+    const marker = new SelectionMarker(sc);
+    const startsHidden = !marker.active;
+    const target = network.stations[0];
+    marker.show(target.pos);
+    const shown = marker.active && marker.position.distanceTo(target.pos) < 0.001;
+    marker.update(0.1);
+    marker.hide();
+    const hidden = !marker.active;
+    marker.dispose();
+
+    network.status = 'playing';
+    network.player.money = 5_000_000;
+    const da = network.stations.find((s) => !s.hasStation);
+    const db = network.stations.filter((s) => !s.hasStation && s !== da)[0];
+    let depotAligned = false;
+    let besideTrack = false;
+    if (da && db) {
+      network.buildStationAt(da);
+      network.buildStationAt(db);
+      network.buildLine([da.pos, db.pos], [da, db], loco);
+      depotAligned = da.depotAligned === true && !!da.depot;
+      const d = da.depot ? Math.hypot(da.depot.position.x - da.pos.x, da.depot.position.z - da.pos.z) : 999;
+      besideTrack = d > 4 && d < 26; // beside the rails — not on top of the city, not far off
+    }
+    result.selectionUI = { startsHidden, shown, hidden, depotAligned, besideTrack };
   }
 
   const el = document.createElement('pre');
