@@ -1082,7 +1082,8 @@ export class Network {
    */
   buildLineFor(owner: Company, waypoints: THREE.Vector3[], stops: GStation[], loco?: LocoClass, cars?: CargoKind[]): boolean {
     if (waypoints.length < 2) return false;
-    const runnable = stops.length >= 2 && !!loco;
+    // A train only runs (and is only paid for) when the line has two depots to serve.
+    const runnable = stops.length >= 2 && !!loco && stops.filter((s) => s.hasStation).length >= 2;
     const cost = this.routeCost(waypoints) + (runnable ? loco!.cost : 0);
     if (cost > owner.money) return false;
     owner.money -= cost;
@@ -1200,10 +1201,16 @@ export class Network {
 
   /** Buy and place an additional train (with the given consist) on an existing line. */
   addTrain(line: GLine, loco: LocoClass, cars?: CargoKind[]): boolean {
+    if (!this.canRunTrains(line)) return false; // needs two depots to be worth running
     if (loco.cost > line.owner.money) return false;
     line.owner.money -= loco.cost;
     this.spawnTrain(line, loco, cars ?? this.defaultConsist(line.stops, loco));
     return true;
+  }
+
+  /** A line can run trains once at least two of its stops have a depot to load/unload at. */
+  canRunTrains(line: GLine): boolean {
+    return !line.through && line.stops.filter((s) => s.hasStation).length >= 2;
   }
 
   /** Sell a train off a line: remove it and refund half the locomotive's value. */

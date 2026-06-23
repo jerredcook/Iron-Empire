@@ -131,26 +131,24 @@ async function boot(cfg: BootCfg): Promise<void> {
     (c) => network.acceptContract(c)
   );
   builder.onStatus = (s) => hud.setBuildStatus(s);
-  // Finishing a route: lay the track; if it has ≥2 city stops, configure a train for it.
-  // A train earns nothing at a city without a depot, so if any stop still lacks a station
-  // we say so plainly — the silent "why isn't my train making money?" trap, made loud.
-  const warnIfStationless = (stops: GStation[]): void => {
-    const bare = stops.filter((s) => !s.hasStation);
-    if (bare.length) {
-      const names = bare.map((s) => s.name).join(' & ');
-      hud.news(`${names} ${bare.length > 1 ? 'have' : 'has'} no Station yet — trains won’t stop there. Click the city → Build Station.`, false);
-    }
-  };
+  // Finishing a route: if the line links two depots, configure + run a train right away.
+  // Otherwise just lay the track and say plainly what's needed to run it — a train earns
+  // nothing without depots, so we never spawn (or charge for) one that can't work.
   builder.onCommit = (nodes) => {
     const waypoints = nodes.map((n) => n.pos);
     const stops = nodes.filter((n) => n.station).map((n) => n.station!);
-    if (stops.length >= 2) {
-      configureConsist(network, stops, selectedLoco, (cars) => {
-        network.buildLine(waypoints, stops, selectedLoco, cars);
-        warnIfStationless(stops);
-      });
+    const stationed = stops.filter((s) => s.hasStation);
+    if (stops.length >= 2 && stationed.length >= 2) {
+      configureConsist(network, stops, selectedLoco, (cars) => network.buildLine(waypoints, stops, selectedLoco, cars));
     } else {
-      network.buildLine(waypoints, stops); // track only — no complete route yet
+      network.buildLine(waypoints, stops); // track only — no train yet
+      const bare = stops.filter((s) => !s.hasStation);
+      if (bare.length) {
+        const names = bare.map((s) => s.name).join(' & ');
+        hud.news(`Track laid. ${names} ${bare.length > 1 ? 'need' : 'needs'} a Station before a train can run — click the city → Build Station, then select the line → Start a train.`, false);
+      } else {
+        hud.news('Track laid. Select the line and press “Start a train” once it links two stationed cities.', false);
+      }
     }
   };
   renderer.gl.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -358,6 +356,7 @@ async function boot(cfg: BootCfg): Promise<void> {
     scatter.update(dt);
     smokestacks.update(dt); // ambient — keeps the chimneys alive even while paused
     selectionMarker.update(dt); // pulse/bob on real time, even while paused
+    builder.update(dt); // throb the snap ring while laying track
     network.update(sim);
     auctioneer.update(sim);
     events.update(sim);
@@ -1338,6 +1337,61 @@ function runUiTest(
       besideTrack = d > 4 && d < 26; // beside the rails — not on top of the city, not far off
     }
     result.selectionUI = { startsHidden, shown, hidden, depotAligned, besideTrack };
+  }
+
+  // II) Start-a-train flow (line-panel CTA, gated on depots) + keyboard navigation.
+  {
+    network.status = 'playing';
+    network.player.money = 5_000_000;
+    // Earlier tests left most cities with depots, so strip two back to bare deterministically.
+    const bareA = network.stations[0];
+    const bareB = network.stations[1];
+    network.demolishStation(bareA);
+    network.demolishStation(bareB);
+    let trainGatedOffDepots = false;
+    let trainRunsWithDepots = false;
+    let ctaAppearsWithDepots = false;
+    let ctaStartsTrain = false;
+    if (!bareA.hasStation && !bareB.hasStation) {
+      // Depot-less line: track laid, but no train and the line knows it can't run one.
+      network.buildLine([bareA.pos, bareB.pos], [bareA, bareB], loco);
+      const line = network.player.lines[network.player.lines.length - 1];
+      trainGatedOffDepots = line.trains.length === 0 && !network.canRunTrains(line);
+      inspector.select({ kind: 'line', line });
+      inspector.update(1);
+      const ctaWhenIneligible = !!document.querySelector('[data-addtrain]');
+      // Build both depots → the line becomes runnable and the Start-a-train CTA appears.
+      network.buildStationAt(bareA);
+      network.buildStationAt(bareB);
+      trainRunsWithDepots = network.canRunTrains(line);
+      inspector.select({ kind: 'line', line });
+      inspector.update(1);
+      const cta = document.querySelector('[data-addtrain]') as HTMLElement | null;
+      ctaAppearsWithDepots = !!cta && !ctaWhenIneligible;
+      const before = line.trains.length;
+      cta?.click();
+      driveConsistModal('goods');
+      ctaStartsTrain = line.trains.length === before + 1;
+    }
+
+    // Keyboard navigation: reset restores the opening view; Q orbits; R zooms in.
+    const navRig = new CameraRig(document.createElement('div'), 4096);
+    const homePos = navRig.camera.position.clone();
+    navRig.camera.position.x += 800;
+    navRig.reset();
+    const resetOK = navRig.camera.position.distanceTo(homePos) < 0.001;
+    const beforeRot = navRig.camera.position.clone();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'q' }));
+    navRig.update(0.25);
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'q' }));
+    const rotated = navRig.camera.position.distanceTo(beforeRot) > 1;
+    const distBefore = navRig.camera.position.distanceTo(navRig.controls.target);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'r' }));
+    navRig.update(0.25);
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: 'r' }));
+    const zoomed = navRig.camera.position.distanceTo(navRig.controls.target) < distBefore - 1;
+
+    result.startTrainAndNav = { trainGatedOffDepots, trainRunsWithDepots, ctaAppearsWithDepots, ctaStartsTrain, resetOK, rotated, zoomed };
   }
 
   const el = document.createElement('pre');

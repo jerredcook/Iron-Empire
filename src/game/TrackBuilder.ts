@@ -36,6 +36,7 @@ export class TrackBuilder {
   onCommit?: (nodes: RouteNode[]) => void;
 
   private active = false;
+  private pulseT = 0; // drives the snap-ring throb
   /** Every clicked point in order; free terrain points have station = null. */
   private nodes: RouteNode[] = [];
   private cursor = new THREE.Vector3();
@@ -67,11 +68,14 @@ export class TrackBuilder {
     this.ghost.renderOrder = 999;
     overlay.add(this.ghost);
 
+    // A bright, pulsing ring that drops over a town the moment the cursor is in range to
+    // make it a stop — drawn over terrain/buildings so it's unmistakable.
     this.snapRing = new THREE.Mesh(
-      new THREE.TorusGeometry(SNAP * 0.5, 1.4, 8, 40),
-      new THREE.MeshBasicMaterial({ color: 0x8fffa8, transparent: true, opacity: 0.6 })
+      new THREE.TorusGeometry(SNAP * 0.5, 2.4, 10, 56),
+      new THREE.MeshBasicMaterial({ color: 0x7dffb0, transparent: true, opacity: 0.85, depthTest: false })
     );
     this.snapRing.rotation.x = Math.PI / 2;
+    this.snapRing.renderOrder = 999;
     this.snapRing.visible = false;
     overlay.add(this.snapRing);
 
@@ -119,6 +123,16 @@ export class TrackBuilder {
   /** Commit the current route (the HUD ✓ Finish button calls this). No-op under 2 points. */
   commit(): void {
     this.finish();
+  }
+
+  /** Per-frame pulse for the in-range snap ring, so the town it'll latch onto visibly
+   *  throbs. Fed real dt from the render loop; a no-op when nothing is snapped. */
+  update(dt: number): void {
+    if (!this.snapRing.visible) return;
+    this.pulseT += dt;
+    const beat = 0.5 + 0.5 * Math.sin(this.pulseT * 4.5);
+    this.snapRing.scale.setScalar(1 + beat * 0.14);
+    (this.snapRing.material as THREE.MeshBasicMaterial).opacity = 0.55 + 0.4 * beat;
   }
 
   private onKey = (e: KeyboardEvent): void => {

@@ -97,6 +97,8 @@ export class Inspector {
     }
     if (this.sel.kind === 'line') {
       const line = this.sel.line;
+      const add = this.panel.querySelector('[data-addtrain]') as HTMLElement | null;
+      if (add) add.onclick = () => this.onAddTrain(line);
       const demo = this.panel.querySelector('[data-demolish]') as HTMLElement | null;
       if (demo) demo.onclick = () => this.onDemolishLine(line);
       const fix = this.panel.querySelector('[data-repairline]') as HTMLElement | null;
@@ -293,6 +295,20 @@ export class Inspector {
       html += `<div style="margin-top:8px;padding:7px 9px;border-radius:7px;background:rgba(255,150,90,0.12);border:1px solid rgba(255,150,90,0.45);color:#ffb784;font-size:12px">⛈ Washed out — service halted while it rebuilds.</div>`;
       if (line.owner === this.network.player) {
         html += `<div data-repairline style="margin-top:6px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,200,120,0.6);color:#ffd089;font-size:12px">🛠 Repair now — $${Math.round(cost / 1000)}k</div>`;
+      }
+    }
+    // Running trains is done from the line panel (where a player lands after laying track):
+    // a prominent CTA when the line has none yet, a quieter one to add more, or a clear note
+    // on what's missing if the line can't run a train yet.
+    if (!line.owner.isAI && !line.through) {
+      const stationed = line.stops.filter((s) => s.hasStation).length;
+      if (stationed >= 2) {
+        html += line.trains.length === 0
+          ? `<div data-addtrain style="margin-top:10px;text-align:center;cursor:pointer;pointer-events:auto;padding:9px;border-radius:7px;border:1px solid rgba(143,255,168,0.7);background:rgba(143,255,168,0.16);color:#8fffa8;font-size:13px;font-weight:700">🚂 Start a train</div>` +
+            `<div style="font-size:11px;opacity:0.6;text-align:center;margin-top:3px">Pick a locomotive and what it should haul.</div>`
+          : `<div data-addtrain style="margin-top:9px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(143,255,168,0.5);color:#8fffa8;font-size:12px">＋ Add another train</div>`;
+      } else {
+        html += `<div style="margin-top:9px;padding:7px 9px;border-radius:7px;background:rgba(255,200,120,0.1);border:1px solid rgba(255,200,120,0.4);color:#ffd089;font-size:11.5px">⚠ Needs a Station at two of these cities before a train can run — click a city → Build Station.</div>`;
       }
     }
     if (!line.owner.isAI) {

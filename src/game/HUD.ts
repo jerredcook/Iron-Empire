@@ -424,7 +424,7 @@ export class HUD {
       cursor: 'pointer',
     });
     help.innerHTML =
-      'Drag pan · Right-drag orbit · Wheel zoom · WASD · Space pause<br>B build track · Esc cancel · <b style="color:#bfe0ff">❓ How to play</b>';
+      'WASD/drag pan · Q/E rotate · R/F zoom · two-finger zoom · Home reset<br>Space pause · B build track · Esc cancel · <b style="color:#bfe0ff">❓ How to play</b>';
     help.onclick = () => this.showHelp();
     this.root.append(help);
 
@@ -456,8 +456,9 @@ export class HUD {
       [
         ['🎯', '<b>The goal</b> — reach the medal target by the deadline (top-left). The objective varies by scenario: net worth, cargo hauled, cities linked, or contracts filled. 🥉 → 🥈 → 🥇.'],
         ['🚉', '<b>Step 1 — Stations.</b> Click a city, then <b>Build Station — $70k</b> in its panel. Trains only stop where you’ve built a station, so do this at each city you want to serve.'],
-        ['🛤', '<b>Step 2 — Track.</b> Click <b>Build Track</b> (or <b>B</b>), click your stationed cities in order, then press <b>✓ Finish line</b>. You’ll pick a train to run the route.'],
-        ['🚂', '<b>Step 3 — Run goods.</b> Each city <b>wants</b> certain cargo (the ringed dots over it). Carry what it wants from where it’s produced; long hauls of fresh freight pay most. (Add more trains from a line’s panel: <b>+ Add train</b>.)'],
+        ['🛤', '<b>Step 2 — Track.</b> Click <b>Build Track</b> (or <b>B</b>), click your stationed cities in order — each lights up when it’s in range — then press <b>✓ Finish line</b>.'],
+        ['🚂', '<b>Step 3 — Start a train.</b> Select the line and press <b>🚂 Start a train</b> (it runs the moment two of its cities have stations). Each city <b>wants</b> certain cargo (the ringed dots) — carry what it wants from where it’s made; long hauls of fresh freight pay most.'],
+        ['🎥', '<b>Getting around</b> — <b>WASD</b> or drag to pan, <b>Q/E</b> rotate, <b>R/F</b> (or two-finger scroll) zoom, <b>Home</b> resets the view.'],
         ['📋', '<b>Contracts</b> — accept time-limited haul jobs for a premium reward (the Contracts button, top-left).'],
         ['🔍', '<b>Inspect</b> — click a train, a length of track, or a city for details. The fleet list (bottom-right) jumps the camera to any train.'],
         ['⏱', '<b>Pace it</b> — Space pauses; 1 / 2 / 3 set speed. Watch out for storms that wash out a line — repair it or wait it out.'],

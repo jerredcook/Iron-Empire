@@ -237,6 +237,17 @@ async function main() {
       ui?.selectionUI
     );
     check(
+      'ui: trains gate on depots, the line-panel CTA starts one, and keyboard nav (reset/rotate/zoom) works',
+      ui?.startTrainAndNav?.trainGatedOffDepots &&
+        ui?.startTrainAndNav?.trainRunsWithDepots &&
+        ui?.startTrainAndNav?.ctaAppearsWithDepots &&
+        ui?.startTrainAndNav?.ctaStartsTrain &&
+        ui?.startTrainAndNav?.resetOK &&
+        ui?.startTrainAndNav?.rotated &&
+        ui?.startTrainAndNav?.zoomed,
+      ui?.startTrainAndNav
+    );
+    check(
       'ui: station maintenance buildings — gating, charge, stock-cap+throughput, revenue, servicing, dwell, persist',
       ui?.stationBuildings?.builtAll &&
         ui?.stationBuildings?.chargedMoney &&
