@@ -9,6 +9,8 @@ export const TRACK_SIDE = 2.4;
 const RAIL_R = 0.16;
 const RAIL_HEAD = 0.85; // deck height above ground
 const TIE_SPACING = 2.2;
+const BED_DROP = 1.0; // ground sits this far below the rail head — just under the ballast
+const BED_HALF = 4.5; // half-width of the level roadbed shelf the ground is graded to
 
 /**
  * A rail line draped over the landscape with an engineered profile: elevations are
@@ -60,6 +62,11 @@ export class Track {
       this.group.name = 'route';
       return;
     }
+
+    // Cut and fill the land to the engineered bed BEFORE building the structure, so the ballast,
+    // trestles and tunnels read the graded ground: embankments replace stilts over dips, cuttings
+    // replace track buried in a rise.
+    field.addCorridor(pts.map((p) => ({ x: p.x, z: p.z, y: p.y - BED_DROP })), BED_HALF);
 
     this.group.add(this.buildBallast());
     this.group.add(this.buildTies());

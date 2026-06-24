@@ -10,9 +10,13 @@ import { terrainSet } from '../engine/Assets';
  */
 export class TerrainMesh {
   readonly mesh: THREE.Mesh;
+  private readonly size: number;
+  private readonly segments: number;
 
   constructor(field: Heightfield, segments = 512) {
     const { size, seaLevel } = field.params;
+    this.size = size;
+    this.segments = segments;
     const geo = new THREE.PlaneGeometry(size, size, segments, segments);
     geo.rotateX(-Math.PI / 2);
     const pos = geo.attributes.position as THREE.BufferAttribute;
@@ -39,6 +43,71 @@ export class TerrainMesh {
     pos.needsUpdate = true;
     this.mesh.geometry.computeVertexNormals();
   }
+
+  /** Re-displace the ground along a freshly-graded track corridor, relighting only the touched
+   *  vertices from the height gradient (cheap and local — no full normal recompute). `path` is
+   *  the line's waypoint polyline; `reach` is how far the earthworks spread from it. */
+  resampleCorridor(field: Heightfield, path: { x: number; z: number }[], reach: number): void {
+    if (path.length < 2) return;
+    const pos = this.mesh.geometry.attributes.position as THREE.BufferAttribute;
+    const nrm = this.mesh.geometry.attributes.normal as THREE.BufferAttribute;
+    const stride = this.segments + 1;
+    const spacing = this.size / this.segments;
+    const r2 = reach * reach;
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const p of path) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.z < minZ) minZ = p.z;
+      if (p.z > maxZ) maxZ = p.z;
+    }
+    minX -= reach; maxX += reach; minZ -= reach; maxZ += reach;
+    const touched: number[] = [];
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), z = pos.getZ(i);
+      if (x < minX || x > maxX || z < minZ || z > maxZ) continue;
+      if (distToPath2(x, z, path) > r2) continue;
+      pos.setY(i, field.height(x, z));
+      touched.push(i);
+    }
+    // Relight the touched vertices and their immediate neighbours from the new heights.
+    const relit = new Set<number>();
+    for (const i of touched) {
+      relit.add(i);
+      const col = i % stride, row = (i / stride) | 0;
+      if (col > 0) relit.add(i - 1);
+      if (col < this.segments) relit.add(i + 1);
+      if (row > 0) relit.add(i - stride);
+      if (row < this.segments) relit.add(i + stride);
+    }
+    for (const i of relit) {
+      const col = i % stride, row = (i / stride) | 0;
+      const l = col > 0 ? i - 1 : i, r = col < this.segments ? i + 1 : i;
+      const d = row > 0 ? i - stride : i, u = row < this.segments ? i + stride : i;
+      const gx = (pos.getY(r) - pos.getY(l)) / (2 * spacing);
+      const gz = (pos.getY(u) - pos.getY(d)) / (2 * spacing);
+      const len = Math.hypot(gx, 1, gz) || 1;
+      nrm.setXYZ(i, -gx / len, 1 / len, -gz / len);
+    }
+    pos.needsUpdate = true;
+    nrm.needsUpdate = true;
+  }
+}
+
+/** Squared XZ distance from a point to the nearest segment of a polyline. */
+function distToPath2(px: number, pz: number, path: { x: number; z: number }[]): number {
+  let min = Infinity;
+  for (let i = 0; i < path.length - 1; i++) {
+    const ax = path[i].x, az = path[i].z;
+    const dx = path[i + 1].x - ax, dz = path[i + 1].z - az;
+    const len2 = dx * dx + dz * dz || 1;
+    let t = ((px - ax) * dx + (pz - az) * dz) / len2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const ex = px - (ax + t * dx), ez = pz - (az + t * dz);
+    const d2 = ex * ex + ez * ez;
+    if (d2 < min) min = d2;
+  }
+  return min;
 }
 
 function buildTerrainMaterial(worldSize: number, seaLevel: number): THREE.MeshStandardMaterial {

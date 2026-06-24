@@ -26,6 +26,9 @@ const smooth = (e0: number, e1: number, x: number): number => {
 };
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
+/** The longest an embankment/cutting slope runs from the bed edge back to grade. */
+const CORRIDOR_MAX_SLOPE = 26;
+
 /**
  * Analytic landscape — the single source of truth for ground height. Layered like a
  * real region: a coastal shelf to the south-east, rolling lowlands through the middle,
@@ -37,6 +40,9 @@ export class Heightfield {
   private n2: (x: number, y: number) => number;
   private n3: (x: number, y: number) => number;
   private flats: { x: number; z: number; inner: number; outer: number; h: number }[] = [];
+  // Graded track roadbeds: the ground cuts and fills to meet the rails (an embankment over
+  // dips, a cutting through rises), blending back to natural terrain on either side.
+  private corridors: { xs: number[]; zs: number[]; ys: number[]; half: number; minX: number; maxX: number; minZ: number; maxZ: number }[] = [];
 
   constructor(readonly params: TerrainParams) {
     this.n1 = createNoise2D(mulberry32(params.seed));
@@ -61,6 +67,31 @@ export class Heightfield {
   /** Flatten a circular pad (town/industry/station sites). */
   addFlat(x: number, z: number, radius: number): void {
     this.flats.push({ x, z, inner: radius * 0.75, outer: radius * 2.0, h: this.rawHeight(x, z) });
+  }
+
+  /** Grade a track roadbed into the land: `path` is the centreline with its engineered bed
+   *  height (y). Within `half` of the centre the ground is the bed; beyond that it ramps back
+   *  to natural terrain over an embankment/cutting slope sized to the local cut-or-fill. */
+  addCorridor(path: { x: number; z: number; y: number }[], half = 5): void {
+    if (path.length < 2) return;
+    const xs = path.map((p) => p.x);
+    const zs = path.map((p) => p.z);
+    const ys = path.map((p) => p.y);
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const p of path) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.z < minZ) minZ = p.z;
+      if (p.z > maxZ) maxZ = p.z;
+    }
+    const pad = half + CORRIDOR_MAX_SLOPE; // widest the earthworks can reach
+    this.corridors.push({ xs, zs, ys, half, minX: minX - pad, maxX: maxX + pad, minZ: minZ - pad, maxZ: maxZ + pad });
+  }
+
+  /** The reach (world units from centreline) the corridor earthworks can extend — lets the
+   *  mesh know which vertices to re-displace. */
+  get corridorReach(): number {
+    return 6 + CORRIDOR_MAX_SLOPE;
   }
 
   private rawHeight(x: number, z: number): number {
@@ -105,6 +136,32 @@ export class Heightfield {
       if (d >= p.outer) continue;
       const t = 1 - smooth(p.inner, p.outer, d);
       h = lerp(h, Math.max(p.h, this.params.seaLevel + 4), t);
+    }
+    // Track roadbeds cut and fill the land to meet the rails.
+    for (const c of this.corridors) {
+      if (x < c.minX || x > c.maxX || z < c.minZ || z > c.maxZ) continue;
+      // Nearest point on the centreline polyline, with the bed height interpolated there.
+      let best = Infinity;
+      let bedY = 0;
+      const m = c.xs.length;
+      for (let i = 0; i < m - 1; i++) {
+        const ax = c.xs[i], az = c.zs[i];
+        const dx = c.xs[i + 1] - ax, dz = c.zs[i + 1] - az;
+        const len2 = dx * dx + dz * dz || 1;
+        let s = ((x - ax) * dx + (z - az) * dz) / len2;
+        s = s < 0 ? 0 : s > 1 ? 1 : s;
+        const ex = x - (ax + s * dx), ez = z - (az + s * dz);
+        const d2 = ex * ex + ez * ez;
+        if (d2 < best) {
+          best = d2;
+          bedY = c.ys[i] + (c.ys[i + 1] - c.ys[i]) * s;
+        }
+      }
+      const d = Math.sqrt(best);
+      // Embankment/cutting run scales with how much earth is moved (steeper fill = wider toe).
+      const slope = Math.min(CORRIDOR_MAX_SLOPE, Math.max(5, Math.abs(bedY - h) * 1.5));
+      if (d <= c.half) h = bedY;
+      else if (d < c.half + slope) h = lerp(bedY, h, smooth(c.half, c.half + slope, d));
     }
     return h;
   }

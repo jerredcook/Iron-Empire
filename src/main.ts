@@ -146,8 +146,7 @@ async function boot(cfg: BootCfg): Promise<void> {
     const stops = nodes.filter((n) => n.station).map((n) => n.station!);
     // Lay TRACK ONLY — never auto-start a train. The player adds trains deliberately from the
     // line's panel ("🚂 Start a train"), so a line never sprouts a train it didn't ask for.
-    network.buildLine(waypoints, stops);
-    scatter.clearCorridor(waypoints); // shoulder trees/shrubs aside so rails don't pierce them
+    network.buildLine(waypoints, stops); // onTrackBuilt grades the terrain + clears the corridor
     const bare = stops.filter((s) => !s.hasStation);
     if (bare.length) {
       const names = bare.map((s) => s.name).join(' & ');
@@ -218,6 +217,12 @@ async function boot(cfg: BootCfg): Promise<void> {
     rig.camera.position.x += dx;
     rig.camera.position.z += dz;
   };
+  // Any line that's laid (yours, a rival's, or one restored from a save) grades the terrain to
+  // its new roadbed and clears trees/shrubs from the corridor.
+  network.onTrackBuilt = (waypoints) => {
+    terrain.resampleCorridor(field, waypoints, field.corridorReach);
+    scatter.clearCorridor(waypoints);
+  };
   network.onNews = (text, good, at) => hud.news(text, good, at);
   // Clicking a place-tagged toast (a city that just grew, a fulfilled contract) flies there.
   hud.onNewsClick = (at) => focusOn(at);
@@ -276,6 +281,46 @@ async function boot(cfg: BootCfg): Promise<void> {
   // Open on a high three-quarter overview so several cities are in frame.
   rig.controls.target.set(0, 20, 0);
   rig.camera.position.set(-620, 640, 820);
+
+  // Dev visual-check (?trackshot, never in normal play): build a line across the steepest city
+  // pair, then frame the spot where the bed departs most from the land (the biggest cut or fill)
+  // close + side-on — a repeatable way to eyeball terrain grading in a headless screenshot.
+  if (location.search.includes('trackshot')) {
+    const ss = network.stations;
+    let best: GStation[] | null = null;
+    let bestRelief = 0;
+    for (let i = 0; i < ss.length; i++)
+      for (let j = i + 1; j < ss.length; j++) {
+        const d = ss[i].pos.distanceTo(ss[j].pos);
+        if (d < 160 || d > 560) continue;
+        const relief = Math.abs(ss[i].pos.y - ss[j].pos.y);
+        if (relief > bestRelief) { bestRelief = relief; best = [ss[i], ss[j]]; }
+      }
+    if (best) {
+      const natural = best.map((s) => s.pos.clone());
+      network.buildStationAt(best[0]);
+      network.buildStationAt(best[1]);
+      network.buildLine([best[0].pos, best[1].pos], [best[0], best[1]], selectedLoco);
+      const ln = network.lines[network.lines.length - 1];
+      // Sample for the point with the most fill/cut vs a straight land guess between the ends.
+      let bu = 0.5, bestGap = -1;
+      for (let k = 1; k < 16; k++) {
+        const u = k / 16;
+        const p = ln.track.curve.getPointAt(u);
+        const land = THREE.MathUtils.lerp(natural[0].y, natural[1].y, u);
+        const gap = Math.abs(p.y - land);
+        if (gap > bestGap) { bestGap = gap; bu = u; }
+      }
+      const mid = ln.track.curve.getPointAt(bu);
+      const a = ln.track.curve.getPointAt(Math.max(0, bu - 0.06));
+      const b = ln.track.curve.getPointAt(Math.min(1, bu + 0.06));
+      const tan = b.clone().sub(a).setY(0).normalize();
+      const side = new THREE.Vector3(-tan.z, 0, tan.x);
+      rig.controls.target.copy(mid).y -= 2;
+      rig.camera.position.copy(mid).addScaledVector(side, 30).addScaledVector(tan, 6);
+      rig.camera.position.y = mid.y + 6;
+    }
+  }
 
   if (import.meta.env.DEV) {
     (window as unknown as { __ie: unknown }).__ie = { scene, rig, renderer, field, terrain, water, scatter, network, builder, inspector, minimap, picker };

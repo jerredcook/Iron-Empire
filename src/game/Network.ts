@@ -327,6 +327,9 @@ export class Network {
   onBuilt?: () => void;
   /** Headline feed for world events (washouts and their repair) — wired to the HUD toast. */
   onNews?: (text: string, good: boolean, at?: THREE.Vector3) => void;
+  /** Fired when a real (non through-service) line's track is laid — lets the view grade the
+   *  terrain to the new roadbed and clear scatter from the corridor. */
+  onTrackBuilt?: (waypoints: THREE.Vector3[]) => void;
 
   constructor(
     private scene: THREE.Scene,
@@ -1136,6 +1139,7 @@ export class Network {
     const line: GLine = { stops, track, stopFracs, trains: [], owner, value, waypoints, through, earned: 0, trips: 0, bornClock: this.clock, blockedUntil: 0 };
     this.lines.push(line);
     owner.lines.push(line);
+    if (!through) this.onTrackBuilt?.(waypoints); // grade terrain + clear scatter to the new bed
     for (const t of trains) this.spawnTrain(line, t.loco, t.cars);
     return line;
   }
