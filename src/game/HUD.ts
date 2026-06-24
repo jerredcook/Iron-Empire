@@ -31,6 +31,8 @@ export class HUD {
   private helpOverlay!: HTMLDivElement;
   private labelLayer: HTMLDivElement;
   private labels = new Map<number, HTMLDivElement>();
+  private popLayer!: HTMLDivElement;
+  private lastCamera?: THREE.PerspectiveCamera;
   private popBars = new Map<number, HTMLDivElement>();
   private stageLabels = new Map<number, HTMLElement>();
   private v = new THREE.Vector3();
@@ -478,6 +480,8 @@ export class HUD {
 
     this.labelLayer = el('div', { position: 'absolute', inset: '0' });
     this.root.append(this.labelLayer);
+    this.popLayer = el('div', { position: 'absolute', inset: '0', overflow: 'hidden' }) as HTMLDivElement;
+    this.root.append(this.popLayer);
 
     // Win/lose overlay — hidden until the objective resolves.
     this.overlay = el('div', {
@@ -617,6 +621,39 @@ export class HUD {
   }
 
   /** Flash an economic-event headline for a few seconds (green = good for the player). */
+  /** Float a "+$N" up from a world position (a player delivery), then fade — the visible
+   *  payoff of a haul, like the original's money drifting off an unloading car. */
+  popMoney(worldPos: THREE.Vector3, amount: number): void {
+    if (!this.lastCamera || amount <= 0) return;
+    const v = worldPos.clone().project(this.lastCamera);
+    if (v.z > 1 || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05) return; // off-screen / behind
+    const x = (v.x * 0.5 + 0.5) * window.innerWidth;
+    const y = (-v.y * 0.5 + 0.5) * window.innerHeight;
+    const pop = el('div', {
+      position: 'absolute',
+      left: `${Math.round(x)}px`,
+      top: `${Math.round(y)}px`,
+      transform: 'translate(-50%, 0)',
+      color: '#bff6c9',
+      fontWeight: '800',
+      fontSize: '15px',
+      textShadow: '0 1px 3px rgba(0,0,0,0.85)',
+      pointerEvents: 'none',
+      whiteSpace: 'nowrap',
+      transition: 'transform 1.3s ease-out, opacity 1.3s ease-out',
+      opacity: '1',
+    });
+    pop.textContent = `+$${Math.round(amount).toLocaleString()}`;
+    pop.setAttribute('data-moneypop', '');
+    this.popLayer.append(pop);
+    // Next frame: rise and fade (CSS transition), then remove.
+    requestAnimationFrame(() => {
+      pop.style.transform = 'translate(-50%, -52px)';
+      pop.style.opacity = '0';
+    });
+    setTimeout(() => pop.remove(), 1400);
+  }
+
   news(text: string, good: boolean): void {
     this.newsEl.textContent = (good ? '📈 ' : '📉 ') + text;
     this.newsEl.style.borderColor = good ? 'rgba(143,255,168,0.5)' : 'rgba(255,150,120,0.5)';
@@ -731,6 +768,7 @@ export class HUD {
 
   /** Per-frame: refresh treasury/ledger and reposition the city name plates. */
   update(camera: THREE.PerspectiveCamera, w: number, h: number): void {
+    this.lastCamera = camera; // remembered so a delivery pop can project its world spot
     // DOM writes force reflow, so touch each element only when its value changes.
     const money = Math.round(this.network.money);
     if (money !== this.lastMoney) {

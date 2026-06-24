@@ -213,6 +213,7 @@ async function boot(cfg: BootCfg): Promise<void> {
   const events = new EventDirector((text, good) => hud.news(text, good));
   network.priceModifier = (k) => events.priceMult(k);
   network.onNews = (text, good) => hud.news(text, good);
+  network.onDeliveryPop = (pos, amount) => hud.popMoney(pos, amount);
   events.onDisaster = () => network.triggerRandomWashout();
   const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());
   picker.onSelect = (sel) => {
@@ -1501,6 +1502,22 @@ function runUiTest(
       found: railHex >= 0,
       tinted: railHex >= 0 && railHex !== 0xb8bdc4, // not bare steel
       towardPlayer: c.g > c.r, // the player livery (0x8fffa8) is green-dominant
+    };
+  }
+
+  // NN) A player delivery floats a "+$N" up from the train, then fades.
+  {
+    const target = network.stations[0].pos;
+    camera.position.set(target.x, target.y + 260, target.z + 260);
+    camera.lookAt(target);
+    camera.updateMatrixWorld(true);
+    hud.update(camera, 1400, 900); // stores the camera so popMoney can project
+    const before = document.querySelectorAll('[data-moneypop]').length;
+    hud.popMoney(target, 91234);
+    const pops = [...document.querySelectorAll('[data-moneypop]')];
+    result.moneyPop = {
+      shown: pops.length === before + 1,
+      hasAmount: pops.some((e) => (e.textContent ?? '').includes('+$91,234')),
     };
   }
 

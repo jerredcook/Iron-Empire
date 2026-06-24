@@ -322,6 +322,8 @@ export class Network {
   priceModifier: (kind: CargoKind) => number = () => 1;
   /** Fired when the player earns a delivery / completes a build (for audio). */
   onRevenue?: (amount: number) => void;
+  /** A player delivery just paid out — float the $ earned up from the train at this spot. */
+  onDeliveryPop?: (pos: THREE.Vector3, amount: number) => void;
   onBuilt?: () => void;
   /** Headline feed for world events (washouts and their repair) — wired to the HUD toast. */
   onNews?: (text: string, good: boolean) => void;
@@ -1454,6 +1456,7 @@ export class Network {
     const inputCap = this.stockCap(at);
     const loadCap = this.loadPerStop(at);
     const wants = this.effectiveDemands(at); // own demands + the whole catchment's
+    let playerRev = 0; // summed across the consist, floated up as one figure
     for (const car of train.consist) {
       // Unload. The price paid falls as this market saturates on the cargo, then the
       // delivery saturates it a little more (it recovers between trains, in update()).
@@ -1472,6 +1475,7 @@ export class Network {
           this.onRevenue?.(rev);
           this.creditContracts(at, car.kind, car.amount); // a delivery may fulfil a contract
           this.cargoHauled.set(car.kind, (this.cargoHauled.get(car.kind) ?? 0) + car.amount); // toward a cargo objective
+          playerRev += rev;
         }
         if (at.recipe && car.kind in at.recipe.inputs) {
           at.input.set(car.kind, Math.min(inputCap, (at.input.get(car.kind) ?? 0) + car.amount));
@@ -1495,6 +1499,7 @@ export class Network {
         }
       }
     }
+    if (playerRev > 0) this.onDeliveryPop?.(train.headPosition.clone(), playerRev);
   }
 
   /** Run a processor's recipe for one tick: make as many output units as inputs and
