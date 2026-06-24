@@ -133,6 +133,7 @@ async function boot(cfg: BootCfg): Promise<void> {
   builder.onStatus = (s) => {
     hud.setBuildStatus(s);
     rig.controls.enablePan = !s.active; // in build mode a drag lays track, so don't pan (WASD still pans)
+    if (s.active) selectionMarker.hide(); // its ring would compete with the build snap rings
   };
   // Finishing a route: if the line links two depots, configure + run a train right away.
   // Otherwise just lay the track and say plainly what's needed to run it — a train earns
@@ -1396,6 +1397,39 @@ function runUiTest(
     const zoomed = navRig.camera.position.distanceTo(navRig.controls.target) < distBefore - 1;
 
     result.startTrainAndNav = { trainGatedOffDepots, trainRunsWithDepots, ctaAppearsWithDepots, ctaStartsTrain, resetOK, rotated, zoomed };
+  }
+
+  // KK) Snapping to a depot-less destination: dragging to a bare city must still latch onto
+  //     it so the line actually connects there (you wire the track first, then add a depot).
+  {
+    network.status = 'playing';
+    network.player.money = 5_000_000;
+    builder.cancel();
+    const start = network.stations[0];
+    const dest = network.stations[1];
+    if (!start.hasStation) network.buildStationAt(start);
+    network.demolishStation(dest); // make the destination bare
+    const mid = start.pos.clone().add(dest.pos).multiplyScalar(0.5);
+    const span = start.pos.distanceTo(dest.pos);
+    camera.position.set(mid.x + 1, mid.y + Math.max(span * 1.3, 500), mid.z + 1);
+    camera.lookAt(mid);
+    camera.updateMatrixWorld(true);
+    const rect = canvas.getBoundingClientRect();
+    const screen = (p: THREE.Vector3): { x: number; y: number } => {
+      const v = p.clone().project(camera);
+      return { x: (v.x * 0.5 + 0.5) * rect.width + rect.left, y: (-v.y * 0.5 + 0.5) * rect.height + rect.top };
+    };
+    const ss = screen(start.pos);
+    const sd = screen(dest.pos);
+    const before = network.lines.length;
+    builder.start();
+    dragCanvas(canvas, ss.x, ss.y, sd.x, sd.y);
+    (document.querySelector('[data-finishroute]') as HTMLElement | null)?.click();
+    driveConsistModal('grain'); // no-op (track-only, since the destination has no depot)
+    const built = network.lines.length === before + 1;
+    const nl = network.lines[network.lines.length - 1];
+    result.bareSnap = { built, connectsBareDest: built && !dest.hasStation && nl.stops.includes(dest) };
+    builder.cancel();
   }
 
   const el = document.createElement('pre');

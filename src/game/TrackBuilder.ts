@@ -202,7 +202,10 @@ export class TrackBuilder {
       return;
     }
     this.cursor.copy(hit.point);
-    const near = this.network.nearestStation(this.cursor, SNAP);
+    // Snap to ANY city in range, depot or not — you connect the track first, then build the
+    // depot. (Using only stationed cities meant a bare destination never latched, so the line
+    // didn't actually reach it.)
+    const near = this.network.nearestCity(this.cursor, SNAP);
     this.snapTarget = near && near !== this.lastStation ? near : null;
     if (this.snapTarget) this.cursor.copy(this.snapTarget.pos);
   }
@@ -226,30 +229,33 @@ export class TrackBuilder {
     this.ghost.visible = this.cursorValid;
     if (this.cursorValid) this.ghost.position.set(this.cursor.x, this.cursor.y + 3, this.cursor.z);
 
+    // Green = snapping to a city that already has a depot (ready to run); amber = snapping to
+    // a city that still needs one (the track will connect, but build a Station to run trains).
+    const tint = this.snapTarget ? (this.snapTarget.hasStation ? 0x7dffb0 : 0xffcf73) : 0xcfe3ff;
     this.snapRing.visible = !!this.snapTarget;
-    if (this.snapTarget) this.snapRing.position.set(this.snapTarget.pos.x, this.snapTarget.pos.y + 2, this.snapTarget.pos.z);
+    if (this.snapTarget) {
+      this.snapRing.position.set(this.snapTarget.pos.x, this.snapTarget.pos.y + 2, this.snapTarget.pos.z);
+      (this.snapRing.material as THREE.MeshBasicMaterial).color.setHex(tint);
+    }
 
-    this.rebuildPreviewTrack();
-
-    const affordable = this.network.lineCost(this.routePoints(), this.getLoco()) <= this.network.money;
-    (this.ghost.material as THREE.MeshBasicMaterial).color.setHex(
-      this.snapTarget ? (affordable ? 0x8fffa8 : 0xff7766) : 0xffe28a
-    );
+    this.rebuildPreviewTrack(tint);
+    (this.ghost.material as THREE.MeshBasicMaterial).color.setHex(this.snapTarget ? tint : 0xffffff);
   }
 
-  /** Rebuild the ghost rail line when the route's shape changes enough to matter. */
-  private rebuildPreviewTrack(): void {
+  /** Rebuild the ghost rail line when the route's shape (or snap state) changes enough. */
+  private rebuildPreviewTrack(tint: number): void {
     const route = this.routePoints();
     if (route.length < 2) {
       this.clearPreviewTrack();
       return;
     }
     const tail = route[route.length - 1];
-    const sig = `${this.nodes.length}|${Math.round(tail.x / 3)}|${Math.round(tail.z / 3)}|${this.snapTarget ? 1 : 0}`;
+    const snap = this.snapTarget ? (this.snapTarget.hasStation ? 'd' : 'b') : 'n';
+    const sig = `${this.nodes.length}|${Math.round(tail.x / 3)}|${Math.round(tail.z / 3)}|${snap}`;
     if (sig === this.previewSig && this.previewTrack) return;
     this.previewSig = sig;
     this.clearPreviewTrack();
-    this.previewTrack = buildGhostTrack(route, !!this.snapTarget, this.field);
+    this.previewTrack = buildGhostTrack(route, tint, this.field);
     this.overlay.add(this.previewTrack);
   }
 
@@ -298,9 +304,9 @@ export class TrackBuilder {
 }
 
 /** A translucent, terrain-draped preview of the rail line: two tinted rails over a row of
- *  ties. Green when the far end snaps to a city (it'll connect), amber otherwise. Light
- *  enough to rebuild many times a second while dragging. */
-function buildGhostTrack(points: THREE.Vector3[], valid: boolean, field: Heightfield): THREE.Group {
+ *  ties, draped on the ground. The caller picks the rail tint (green = snapping to a depot,
+ *  amber = a city needing one, blue = free track). Light enough to rebuild while dragging. */
+function buildGhostTrack(points: THREE.Vector3[], tint: number, field: Heightfield): THREE.Group {
   const g = new THREE.Group();
   g.renderOrder = 998;
 
@@ -324,7 +330,6 @@ function buildGhostTrack(points: THREE.Vector3[], valid: boolean, field: Heightf
 
   const curve = new THREE.CatmullRomCurve3(draped, false, 'catmullrom', 0.5);
   const length = Math.max(1, curve.getLength());
-  const tint = valid ? 0x7dffb0 : 0xffcf73;
 
   // Ties.
   const tieCount = Math.min(240, Math.max(4, Math.floor(length / 2.4)));
