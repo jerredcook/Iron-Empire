@@ -2,7 +2,8 @@
 # Fetch every CC0 asset Iron Empire uses (Poly Haven + three.js). Idempotent.
 set -e
 cd "$(dirname "$0")/.."
-N=.toolchain/node-v20.18.0-darwin-arm64/bin/node
+# Local default is the vendored mac node; CI (Linux) sets NODE=node.
+N=${NODE:-.toolchain/node-v20.18.0-darwin-arm64/bin/node}
 
 $N tools/fetch-assets.mjs hdri kloofendal_48d_partly_cloudy_puresky 4k
 

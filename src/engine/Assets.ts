@@ -12,6 +12,11 @@ const rgbeLoader = new RGBELoader();
 const gltfLoader = new GLTFLoader();
 const cache = new Map<string, THREE.Texture>();
 
+// Vite's base URL: '/' in dev, '/Iron-Empire/' on a GitHub project Page. Runtime asset URLs
+// are absolute ('/assets/...'), so prefix them with the base so they resolve under the deploy.
+const BASE = (import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/';
+const asset = (url: string): string => BASE + url.replace(/^\//, '');
+
 export interface PbrMaps {
   map: THREE.Texture;
   normalMap: THREE.Texture;
@@ -23,7 +28,7 @@ function load(url: string, opts: { srgb?: boolean; repeat?: boolean; aniso?: num
   const key = url + JSON.stringify(opts);
   const hit = cache.get(key);
   if (hit) return hit;
-  const t = texLoader.load(url);
+  const t = texLoader.load(asset(url));
   if (opts.srgb) t.colorSpace = THREE.SRGBColorSpace;
   if (opts.repeat !== false) t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.anisotropy = opts.aniso ?? 8;
@@ -58,7 +63,7 @@ export function waterNormals(): THREE.Texture {
 export function loadHdri(url: string): Promise<THREE.DataTexture> {
   return new Promise((resolve, reject) => {
     rgbeLoader.load(
-      url,
+      asset(url),
       (t) => {
         t.mapping = THREE.EquirectangularReflectionMapping;
         resolve(t);
@@ -71,6 +76,6 @@ export function loadHdri(url: string): Promise<THREE.DataTexture> {
 
 export function loadGltf(url: string): Promise<THREE.Group> {
   return new Promise((resolve, reject) => {
-    gltfLoader.load(url, (g) => resolve(g.scene), undefined, reject);
+    gltfLoader.load(asset(url), (g) => resolve(g.scene), undefined, reject);
   });
 }
