@@ -89,7 +89,7 @@ async function main() {
     const ui = extract(chromeDump('autostart&uitest'), 'ie-uitest');
     check('ui: add-train consist modal commits a typed train', ui?.addTrain?.trainAdded && ui?.addTrain?.hasCoalCar, ui?.addTrain);
     check('ui: car stepper reduced the consist', ui?.addTrain?.carCount === ui?.addTrain?.expectedCars, ui?.addTrain);
-    check('ui: build-line consist modal commits a line', ui?.buildLine?.lineBuilt && ui?.buildLine?.hasPassengerCar, ui?.buildLine);
+    check('ui: building lays track only (no auto-train), then a started train types its consist', ui?.buildLine?.lineBuilt && ui?.buildLine?.trackOnly && ui?.buildLine?.hasPassengerCar, ui?.buildLine);
     check('ui: depot upgrade button raises level', ui?.upgradeDepot?.upgraded, ui?.upgradeDepot);
     check('ui: build-factory button founds an owned industry', ui?.buildFactory?.nowHasRecipe && ui?.buildFactory?.ownedByPlayer, ui?.buildFactory);
     check('ui: drag-to-lay track builds the right line (press city → drag → ✓ Finish)', ui?.trackLay?.lineBuilt && ui?.trackLay?.connectsChosenCities && ui?.trackLay?.finishButtonReady, ui?.trackLay);

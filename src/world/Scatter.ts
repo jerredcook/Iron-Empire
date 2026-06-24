@@ -12,6 +12,10 @@ import { loadGltf } from '../engine/Assets';
 export class Scatter {
   readonly group = new THREE.Group();
   private trees: TreesResult;
+  // Each scatter layer + the world position of every instance, so a freshly-laid track can
+  // shoulder the plants aside. Corridors are remembered so async-loaded layers clear too.
+  private layers: { meshes: THREE.InstancedMesh[]; pos: THREE.Vector3[] }[] = [];
+  private corridors: { path: THREE.Vector3[]; radius: number }[] = [];
 
   constructor(field: Heightfield, seed: number) {
     const { seaLevel, size } = field.params;
@@ -27,6 +31,7 @@ export class Scatter {
     const dummy = new THREE.Object3D();
     const half = field.half - 24;
     const counts = { pine: 0, fir: 0, broadleaf: 0 };
+    const treePos = { pine: [] as THREE.Vector3[], fir: [] as THREE.Vector3[], broadleaf: [] as THREE.Vector3[] };
 
     for (let i = 0; i < budget * 3; i++) {
       const x = (rng() * 2 - 1) * half;
@@ -54,6 +59,7 @@ export class Scatter {
       const idx = counts[key]++;
       arch.trunks.setMatrixAt(idx, dummy.matrix);
       arch.cards.setMatrixAt(idx, dummy.matrix);
+      treePos[key].push(new THREE.Vector3(x, h, z));
     }
 
     for (const a of [pine, fir, broadleaf]) {
@@ -62,6 +68,7 @@ export class Scatter {
       a.cards.count = counts[key];
       a.trunks.instanceMatrix.needsUpdate = true;
       a.cards.instanceMatrix.needsUpdate = true;
+      this.layers.push({ meshes: [a.trunks, a.cards], pos: treePos[key] });
     }
 
     // Photoscanned boulders + shrubs (loaded async; placed deterministically).
@@ -94,6 +101,7 @@ export class Scatter {
       const rng = mulberry32(rngSeed);
       const dummy = new THREE.Object3D();
       const half = field.half - 24;
+      const pos: THREE.Vector3[] = [];
       let placed = 0;
       for (let i = 0; i < count * 40 && placed < count; i++) {
         const x = (rng() * 2 - 1) * half;
@@ -104,11 +112,16 @@ export class Scatter {
         dummy.scale.setScalar(scale[0] + rng() * (scale[1] - scale[0]));
         dummy.rotation.y = rng() * Math.PI * 2;
         dummy.updateMatrix();
+        pos.push(new THREE.Vector3(x, h, z));
         inst.setMatrixAt(placed++, dummy.matrix);
       }
       inst.count = placed;
       inst.instanceMatrix.needsUpdate = true;
       this.group.add(inst);
+      // Register so it clears too — and honour any corridors laid before it finished loading.
+      const layer = { meshes: [inst], pos };
+      this.layers.push(layer);
+      for (const c of this.corridors) this.applyCorridor(c, layer);
     };
 
     const area = (size / 4096) ** 2;
@@ -132,6 +145,43 @@ export class Scatter {
       [1.2, 3.2],
       0.15
     );
+  }
+
+  /** Clear plants from a freshly-laid track so rails never run through a tree trunk. The path
+   *  is the line's waypoint polyline; anything within `radius` of it is shrunk out of sight. */
+  clearCorridor(path: THREE.Vector3[], radius = 11): void {
+    if (path.length < 2) return;
+    const c = { path: path.map((p) => p.clone()), radius };
+    this.corridors.push(c);
+    for (const layer of this.layers) this.applyCorridor(c, layer);
+  }
+
+  private applyCorridor(c: { path: THREE.Vector3[]; radius: number }, layer: { meshes: THREE.InstancedMesh[]; pos: THREE.Vector3[] }): void {
+    const r2 = c.radius * c.radius;
+    const gone = new THREE.Matrix4().makeScale(0, 0, 0);
+    let touched = false;
+    for (let i = 0; i < layer.pos.length; i++) {
+      if (this.distToPath2(layer.pos[i], c.path) > r2) continue;
+      for (const m of layer.meshes) m.setMatrixAt(i, gone);
+      touched = true;
+    }
+    if (touched) for (const m of layer.meshes) m.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Squared XZ distance from a point to the nearest segment of a polyline. */
+  private distToPath2(p: THREE.Vector3, path: THREE.Vector3[]): number {
+    let min = Infinity;
+    for (let i = 0; i < path.length - 1; i++) {
+      const ax = path[i].x, az = path[i].z;
+      const dx = path[i + 1].x - ax, dz = path[i + 1].z - az;
+      const len2 = dx * dx + dz * dz || 1;
+      let t = ((p.x - ax) * dx + (p.z - az) * dz) / len2;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const ex = p.x - (ax + t * dx), ez = p.z - (az + t * dz);
+      const d2 = ex * ex + ez * ez;
+      if (d2 < min) min = d2;
+    }
+    return min;
   }
 
   update(dt: number): void {

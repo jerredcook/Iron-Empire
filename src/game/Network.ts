@@ -326,7 +326,7 @@ export class Network {
   onDeliveryPop?: (pos: THREE.Vector3, amount: number) => void;
   onBuilt?: () => void;
   /** Headline feed for world events (washouts and their repair) — wired to the HUD toast. */
-  onNews?: (text: string, good: boolean) => void;
+  onNews?: (text: string, good: boolean, at?: THREE.Vector3) => void;
 
   constructor(
     private scene: THREE.Scene,
@@ -1350,7 +1350,7 @@ export class Network {
         this.contractsDone += 1; // counts toward a contracts objective
         this.player.money += c.reward;
         this.pushDelivery(`Contract: ${c.quantity} ${cargo} → ${station.name}`, c.reward);
-        this.onNews?.(`Contract fulfilled — ${c.quantity} ${cargo} to ${station.name}, +$${c.reward.toLocaleString()}`, true);
+        this.onNews?.(`Contract fulfilled — ${c.quantity} ${cargo} to ${station.name}, +$${c.reward.toLocaleString()}`, true, station.pos);
         this.onBuilt?.();
       }
     }
@@ -1533,7 +1533,7 @@ export class Network {
     while (s.stage < target) {
       s.stage += 1;
       for (const k of STAGE_DEMANDS[s.stage]) s.demands.add(k); // new cargo it now buys
-      if (announce && s.stage >= 2) this.onNews?.(`${s.name} has grown into a ${STAGES[s.stage]}`, true);
+      if (announce && s.stage >= 2) this.onNews?.(`${s.name} has grown into a ${STAGES[s.stage]} — click to view`, true, s.pos);
     }
   }
 
@@ -1758,12 +1758,14 @@ export class Network {
     for (const l of this.lines) {
       const ts = l.trains;
       if (ts.length < 2) continue;
-      // 1) Decide which berthed trains must hold (the segment ahead is taken or lost a contest).
+      // 1) Decide which berthed trains must hold before leaving their stop, so opposing trains
+      //    never share a stretch OR converge on the same stop — they wait at a station instead.
       const held: boolean[] = new Array(ts.length).fill(false);
       for (let i = 0; i < ts.length; i++) {
         const t = ts[i];
         const seg = t.nextSegment();
         if (!seg) continue; // out on the line (committed) or nowhere to go
+        const dest = t.targetArc(); // the stop t is about to head for
         for (let j = 0; j < ts.length && !held[i]; j++) {
           if (j === i) continue;
           const o = ts[j];
@@ -1778,21 +1780,22 @@ export class Network {
           if (os && os.lo === seg.lo && os.hi === seg.hi && os.dir !== seg.dir) {
             if (o.waitedFor > t.waitedFor || (o.waitedFor === t.waitedFor && j < i)) held[i] = true;
           }
+          // (c) destination-stop reservation: another train is bound for the same stop from the
+          //     FAR side. A moving one has right of way (it can't stop on a dime); a berthed one
+          //     is a contest. Either way t waits at its stop rather than both meeting in motion.
+          else if (o.targetArc() === dest && (o.railDist - dest) * seg.dir > -3) {
+            if (o.isMoving() || o.waitedFor > t.waitedFor || (o.waitedFor === t.waitedFor && j < i)) held[i] = true;
+          }
         }
       }
       for (let i = 0; i < ts.length; i++) ts[i].setHoldAtStop(held[i]);
-      // 2) Pull a train off the centreline so two never overlap: when it's holding, or when an
-      //    opposing train is close by (the two converging on a shared stop from either side).
-      //    The lower-index train keeps the centre; the higher-index one rides the passing side.
-      const COLOCATE = 16; // world-distance within which two trains must not share the centreline
+      // 2) Pull a train aside only while it's STOPPED at a station sharing it with another (a
+      //    siding) — a moving train always stays on the centreline (never runs off at an angle).
       for (let i = 0; i < ts.length; i++) {
+        const si = ts[i].atStopIndex();
+        if (si < 0) { ts[i].setParked(false); continue; } // moving — on the rail
         let aside = held[i];
-        for (let j = 0; j < ts.length && !aside; j++) {
-          if (j === i) continue;
-          if (ts[j].heading !== ts[i].heading && i > j && ts[i].headPosition.distanceTo(ts[j].headPosition) < COLOCATE) {
-            aside = true;
-          }
-        }
+        for (let j = 0; j < i && !aside; j++) if (ts[j].atStopIndex() === si) aside = true;
         ts[i].setParked(aside);
       }
     }

@@ -144,18 +144,16 @@ async function boot(cfg: BootCfg): Promise<void> {
   builder.onCommit = (nodes) => {
     const waypoints = nodes.map((n) => n.pos);
     const stops = nodes.filter((n) => n.station).map((n) => n.station!);
-    const stationed = stops.filter((s) => s.hasStation);
-    if (stops.length >= 2 && stationed.length >= 2) {
-      configureConsist(network, stops, selectedLoco, (cars) => network.buildLine(waypoints, stops, selectedLoco, cars));
-    } else {
-      network.buildLine(waypoints, stops); // track only — no train yet
-      const bare = stops.filter((s) => !s.hasStation);
-      if (bare.length) {
-        const names = bare.map((s) => s.name).join(' & ');
-        hud.news(`Track laid. ${names} ${bare.length > 1 ? 'need' : 'needs'} a Station before a train can run — click the city → Build Station, then select the line → Start a train.`, false);
-      } else {
-        hud.news('Track laid. Select the line and press “Start a train” once it links two stationed cities.', false);
-      }
+    // Lay TRACK ONLY — never auto-start a train. The player adds trains deliberately from the
+    // line's panel ("🚂 Start a train"), so a line never sprouts a train it didn't ask for.
+    network.buildLine(waypoints, stops);
+    scatter.clearCorridor(waypoints); // shoulder trees/shrubs aside so rails don't pierce them
+    const bare = stops.filter((s) => !s.hasStation);
+    if (bare.length) {
+      const names = bare.map((s) => s.name).join(' & ');
+      hud.news(`Track laid. ${names} ${bare.length > 1 ? 'need' : 'needs'} a Station first — click the city → Build Station, then select the line → 🚂 Start a train.`, false);
+    } else if (stops.length >= 2) {
+      hud.news('Track laid. Select the line → 🚂 Start a train to run it.', true);
     }
   };
   renderer.gl.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -212,7 +210,15 @@ async function boot(cfg: BootCfg): Promise<void> {
   // Some events are physical — a storm washes out a line — surfaced the same way.
   const events = new EventDirector((text, good) => hud.news(text, good));
   network.priceModifier = (k) => events.priceMult(k);
-  network.onNews = (text, good) => hud.news(text, good);
+  network.onNews = (text, good, at) => hud.news(text, good, at);
+  // Clicking a place-tagged toast (a city that just grew, a fulfilled contract) flies there.
+  hud.onNewsClick = (at) => {
+    const dx = at.x - rig.controls.target.x;
+    const dz = at.z - rig.controls.target.z;
+    rig.controls.target.set(at.x, field.height(at.x, at.z), at.z);
+    rig.camera.position.x += dx;
+    rig.camera.position.z += dz;
+  };
   network.onDeliveryPop = (pos, amount) => hud.popMoney(pos, amount);
   events.onDisaster = () => network.triggerRandomWashout();
   const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());
@@ -567,14 +573,19 @@ function runUiTest(
     hasCoalCar: added?.consist.some((c) => c.kind === 'coal') ?? false,
   };
 
-  // B) Build a new line through the builder's commit path (same stops as the starter).
+  // B) Build a new line through the builder's commit path — it must lay TRACK ONLY (no
+  //    auto-train) — then start a train on it deliberately via the configure path.
   const linesBefore = network.lines.length;
   builder.onCommit?.(line.stops.map((s) => ({ pos: s.pos, station: s })));
-  const bClosed = driveConsistModal('passengers');
   const newLine = network.lines[network.lines.length - 1];
+  const lineBuilt = network.lines.length === linesBefore + 1;
+  const trackOnly = (newLine?.trains.length ?? -1) === 0; // building must never spawn a train
+  configureConsist(network, newLine.stops, loco, (cars) => network.addTrain(newLine, loco, cars));
+  const bClosed = driveConsistModal('passengers');
   result.buildLine = {
     committed: bClosed,
-    lineBuilt: network.lines.length === linesBefore + 1,
+    lineBuilt,
+    trackOnly,
     firstTrainCars: newLine?.trains[0]?.consist.length ?? 0,
     hasPassengerCar: newLine?.trains[0]?.consist.some((c) => c.kind === 'passengers') ?? false,
   };

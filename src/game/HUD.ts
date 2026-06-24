@@ -654,11 +654,19 @@ export class HUD {
     setTimeout(() => pop.remove(), 1400);
   }
 
-  news(text: string, good: boolean): void {
+  /** A world spot to jump the camera to when a clickable toast is clicked. */
+  onNewsClick?: (at: THREE.Vector3) => void;
+
+  news(text: string, good: boolean, at?: THREE.Vector3): void {
     this.newsEl.textContent = (good ? '📈 ' : '📉 ') + text;
     this.newsEl.style.borderColor = good ? 'rgba(143,255,168,0.5)' : 'rgba(255,150,120,0.5)';
     this.newsEl.style.color = good ? '#bff6c9' : '#ffc6b6';
     this.newsEl.style.display = 'block';
+    // A toast tied to a place is clickable: it jumps the camera there.
+    const target = at?.clone();
+    this.newsEl.style.cursor = target ? 'pointer' : 'default';
+    this.newsEl.style.pointerEvents = target ? 'auto' : 'none';
+    this.newsEl.onclick = target ? () => { this.onNewsClick?.(target); this.newsEl.style.display = 'none'; } : null;
     const tok = ++this.newsToken;
     setTimeout(() => {
       if (tok === this.newsToken) this.newsEl.style.display = 'none';

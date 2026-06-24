@@ -146,6 +146,15 @@ export class Train {
     return this.dist > lo + AT_STOP_EPS && this.dist < hi - AT_STOP_EPS;
   }
 
+  /** Arc position of the stop this train is heading toward (its destination). */
+  targetArc(): number {
+    return this.stopDist[this.target];
+  }
+  /** Is this train currently moving (out on the line), vs berthed/held at a stop? */
+  isMoving(): boolean {
+    return this.speed > 1.2;
+  }
+
   /** The arc segment this train would enter on departing its stop, as a sorted [lo,hi], plus
    *  the direction it intends. Null when it isn't berthed or has nowhere to go. */
   nextSegment(): { lo: number; hi: number; dir: 1 | -1 } | null {
