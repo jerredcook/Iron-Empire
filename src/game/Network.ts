@@ -1580,16 +1580,18 @@ export class Network {
         if (s.recipe) this.process(s, dt);
       }
     }
-    // Same-line spacing: a train holds short of the nearest same-direction leader on
-    // its own line (precise arc-length — robust on curves). Opposing trains ride the
-    // offset rail, so this can't deadlock.
+    // Single track: opposing trains can't share a segment, so dispatch decides who waits.
+    this.dispatch();
+    // Same-line spacing: a train holds short of the nearest same-direction leader on its own
+    // line (precise arc-length — robust on curves). A train pulled aside at a stop is off the
+    // running line, so it neither blocks a follower nor is one.
     for (const l of this.lines) {
       const ts = l.trains;
       for (const t of ts) {
         let leader: number | null = null;
         let bestGap = Infinity;
         for (const o of ts) {
-          if (o === t || o.heading !== t.heading) continue;
+          if (o === t || o.heading !== t.heading || o.isParked) continue;
           const gap = (o.railDist - t.railDist) * t.heading;
           if (gap > 0 && gap < bestGap) {
             bestGap = gap;
@@ -1746,11 +1748,59 @@ export class Network {
     }
   }
 
-  /** Cross-line collision signalling in world space: a train holds when another train
-   *  is close ahead of it on the same physical rail. Same-direction trains share a rail
-   *  (so a follower holds behind a leader); opposing trains ride the offset rail (so
-   *  they pass) — hence no head-on deadlock, and it works across junctions where lines
-   *  share track, not just within a single line. */
+  /** Single-track block reservation. With one running line, two trains heading toward each
+   *  other can't share a segment, so a berthed train won't depart into the stretch ahead while
+   *  an opposing train holds it — it waits at the stop (pulled aside so the other runs through).
+   *  When two berthed trains contest the same stretch from opposite ends, the one that's waited
+   *  longer goes first (so neither starves). Two trains on a bare line thus take turns — the cost
+   *  of over-running it; an intermediate stop gives them a place to pass without one waiting long. */
+  private dispatch(): void {
+    for (const l of this.lines) {
+      const ts = l.trains;
+      if (ts.length < 2) continue;
+      // 1) Decide which berthed trains must hold (the segment ahead is taken or lost a contest).
+      const held: boolean[] = new Array(ts.length).fill(false);
+      for (let i = 0; i < ts.length; i++) {
+        const t = ts[i];
+        const seg = t.nextSegment();
+        if (!seg) continue; // out on the line (committed) or nowhere to go
+        for (let j = 0; j < ts.length && !held[i]; j++) {
+          if (j === i) continue;
+          const o = ts[j];
+          // (a) an opposing train is already out on this stretch — can't enter behind it.
+          if (o.heading !== seg.dir && o.insideSegment(seg.lo, seg.hi)) {
+            held[i] = true;
+            break;
+          }
+          // (b) an opposing train berthed at the far end wants the same stretch — contest;
+          //     the longer-waiting train wins (tiebreak: lower index), the other holds.
+          const os = o.nextSegment();
+          if (os && os.lo === seg.lo && os.hi === seg.hi && os.dir !== seg.dir) {
+            if (o.waitedFor > t.waitedFor || (o.waitedFor === t.waitedFor && j < i)) held[i] = true;
+          }
+        }
+      }
+      for (let i = 0; i < ts.length; i++) ts[i].setHoldAtStop(held[i]);
+      // 2) Pull a train off the centreline so two never overlap: when it's holding, or when an
+      //    opposing train is close by (the two converging on a shared stop from either side).
+      //    The lower-index train keeps the centre; the higher-index one rides the passing side.
+      const COLOCATE = 16; // world-distance within which two trains must not share the centreline
+      for (let i = 0; i < ts.length; i++) {
+        let aside = held[i];
+        for (let j = 0; j < ts.length && !aside; j++) {
+          if (j === i) continue;
+          if (ts[j].heading !== ts[i].heading && i > j && ts[i].headPosition.distanceTo(ts[j].headPosition) < COLOCATE) {
+            aside = true;
+          }
+        }
+        ts[i].setParked(aside);
+      }
+    }
+  }
+
+  /** Cross-line collision signalling in world space: a train holds when another train is close
+   *  ahead of it on the same physical rail, so services that share rails at junctions don't
+   *  telescope. A train pulled aside at a stop is off the running line and ignored. */
   private signal(): void {
     const SAME_RAIL = TRACK_SIDE * 1.5; // lateral tolerance: within one rail
     const AHEAD_GAP = 16; // hold this far behind the train in front
@@ -1758,11 +1808,12 @@ export class Network {
     for (const l of this.lines) for (const t of l.trains) entries.push({ t, line: l });
     for (const e of entries) e.t.worldHold = false;
     for (const e of entries) {
+      if (e.t.isParked) continue;
       const p = e.t.headPosition;
       const f = e.t.worldForward;
       if (f.lengthSq() < 0.1) continue;
       for (const o of entries) {
-        if (o.line === e.line) continue; // same-line spacing is the arc block's job
+        if (o.line === e.line || o.t.isParked) continue; // same-line spacing is the arc block's job
         const dx = o.t.headPosition.x - p.x;
         const dz = o.t.headPosition.z - p.z;
         const ahead = dx * f.x + dz * f.z; // distance ahead along the heading

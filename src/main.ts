@@ -1521,6 +1521,44 @@ function runUiTest(
     };
   }
 
+  // OO) Single-track block reservation: two trains on one line never share a segment (no
+  //     head-on overlap) and both keep making progress (no starvation/livelock).
+  {
+    network.status = 'playing';
+    network.player.money = 5_000_000;
+    network.goal = networthGoal(Number.MAX_SAFE_INTEGER, 99999); // don't auto-win mid-sim
+    const sx = network.stations;
+    const trio = [sx[0], sx[1], sx[2]];
+    trio.forEach((c) => { if (!c.hasStation) network.buildStationAt(c); });
+    network.buildLine([trio[0].pos, trio[1].pos, trio[2].pos], trio, loco); // 3 stops = a passing point
+    const line = network.player.lines[network.player.lines.length - 1];
+    network.addTrain(line, loco); // a second train → opposing traffic
+    const tr = line.trains;
+    let st = { noCollision: false, bothMoved: false, minDist: 0, traveled: [0, 0] as number[] };
+    if (tr.length >= 2) {
+      const traveled = [0, 0];
+      const last = [tr[0].railDist, tr[1].railDist];
+      let minDist = Infinity;
+      for (let i = 0; i < 4000; i++) {
+        network.status = 'playing';
+        network.update(1 / 30);
+        for (let k = 0; k < 2; k++) {
+          traveled[k] += Math.abs(tr[k].railDist - last[k]);
+          last[k] = tr[k].railDist;
+        }
+        const d = tr[0].headPosition.distanceTo(tr[1].headPosition);
+        if (d < minDist) minDist = d;
+      }
+      st = {
+        noCollision: minDist > 2.5, // never overlapped — closest is one parked aside as the other passes
+        bothMoved: traveled[0] > 400 && traveled[1] > 400, // neither starved
+        minDist: +minDist.toFixed(2),
+        traveled: traveled.map((t) => Math.round(t)),
+      };
+    }
+    result.singleTrack = st;
+  }
+
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
   el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px;max-width:100vw;white-space:pre-wrap';
