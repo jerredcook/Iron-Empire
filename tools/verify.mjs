@@ -313,6 +313,10 @@ async function main() {
     console.log('• Soak test (~12 game-years, busy network)…');
     const sk = extract(chromeDump('autostart&soak'), 'ie-soak');
     check('soak: no NaN / runaway / out-of-bounds over ~12 game-years', sk?.clean === true && sk?.violations === 0, sk);
+
+    console.log('• Single-track test (two trains, opposing meets)…');
+    const st = extract(chromeDump('autostart&singletrack'), 'ie-singletrack');
+    check('single track: two trains never collide head-on + both keep moving (block reservation)', st?.noCollision === true && st?.bothMoved === true, st);
   } finally {
     if (server) {
       try {

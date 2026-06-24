@@ -1814,6 +1814,10 @@ export class Network {
       if (f.lengthSq() < 0.1) continue;
       for (const o of entries) {
         if (o.line === e.line || o.t.isParked) continue; // same-line spacing is the arc block's job
+        // Only a same-direction leader can be telescoped into. Two trains meeting head-on at a
+        // junction are on separate, diverging single tracks — they pass, they don't deadlock.
+        const of = o.t.worldForward;
+        if (of.x * f.x + of.z * f.z < -0.3) continue;
         const dx = o.t.headPosition.x - p.x;
         const dz = o.t.headPosition.z - p.z;
         const ahead = dx * f.x + dz * f.z; // distance ahead along the heading
