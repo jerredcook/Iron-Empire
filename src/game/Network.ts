@@ -1127,7 +1127,7 @@ export class Network {
     trains: { loco: LocoClass; cars: CargoKind[] }[],
     through = false
   ): GLine {
-    const track = new Track(this.field, waypoints, !through, through);
+    const track = new Track(this.field, waypoints, !through, through, owner.color);
     this.scene.add(track.group);
     const stopFracs = stops.map((s) => track.nearestU(s.pos));
     const value = through ? 0 : this.routeCost(waypoints);

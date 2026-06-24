@@ -38,6 +38,9 @@ interface BootCfg {
   ais: { name: string; color: number }[];
   /** Restore the saved game over this world instead of seeding a starter line. */
   load: boolean;
+  /** Seed a starter line + train. Off for real play (you build everything yourself); on
+   *  for the headless tests, which expect a running line from the first frame. */
+  seedStarter: boolean;
 }
 
 async function boot(cfg: BootCfg): Promise<void> {
@@ -248,9 +251,9 @@ async function boot(cfg: BootCfg): Promise<void> {
   if (cfg.load) {
     // Restore the saved game over this freshly generated (same-seed) world.
     network.loadFromStorage();
-  } else {
-    // Seed one productive line so the world opens in motion and the cargo loop is
-    // legible from the first frame — the closest pair that actually trades.
+  } else if (cfg.seedStarter) {
+    // Tests only: seed one productive line so the world opens in motion. Real play starts
+    // empty — you lay your own first track + train.
     const pair = starterPair(network);
     if (pair) {
       network.buildStationAt(pair[0]);
@@ -1476,6 +1479,31 @@ function runUiTest(
     };
   }
 
+  // MM) Track is colour-coded by owner: a player line's rails carry the player's livery (a
+  //     green-ish steel), not bare grey steel — so your track reads as yours at a glance.
+  {
+    network.status = 'playing';
+    network.player.money = 5_000_000;
+    const a = network.stations[0];
+    const b = network.stations[1];
+    if (!a.hasStation) network.buildStationAt(a);
+    if (!b.hasStation) network.buildStationAt(b);
+    network.buildLine([a.pos, b.pos], [a, b], loco);
+    const line = network.player.lines[network.player.lines.length - 1];
+    let railHex = -1;
+    line.track.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      const mat = m.material as THREE.MeshStandardMaterial | undefined;
+      if (mat && mat.metalness >= 0.8 && railHex < 0) railHex = mat.color.getHex();
+    });
+    const c = new THREE.Color(railHex >= 0 ? railHex : 0);
+    result.trackColor = {
+      found: railHex >= 0,
+      tinted: railHex >= 0 && railHex !== 0xb8bdc4, // not bare steel
+      towardPlayer: c.g > c.r, // the player livery (0x8fffa8) is green-dominant
+    };
+  }
+
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
   el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px;max-width:100vw;white-space:pre-wrap';
@@ -1685,6 +1713,7 @@ async function start(): Promise<void> {
       player: { name: 'Iron Empire', color: 0x8fffa8 },
       ais: [{ name: 'Atlas & Pacific', color: 0xff8a4d }],
       load: false,
+      seedStarter: true, // headless tests expect a running line from frame one
     });
     return;
   }
@@ -1703,6 +1732,7 @@ async function start(): Promise<void> {
       startMoney: 0,
       goal: FALLBACK_GOAL,
       load: true,
+      seedStarter: false,
     });
     return;
   }
@@ -1717,6 +1747,7 @@ async function start(): Promise<void> {
     player: s.player,
     ais: s.ais,
     load: false,
+    seedStarter: false, // real play: you build your own first line
   });
 }
 

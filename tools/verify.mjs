@@ -95,6 +95,7 @@ async function main() {
     check('ui: drag-to-lay track builds the right line (press city → drag → ✓ Finish)', ui?.trackLay?.lineBuilt && ui?.trackLay?.connectsChosenCities && ui?.trackLay?.finishButtonReady, ui?.trackLay);
     check('ui: dragging to a depot-less city still snaps + connects to it', ui?.bareSnap?.built && ui?.bareSnap?.connectsBareDest, ui?.bareSnap);
     check('ui: track grade eases smoothly (no abrupt ramp; even ruling gradient)', ui?.grade?.smooth, ui?.grade);
+    check('ui: track is colour-coded by owner (player rails carry the player livery)', ui?.trackColor?.found && ui?.trackColor?.tinted && ui?.trackColor?.towardPlayer, ui?.trackColor);
     check('ui: sell train removes it from the line', ui?.sellTrain?.sold, ui?.sellTrain);
     check('ui: demolish line removes it', ui?.demolishLine?.removed, ui?.demolishLine);
     check('ui: free track lays rail with no stations (no train)', ui?.freeTrack?.trackLaidWithoutStops && ui?.freeTrack?.noStops && ui?.freeTrack?.noTrain, ui?.freeTrack);

@@ -29,7 +29,7 @@ export class Track {
    * (movement-only) takes the given points as the exact curve, skipping the
    * densify+grade pass, so a through-service sits precisely on the rails it traces.
    */
-  constructor(private field: Heightfield, waypoints: THREE.Vector3[], visual = true, raw = false) {
+  constructor(private field: Heightfield, waypoints: THREE.Vector3[], visual = true, raw = false, private tint?: number) {
     if (raw) {
       this.curve = new THREE.CatmullRomCurve3(waypoints.map((p) => p.clone()), false, 'catmullrom', 0.5);
       this.curve.arcLengthDivisions = waypoints.length * 6;
@@ -238,7 +238,11 @@ export class Track {
 
   private buildRails(): THREE.Mesh[] {
     const n = Math.max(80, Math.floor(this.length / 2));
-    const mat = new THREE.MeshStandardMaterial({ color: 0xb8bdc4, metalness: 0.92, roughness: 0.32 });
+    // Tint the steel toward the owning company's livery so you can always tell whose track
+    // is whose — your rails carry your colour, a rival's carry theirs.
+    const steel = new THREE.Color(0xb8bdc4);
+    if (this.tint !== undefined) steel.lerp(new THREE.Color(this.tint), 0.5);
+    const mat = new THREE.MeshStandardMaterial({ color: steel, metalness: 0.92, roughness: 0.32 });
     const out: THREE.Mesh[] = [];
     // Four rails: two running lines (±TRACK_SIDE), each a pair at ±GAUGE/2.
     const offsets: number[] = [];
