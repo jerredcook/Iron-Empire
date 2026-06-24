@@ -210,15 +210,19 @@ async function boot(cfg: BootCfg): Promise<void> {
   // Some events are physical — a storm washes out a line — surfaced the same way.
   const events = new EventDirector((text, good) => hud.news(text, good));
   network.priceModifier = (k) => events.priceMult(k);
-  network.onNews = (text, good, at) => hud.news(text, good, at);
-  // Clicking a place-tagged toast (a city that just grew, a fulfilled contract) flies there.
-  hud.onNewsClick = (at) => {
+  // Fly the camera to a world spot, keeping the current view angle and zoom.
+  const focusOn = (at: { x: number; z: number }): void => {
     const dx = at.x - rig.controls.target.x;
     const dz = at.z - rig.controls.target.z;
     rig.controls.target.set(at.x, field.height(at.x, at.z), at.z);
     rig.camera.position.x += dx;
     rig.camera.position.z += dz;
   };
+  network.onNews = (text, good, at) => hud.news(text, good, at);
+  // Clicking a place-tagged toast (a city that just grew, a fulfilled contract) flies there.
+  hud.onNewsClick = (at) => focusOn(at);
+  // An auction flies to the lot on the block so the player can see what they're bidding on.
+  auctioneer.onView = (at) => focusOn(at);
   network.onDeliveryPop = (pos, amount) => hud.popMoney(pos, amount);
   events.onDisaster = () => network.triggerRandomWashout();
   const picker = new Picker(rig.camera, renderer.gl.domElement, terrain.mesh, network, () => builder.isActive());

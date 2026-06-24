@@ -13,6 +13,8 @@ const INTERVAL = 36; // seconds between auctions
 export class Auctioneer {
   private timer = FIRST_DELAY;
   private open = false;
+  /** Fly the camera to a lot so the player can see what's on the block. */
+  onView?: (at: GStation['pos']) => void;
 
   constructor(private network: Network) {}
 
@@ -38,12 +40,16 @@ export class Auctioneer {
     let price = Math.round((appraised * 0.4) / 1000) * 1000;
     let leader: 'none' | 'player' | 'rival' = 'none';
 
+    // Show what's on the block: fly the camera to the lot and keep the panel off to the side
+    // (not a dead-centre modal) so the player can actually see the industry while bidding.
+    this.onView?.(st.pos);
+
     const panel = document.createElement('div');
     Object.assign(panel.style, {
       position: 'fixed',
       top: '50%',
-      left: '50%',
-      transform: 'translate(-50%,-50%)',
+      left: '24px',
+      transform: 'translateY(-50%)',
       zIndex: '40',
       width: '320px',
       padding: '18px 20px',
@@ -97,10 +103,11 @@ export class Auctioneer {
             : `Opening bid $${price.toLocaleString()}`;
       panel.innerHTML =
         `<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.6px;opacity:0.55;margin-bottom:4px">Industry Auction</div>` +
-        `<div style="font-size:19px;font-weight:700">${st.name} ${kind}</div>` +
+        `<div data-view style="font-size:19px;font-weight:700;cursor:pointer" title="Show on the map">📍 ${st.name} ${kind}</div>` +
         `<div style="font-size:12.5px;opacity:0.7;margin:4px 0 10px">Appraised $${appraised.toLocaleString()} · royalty on every shipment</div>` +
         `<div style="margin-bottom:12px">${status}</div>` +
         `<div style="display:flex;gap:8px"></div>`;
+      (panel.querySelector('[data-view]') as HTMLElement | null)?.addEventListener('click', () => this.onView?.(st.pos));
       const row = panel.lastElementChild as HTMLElement;
       if (leader === 'player') {
         row.append(btn('Claim', '#8fffa8', true, claim), btn('Pass', '#f4f0e6', true, pass));
