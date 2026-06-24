@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Track, TRACK_SIDE } from './Track';
+import { Track } from './Track';
 import { buildLocomotive, LocomotiveRig } from './Locomotive';
 import { buildCar, FreightCar } from './Cars';
 import { CargoKind, CARGO, carCapacity } from './Cargo';
@@ -9,6 +9,8 @@ const FORWARD = new THREE.Vector3(0, 0, 1);
 const UP = new THREE.Vector3(0, 1, 0);
 const STOP_MARGIN = 9; // how close to the line's end the train berths
 const BLOCK_GAP = 16; // safe separation a following train keeps behind its leader
+const PARK_SIDE = 3.7; // lateral offset of a train pulled aside at a stop to let another pass
+const AT_STOP_EPS = 2.0; // arc-distance within which a stopped train counts as berthed at a stop
 export const CAR_CAP = 24; // units one freight car holds
 // Engines wear with every loaded mile, faster the heavier the load and the less reliable
 // the class; at the limit they fail and sit in the shop for REPAIR_TIME before resuming.
@@ -102,6 +104,59 @@ export class Train {
   readonly worldForward = new THREE.Vector3();
   /** Set by the network each tick: a train on another line is ahead on this rail — hold. */
   worldHold = false;
+
+  /** Single-track block reservation: the dispatcher won't let this train leave its stop into
+   *  a segment an opposing train holds. While held it parks aside (off the running line) and
+   *  its wait clock ticks up, so a longer-waiting train wins the next contest (no starving). */
+  private parked = false;
+  private holdAtStop = false;
+  private waitTimer = 0;
+
+  get isParked(): boolean {
+    return this.parked;
+  }
+  /** Seconds this train has been waiting to depart its current stop (fairness tiebreak). */
+  get waitedFor(): number {
+    return this.waitTimer;
+  }
+
+  /** Don't depart the current stop yet — an opposing train holds the segment ahead. */
+  setHoldAtStop(hold: boolean): void {
+    this.holdAtStop = hold;
+  }
+
+  /** Sit off to the side (held for an opposing train, or sharing a stop with one) so the
+   *  other can use the centreline — set by the dispatcher each tick. */
+  setParked(aside: boolean): void {
+    this.parked = aside;
+  }
+
+  /** Index of the stop this train is berthed at (stopped within the berth margin), or −1 if
+   *  it's out on the line between stops. */
+  atStopIndex(): number {
+    if (this.speed > 1.2) return -1; // moving = committed to a segment
+    for (let i = 0; i < this.stopDist.length; i++) {
+      if (Math.abs(this.dist - this.stopDist[i]) < AT_STOP_EPS) return i;
+    }
+    return -1;
+  }
+
+  /** Is this train out on the rails inside the arc segment (lo,hi)? */
+  insideSegment(lo: number, hi: number): boolean {
+    return this.dist > lo + AT_STOP_EPS && this.dist < hi - AT_STOP_EPS;
+  }
+
+  /** The arc segment this train would enter on departing its stop, as a sorted [lo,hi], plus
+   *  the direction it intends. Null when it isn't berthed or has nowhere to go. */
+  nextSegment(): { lo: number; hi: number; dir: 1 | -1 } | null {
+    const s = this.atStopIndex();
+    if (s < 0) return null;
+    const here = this.stopDist[s];
+    const there = this.stopDist[this.target];
+    if (there === here) return null;
+    const dir: 1 | -1 = there > here ? 1 : -1;
+    return { lo: Math.min(here, there), hi: Math.max(here, there), dir };
+  }
 
   constructor(private track: Track, scene: THREE.Scene, locoClass: LocoClass, stopFracs: number[], carKinds: CargoKind[]) {
     this.locoClass = locoClass;
@@ -301,10 +356,18 @@ export class Train {
         this.broken = false;
         this.wear = 0;
       }
+    } else if (this.holdAtStop && this.atStopIndex() >= 0) {
+      // Held by the dispatcher: an opposing train holds the segment ahead. Wait at the stop
+      // (the wait clock ticks up so we win the next contest). The aside offset is set by the
+      // dispatcher (it also offsets trains that merely share a stop).
+      this.speed = 0;
+      this.waitTimer += dt;
     } else if (this.dwell > 0) {
       this.dwell -= dt;
       this.speed = 0;
+      this.waitTimer += dt; // berth time counts toward fairness too
     } else {
+      this.waitTimer = 0;
       // Aim for the next scheduled stop, but never past a same-line leader (precise
       // arc block) or a cross-line train holding this rail (world signalling) — so a
       // follower eases to a stand behind it rather than telescoping into it.
@@ -379,11 +442,12 @@ export class Train {
     this._head.copy(this._tan).multiplyScalar(dir);
     this._quat.setFromUnitVectors(FORWARD, this._head);
     obj.position.copy(this._pos);
-    // Keep to one running line per direction (double track), so opposing trains pass
-    // on separate rails rather than through each other.
-    this._perp.crossVectors(this._tan, UP).normalize();
-    const side = dir > 0 ? -TRACK_SIDE : TRACK_SIDE;
-    obj.position.addScaledVector(this._perp, side);
+    // Single track: trains ride the centreline. One holding at a stop for an opposing train
+    // pulls aside (a passing spot) so the other can run through.
+    if (this.parked) {
+      this._perp.crossVectors(this._tan, UP).normalize();
+      obj.position.addScaledVector(this._perp, PARK_SIDE);
+    }
     obj.position.y += yOff;
     obj.quaternion.copy(this._quat);
   }

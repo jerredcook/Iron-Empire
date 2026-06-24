@@ -333,6 +333,12 @@ async function boot(cfg: BootCfg): Promise<void> {
     runSoak(network, selectedLoco);
   }
 
+  // Headless single-track test: two trains on one line, run long enough for several opposing
+  // meets, asserting they never overlap (block reservation) and both keep moving (no livelock).
+  if (location.search.includes('singletrack')) {
+    runSingleTrack(network, selectedLoco);
+  }
+
 
   // Headless AI test: on a fresh world with an open map, hand a rival capital and time and
   // confirm it plays smart — scales winners, sharpens depots, expands, invests, stays solvent.
@@ -1590,6 +1596,48 @@ function layTrackTest(
     consistCommitted: consistClosed,
     finishButtonReady: finishReady,
   };
+}
+
+/** Single-track collision test (its own headless page so it doesn't bloat the UI dump): two
+ *  trains on one 3-stop line, run long enough for several opposing meets. Asserts they never
+ *  overlap (block reservation pulls one aside to pass) and both keep moving (no livelock). */
+function runSingleTrack(network: Network, loco: LocoClass): void {
+  network.player.money = 5_000_000;
+  network.goal = networthGoal(Number.MAX_SAFE_INTEGER, 99999); // don't auto-win mid-sim
+  const sx = network.stations;
+  const trio = [sx[0], sx[1], sx[2]];
+  trio.forEach((c) => { if (!c.hasStation) network.buildStationAt(c); });
+  network.buildLine([trio[0].pos, trio[1].pos, trio[2].pos], trio, loco); // 3 stops = a passing point
+  const line = network.player.lines[network.player.lines.length - 1];
+  network.addTrain(line, loco); // a second train → opposing traffic
+  const tr = line.trains;
+  let st: Record<string, unknown> = { noCollision: false, bothMoved: false };
+  if (tr.length >= 2) {
+    const traveled = [0, 0];
+    const last = [tr[0].railDist, tr[1].railDist];
+    let minDist = Infinity;
+    for (let i = 0; i < 2500; i++) {
+      network.status = 'playing';
+      network.update(1 / 30);
+      for (let k = 0; k < 2; k++) {
+        traveled[k] += Math.abs(tr[k].railDist - last[k]);
+        last[k] = tr[k].railDist;
+      }
+      const d = tr[0].headPosition.distanceTo(tr[1].headPosition);
+      if (d < minDist) minDist = d;
+    }
+    st = {
+      noCollision: minDist > 2.5, // never overlapped — closest is one parked aside as the other passes
+      bothMoved: traveled[0] > 400 && traveled[1] > 400, // neither starved
+      minDist: +minDist.toFixed(2),
+      traveled: traveled.map((t) => Math.round(t)),
+    };
+  }
+  const el = document.createElement('pre');
+  el.id = 'ie-singletrack';
+  el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px;white-space:pre-wrap';
+  el.textContent = JSON.stringify(st);
+  document.body.append(el);
 }
 
 /** Build a busy multi-line economy and simulate ~16 game-years, asserting every tick
