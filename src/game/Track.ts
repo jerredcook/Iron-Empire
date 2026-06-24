@@ -102,24 +102,55 @@ export class Track {
     });
   }
 
-  /** Laplacian relax + grade clamp, endpoints fixed. */
+  /** Engineer the vertical profile like a real railroad: a near-constant grade between the
+   *  fixed endpoints, cutting through rises and filling dips, so grades ease in gently over a
+   *  long distance instead of ramping abruptly off a hill. Endpoints stay pinned to their
+   *  city pads. */
   private smoothGrade(pts: THREE.Vector3[]): void {
     const n = pts.length;
     if (n < 3) return;
     const ys = pts.map((p) => p.y);
-    for (let it = 0; it < 70; it++) {
+
+    // Cumulative horizontal distance, for an arc-length-correct straight-grade reference.
+    const d: number[] = [0];
+    for (let i = 1; i < n; i++) d[i] = d[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z);
+    const total = d[n - 1] || 1;
+
+    // Bias the draped profile toward the straight grade line end-to-end. This is the cut-and-
+    // fill: the line stops hugging every undulation and runs a steady gradient instead.
+    const y0 = ys[0];
+    const yN = ys[n - 1];
+    for (let i = 1; i < n - 1; i++) {
+      ys[i] = THREE.MathUtils.lerp(ys[i], y0 + (yN - y0) * (d[i] / total), 0.45);
+    }
+
+    // Laplacian relaxation rounds it out (endpoints fixed).
+    for (let it = 0; it < 110; it++) {
       const prev = ys.slice();
       for (let i = 1; i < n - 1; i++) ys[i] = prev[i] + 0.6 * ((prev[i - 1] + prev[i + 1]) * 0.5 - prev[i]);
     }
-    const MAX = 0.035;
+
+    // Clamp to a gentle ruling grade, forward then backward — but never tighter than the
+    // unavoidable end-to-end gradient, or the residual climb would all pile into the last
+    // (un-clamped) segment at the city, which is exactly the abrupt ramp we're removing. A
+    // genuinely steep corridor then runs an even steep grade rather than flat-then-cliff.
+    const MAX = Math.max(0.026, (Math.abs(yN - y0) / total) * 1.05);
     for (let i = 1; i < n - 1; i++) {
-      const d = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z);
-      ys[i] = THREE.MathUtils.clamp(ys[i], ys[i - 1] - MAX * d, ys[i - 1] + MAX * d);
+      const dx = Math.max(1e-3, d[i] - d[i - 1]);
+      ys[i] = THREE.MathUtils.clamp(ys[i], ys[i - 1] - MAX * dx, ys[i - 1] + MAX * dx);
     }
     for (let i = n - 2; i >= 1; i--) {
-      const d = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].z - pts[i].z);
-      ys[i] = THREE.MathUtils.clamp(ys[i], ys[i + 1] - MAX * d, ys[i + 1] + MAX * d);
+      const dx = Math.max(1e-3, d[i + 1] - d[i]);
+      ys[i] = THREE.MathUtils.clamp(ys[i], ys[i + 1] - MAX * dx, ys[i + 1] + MAX * dx);
     }
+
+    // A final gentle relaxation rounds off the knees the clamp leaves, so the grade changes
+    // smoothly rather than kinking from flat to ramp (smoothing only lowers local slope).
+    for (let it = 0; it < 28; it++) {
+      const prev = ys.slice();
+      for (let i = 1; i < n - 1; i++) ys[i] = prev[i] + 0.4 * ((prev[i - 1] + prev[i + 1]) * 0.5 - prev[i]);
+    }
+
     const floor = this.field.params.seaLevel + 0.4 + RAIL_HEAD;
     for (let i = 0; i < n; i++) pts[i].y = Math.max(ys[i], floor);
   }

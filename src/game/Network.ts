@@ -797,9 +797,10 @@ export class Network {
     }
     if (dir.lengthSq() < 1e-6) dir.set(1, 0, 0);
     dir.normalize();
-    // Sit the depot one side of the track; its platform's track edge (+X local) then faces
-    // the rails, and its long axis (+Z local) runs parallel to them.
-    const SIDE = 11;
+    // Sit the depot just off one side of the track so its platform's track edge (+X local)
+    // runs right alongside the rails (its long axis +Z parallel to them) — a station ON the
+    // line, not a building nearby.
+    const SIDE = 6.5;
     const px = at.x - dir.z * SIDE;
     const pz = at.z + dir.x * SIDE;
     st.depot.position.set(px, this.field.height(px, pz), pz);

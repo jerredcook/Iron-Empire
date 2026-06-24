@@ -1432,6 +1432,50 @@ function runUiTest(
     builder.cancel();
   }
 
+  // LL) Track grade: a line over the most elevation-varied corridor eases to a gentle ruling
+  //     gradient with no abrupt ramp (smooth grade transitions, not flat-then-steep).
+  {
+    network.status = 'playing';
+    network.player.money = 5_000_000;
+    const ss2 = network.stations;
+    let ga = ss2[0];
+    let gb = ss2[1];
+    let bestDh = -1;
+    for (let i = 0; i < ss2.length; i++) {
+      for (let j = i + 1; j < ss2.length; j++) {
+        const dxz = Math.hypot(ss2[i].pos.x - ss2[j].pos.x, ss2[i].pos.z - ss2[j].pos.z);
+        if (dxz < 150 || dxz > 800) continue; // a normal-length line
+        const dh = Math.abs(ss2[i].pos.y - ss2[j].pos.y);
+        if (dh > bestDh) { bestDh = dh; ga = ss2[i]; gb = ss2[j]; }
+      }
+    }
+    if (!ga.hasStation) network.buildStationAt(ga);
+    if (!gb.hasStation) network.buildStationAt(gb);
+    network.buildLine([ga.pos, gb.pos], [ga, gb], loco);
+    const curve = network.player.lines[network.player.lines.length - 1].track.curve;
+    const N = 90;
+    const gp: THREE.Vector3[] = [];
+    for (let i = 0; i <= N; i++) gp.push(curve.getPointAt(i / N));
+    let maxGrade = 0;
+    let maxJump = 0;
+    let prevGrade = 0;
+    for (let i = 1; i <= N; i++) {
+      const dxz = Math.max(1e-4, Math.hypot(gp[i].x - gp[i - 1].x, gp[i].z - gp[i - 1].z));
+      const grade = (gp[i].y - gp[i - 1].y) / dxz;
+      maxGrade = Math.max(maxGrade, Math.abs(grade));
+      if (i > 1) maxJump = Math.max(maxJump, Math.abs(grade - prevGrade));
+      prevGrade = grade;
+    }
+    result.grade = {
+      dh: +bestDh.toFixed(1),
+      maxGrade: +maxGrade.toFixed(4),
+      maxJump: +maxJump.toFixed(4),
+      // The fix: the grade changes smoothly (no abrupt flat-then-ramp) and never spikes into
+      // a cliff — even the most elevation-varied corridor runs an even ruling gradient.
+      smooth: maxJump <= 0.02 && maxGrade <= 0.25,
+    };
+  }
+
   const el = document.createElement('pre');
   el.id = 'ie-uitest';
   el.style.cssText = 'position:fixed;top:0;left:0;z-index:99;font-size:10px;color:#0ff;background:#000;margin:0;padding:2px;max-width:100vw;white-space:pre-wrap';
