@@ -1,9 +1,14 @@
 import * as THREE from 'three';
 import { Network, GStation } from './Network';
 import { LocoClass } from './Locomotives';
+import { Heightfield } from '../world/Heightfield';
 
 const SNAP = 60; // ground-distance within which the cursor latches to a city
-const CLICK_SLOP = 9; // px of pointer travel still counted as a click, not a drag (forgiving on trackpads)
+const CLICK_SLOP = 9; // px of pointer travel still counted as a click, not a drag
+const DECK = 0.7; // preview rail deck height above the draped ground
+const GAUGE = 2.6; // preview rail centre-to-centre
+const TIE_W = 4.4; // preview tie length
+const UP = new THREE.Vector3(0, 1, 0);
 
 /** One point on a route under construction: a city stop, or a free terrain point. */
 export interface RouteNode {
@@ -23,21 +28,20 @@ export interface BuildStatus {
 }
 
 /**
- * Interactive track laying. In build mode the cursor raycasts the terrain; the player
- * clicks a city to start, drops intermediate grade points across the landscape, and
- * clicks a second city to commit the line. A ghost node and live preview rail show
- * where the route goes and what it will cost; drags still pan/orbit the camera, so
- * only a click-in-place places a point.
+ * Interactive track laying, SMR-style. In build mode you press on a city to start, drag to
+ * the destination — a ghosted rail line (ballast-less rails + ties, draped on the terrain)
+ * follows the cursor and the target town lights up the moment it's in range — and release to
+ * lay the segment. Plain clicks also work (click start, click destination), and you can chain
+ * extra stops/bends before pressing ✓ Finish. Right-click undoes the last point.
  */
 export class TrackBuilder {
   onStatus?: (s: BuildStatus) => void;
-  /** Fired when a route is finished — the listener configures + commits it. The nodes
-   *  are every point in order; those with a station are the line's stops. */
+  /** Fired when a route is finished — the listener configures + commits it. */
   onCommit?: (nodes: RouteNode[]) => void;
 
   private active = false;
-  private pulseT = 0; // drives the snap-ring throb
-  /** Every clicked point in order; free terrain points have station = null. */
+  private pulseT = 0;
+  private placedOnDown = false;
   private nodes: RouteNode[] = [];
   private cursor = new THREE.Vector3();
   private cursorValid = false;
@@ -48,24 +52,25 @@ export class TrackBuilder {
   private down = new THREE.Vector2();
   private ghost: THREE.Mesh;
   private snapRing: THREE.Mesh;
-  private preview: THREE.Line;
-  private previewGeo = new THREE.BufferGeometry();
+  private previewTrack: THREE.Group | null = null;
+  private previewSig = '';
 
   constructor(
     private camera: THREE.Camera,
     private dom: HTMLElement,
     private terrain: THREE.Object3D,
     private network: Network,
-    overlay: THREE.Scene,
+    private field: Heightfield,
+    private overlay: THREE.Scene,
     /** The engine to staff a finished line with — supplied live by the HUD. */
     private getLoco: () => LocoClass
   ) {
     this.ghost = new THREE.Mesh(
-      new THREE.SphereGeometry(3.2, 16, 12),
-      new THREE.MeshBasicMaterial({ color: 0x8fffa8, transparent: true, opacity: 0.85 })
+      new THREE.SphereGeometry(3.0, 16, 12),
+      new THREE.MeshBasicMaterial({ color: 0x8fffa8, transparent: true, opacity: 0.85, depthTest: false })
     );
     this.ghost.visible = false;
-    this.ghost.renderOrder = 999;
+    this.ghost.renderOrder = 1000;
     overlay.add(this.ghost);
 
     // A bright, pulsing ring that drops over a town the moment the cursor is in range to
@@ -75,18 +80,9 @@ export class TrackBuilder {
       new THREE.MeshBasicMaterial({ color: 0x7dffb0, transparent: true, opacity: 0.85, depthTest: false })
     );
     this.snapRing.rotation.x = Math.PI / 2;
-    this.snapRing.renderOrder = 999;
+    this.snapRing.renderOrder = 1000;
     this.snapRing.visible = false;
     overlay.add(this.snapRing);
-
-    this.preview = new THREE.Line(
-      this.previewGeo,
-      new THREE.LineBasicMaterial({ color: 0xffe28a, transparent: true, opacity: 0.95 })
-    );
-    this.preview.visible = false;
-    this.preview.renderOrder = 998;
-    this.preview.frustumCulled = false;
-    overlay.add(this.preview);
 
     this.dom.addEventListener('pointerdown', this.onDown);
     this.dom.addEventListener('pointerup', this.onUp);
@@ -94,24 +90,22 @@ export class TrackBuilder {
     window.addEventListener('keydown', this.onKey);
   }
 
-  /** Is build mode currently engaged? (Picking should stand down while it is.) */
+  /** Is build mode currently engaged? (Picking + camera pan stand down while it is.) */
   isActive(): boolean {
     return this.active;
   }
 
-  /** Enter build mode (idempotent). */
   start(): void {
     this.active = true;
     this.emit();
   }
 
-  /** Leave build mode, discarding any half-drawn route. */
   cancel(): void {
     this.active = false;
     this.nodes = [];
     this.ghost.visible = false;
     this.snapRing.visible = false;
-    this.preview.visible = false;
+    this.clearPreviewTrack();
     this.emit();
   }
 
@@ -125,8 +119,7 @@ export class TrackBuilder {
     this.finish();
   }
 
-  /** Per-frame pulse for the in-range snap ring, so the town it'll latch onto visibly
-   *  throbs. Fed real dt from the render loop; a no-op when nothing is snapped. */
+  /** Per-frame pulse for the in-range snap ring. Fed real dt; a no-op when nothing snaps. */
   update(dt: number): void {
     if (!this.snapRing.visible) return;
     this.pulseT += dt;
@@ -136,6 +129,7 @@ export class TrackBuilder {
   }
 
   private onKey = (e: KeyboardEvent): void => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
     if (e.key === 'b' || e.key === 'B') this.toggle();
     else if (e.key === 'Escape') this.cancel();
     else if (e.key === 'Enter' && this.active) this.finish();
@@ -143,19 +137,41 @@ export class TrackBuilder {
 
   private onDown = (e: PointerEvent): void => {
     this.down.set(e.clientX, e.clientY);
+    this.placedOnDown = false;
+    if (!this.active || e.button !== 0) return;
+    this.raycast(e);
+    // Drop the start point immediately so a drag has something to draw from. (If the press
+    // turns out to be a plain click, that's fine — the start is exactly where we want it.)
+    if (this.nodes.length === 0 && this.cursorValid) {
+      this.nodes.push(this.snapNode());
+      this.placedOnDown = true;
+    }
+    this.refreshVisuals();
   };
 
   private onUp = (e: PointerEvent): void => {
     if (!this.active) return;
-    if (Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y) > CLICK_SLOP) return; // was a drag
+    const wasDrag = Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y) > CLICK_SLOP;
     if (e.button === 2) {
-      this.cancel();
+      // Right-click undoes the last point, or leaves build mode if the route is empty.
+      if (this.nodes.length) {
+        this.nodes.pop();
+        this.refreshVisuals();
+        this.emit();
+      } else {
+        this.cancel();
+      }
       return;
     }
     if (e.button !== 0) return;
     this.raycast(e);
-    if (!this.cursorValid) return;
-    this.place();
+    if (this.cursorValid && !(this.placedOnDown && !wasDrag)) {
+      // Anything but a plain click that only dropped the start adds a point at the release.
+      this.pushIfFar(this.snapNode());
+    }
+    this.placedOnDown = false;
+    this.refreshVisuals();
+    this.emit();
   };
 
   private onMove = (e: PointerEvent): void => {
@@ -163,6 +179,16 @@ export class TrackBuilder {
     this.raycast(e);
     this.refreshVisuals();
   };
+
+  private snapNode(): RouteNode {
+    return { pos: this.snapTarget ? this.snapTarget.pos.clone() : this.cursor.clone(), station: this.snapTarget };
+  }
+
+  private pushIfFar(n: RouteNode): void {
+    const last = this.nodes[this.nodes.length - 1];
+    if (last && last.pos.distanceTo(n.pos) < 10) return; // ignore a release right on the last point
+    this.nodes.push(n);
+  }
 
   /** Project the pointer onto the terrain and resolve any city snap. */
   private raycast(e: PointerEvent): void {
@@ -177,7 +203,6 @@ export class TrackBuilder {
     }
     this.cursor.copy(hit.point);
     const near = this.network.nearestStation(this.cursor, SNAP);
-    // Snap to a city, but not the one we just placed.
     this.snapTarget = near && near !== this.lastStation ? near : null;
     if (this.snapTarget) this.cursor.copy(this.snapTarget.pos);
   }
@@ -185,15 +210,6 @@ export class TrackBuilder {
   private get lastStation(): GStation | null {
     for (let i = this.nodes.length - 1; i >= 0; i--) if (this.nodes[i].station) return this.nodes[i].station;
     return null;
-  }
-
-  private place(): void {
-    // Lay track freely: each click adds a point. A click on a city makes that point a
-    // stop; clicks on open ground are shaping/grade points. No need to start or end on
-    // a city — you can lay rail that doesn't connect anything yet.
-    this.nodes.push({ pos: this.cursor.clone(), station: this.snapTarget });
-    this.refreshVisuals();
-    this.emit();
   }
 
   /** Hand the finished route (≥2 points) to the listener to configure + commit. */
@@ -205,7 +221,6 @@ export class TrackBuilder {
     this.emit();
   }
 
-  /** Update ghost, snap ring, and the dashed preview rail to the current cursor. */
   private refreshVisuals(): void {
     if (!this.active) return;
     this.ghost.visible = this.cursorValid;
@@ -214,21 +229,43 @@ export class TrackBuilder {
     this.snapRing.visible = !!this.snapTarget;
     if (this.snapTarget) this.snapRing.position.set(this.snapTarget.pos.x, this.snapTarget.pos.y + 2, this.snapTarget.pos.z);
 
-    const route = this.routePoints();
-    if (this.nodes.length && route.length >= 2) {
-      this.previewGeo.setFromPoints(route.map((p) => new THREE.Vector3(p.x, p.y + 2.5, p.z)));
-      this.preview.visible = true;
-      const affordable = this.network.lineCost(route, this.getLoco()) <= this.network.money;
-      (this.ghost.material as THREE.MeshBasicMaterial).color.setHex(
-        this.snapTarget ? (affordable ? 0x8fffa8 : 0xff7766) : 0xffe28a
-      );
-    } else {
-      this.preview.visible = false;
-      (this.ghost.material as THREE.MeshBasicMaterial).color.setHex(this.snapTarget ? 0x8fffa8 : 0xffffff);
-    }
+    this.rebuildPreviewTrack();
+
+    const affordable = this.network.lineCost(this.routePoints(), this.getLoco()) <= this.network.money;
+    (this.ghost.material as THREE.MeshBasicMaterial).color.setHex(
+      this.snapTarget ? (affordable ? 0x8fffa8 : 0xff7766) : 0xffe28a
+    );
   }
 
-  /** Full polyline through every placed point, then out to the cursor. */
+  /** Rebuild the ghost rail line when the route's shape changes enough to matter. */
+  private rebuildPreviewTrack(): void {
+    const route = this.routePoints();
+    if (route.length < 2) {
+      this.clearPreviewTrack();
+      return;
+    }
+    const tail = route[route.length - 1];
+    const sig = `${this.nodes.length}|${Math.round(tail.x / 3)}|${Math.round(tail.z / 3)}|${this.snapTarget ? 1 : 0}`;
+    if (sig === this.previewSig && this.previewTrack) return;
+    this.previewSig = sig;
+    this.clearPreviewTrack();
+    this.previewTrack = buildGhostTrack(route, !!this.snapTarget, this.field);
+    this.overlay.add(this.previewTrack);
+  }
+
+  private clearPreviewTrack(): void {
+    if (!this.previewTrack) return;
+    this.overlay.remove(this.previewTrack);
+    this.previewTrack.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+      if (m.material) for (const mat of Array.isArray(m.material) ? m.material : [m.material]) mat.dispose();
+    });
+    this.previewTrack = null;
+    this.previewSig = '';
+  }
+
+  /** Polyline through every placed point, then out to the cursor. */
   private routePoints(): THREE.Vector3[] {
     const pts = this.nodes.map((n) => n.pos.clone());
     if (this.cursorValid) pts.push(this.snapTarget ? this.snapTarget.pos.clone() : this.cursor.clone());
@@ -239,26 +276,91 @@ export class TrackBuilder {
     const route = this.routePoints();
     const cost = this.nodes.length && route.length >= 2 ? this.network.lineCost(route, this.getLoco()) : 0;
     const stops = this.nodes.filter((n) => n.station).length;
-    const canFinish = route.length >= 2; // at least two points laid (committing a real route)
     this.onStatus?.({
       active: this.active,
       fromName: this.nodes.find((n) => n.station)?.station?.name ?? null,
       cost,
       affordable: cost <= this.network.money,
-      canFinish,
+      canFinish: this.nodes.length >= 2,
       hint: !this.active ? '' : this.routingHint(stops),
     });
   }
 
-  /** The contextual instruction in the build banner. Calls out a city that still needs a
-   *  Station, since a stop there earns nothing until one is built. */
   private routingHint(stops: number): string {
     if (this.snapTarget) {
       return this.snapTarget.hasStation
-        ? `Click <b>${this.snapTarget.name}</b> to add it as a stop, then ✓ Finish.`
-        : `Click <b>${this.snapTarget.name}</b> to route through it — ⚠ it needs a <b>Station</b> first (click the city → Build Station).`;
+        ? `Release on <b>${this.snapTarget.name}</b> to connect it — then <b>✓ Finish</b>.`
+        : `<b>${this.snapTarget.name}</b> needs a <b>Station</b> first (click the city → Build Station).`;
     }
-    if (this.nodes.length === 0) return 'Click your <b>stationed</b> cities in order to lay a route. (Build a Station from a city’s panel first.)';
-    return `Route: ${stops} stop${stops === 1 ? '' : 's'} — click more cities, then <b>✓ Finish</b> · <b>✕ Cancel</b> to discard.`;
+    if (this.nodes.length === 0) return 'Press a <b>stationed</b> city and drag to another to lay track. (Build Stations first.)';
+    return `Route: ${stops} stop${stops === 1 ? '' : 's'} — drag on to the next city, or <b>✓ Finish</b> · right-click undoes · <b>✕ Cancel</b> discards.`;
   }
+}
+
+/** A translucent, terrain-draped preview of the rail line: two tinted rails over a row of
+ *  ties. Green when the far end snaps to a city (it'll connect), amber otherwise. Light
+ *  enough to rebuild many times a second while dragging. */
+function buildGhostTrack(points: THREE.Vector3[], valid: boolean, field: Heightfield): THREE.Group {
+  const g = new THREE.Group();
+  g.renderOrder = 998;
+
+  // Densify + drape each segment on the terrain so the preview hugs the ground.
+  const draped: THREE.Vector3[] = [];
+  const floor = field.params.seaLevel + 0.6;
+  for (let w = 0; w < points.length - 1; w++) {
+    const a = points[w];
+    const b = points[w + 1];
+    const steps = Math.max(2, Math.floor(a.distanceTo(b) / 14));
+    const last = w === points.length - 2;
+    for (let i = 0; i < steps + (last ? 1 : 0); i++) {
+      const s = i / steps;
+      const x = THREE.MathUtils.lerp(a.x, b.x, s);
+      const z = THREE.MathUtils.lerp(a.z, b.z, s);
+      const y = Math.max(field.height(x, z), floor) + DECK;
+      draped.push(new THREE.Vector3(x, y, z));
+    }
+  }
+  if (draped.length < 2) return g;
+
+  const curve = new THREE.CatmullRomCurve3(draped, false, 'catmullrom', 0.5);
+  const length = Math.max(1, curve.getLength());
+  const tint = valid ? 0x7dffb0 : 0xffcf73;
+
+  // Ties.
+  const tieCount = Math.min(240, Math.max(4, Math.floor(length / 2.4)));
+  const tieMat = new THREE.MeshBasicMaterial({ color: 0x7a5536, transparent: true, opacity: 0.5, depthWrite: false });
+  const ties = new THREE.InstancedMesh(new THREE.BoxGeometry(TIE_W, 0.22, 0.55), tieMat, tieCount);
+  const dummy = new THREE.Object3D();
+  const pos = new THREE.Vector3();
+  const tan = new THREE.Vector3();
+  for (let i = 0; i < tieCount; i++) {
+    const u = (i + 0.5) / tieCount;
+    curve.getPointAt(u, pos);
+    curve.getTangentAt(u, tan);
+    dummy.position.set(pos.x, pos.y - 0.16, pos.z);
+    dummy.rotation.set(0, Math.atan2(tan.x, tan.z), 0);
+    dummy.updateMatrix();
+    ties.setMatrixAt(i, dummy.matrix);
+  }
+  ties.instanceMatrix.needsUpdate = true;
+  g.add(ties);
+
+  // Two rails as tinted tubes.
+  const railMat = new THREE.MeshBasicMaterial({ color: tint, transparent: true, opacity: 0.92, depthWrite: false });
+  const railN = Math.min(180, Math.max(8, Math.floor(length / 3)));
+  for (const off of [-GAUGE / 2, GAUGE / 2]) {
+    const line: THREE.Vector3[] = [];
+    const p = new THREE.Vector3();
+    const t = new THREE.Vector3();
+    const perp = new THREE.Vector3();
+    for (let i = 0; i <= railN; i++) {
+      curve.getPointAt(i / railN, p);
+      curve.getTangentAt(i / railN, t);
+      perp.crossVectors(t, UP).normalize();
+      line.push(new THREE.Vector3(p.x + perp.x * off, p.y, p.z + perp.z * off));
+    }
+    const rc = new THREE.CatmullRomCurve3(line, false, 'catmullrom', 0.5);
+    g.add(new THREE.Mesh(new THREE.TubeGeometry(rc, railN, 0.26, 5, false), railMat));
+  }
+  return g;
 }

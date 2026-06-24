@@ -456,7 +456,7 @@ export class HUD {
       [
         ['🎯', '<b>The goal</b> — reach the medal target by the deadline (top-left). The objective varies by scenario: net worth, cargo hauled, cities linked, or contracts filled. 🥉 → 🥈 → 🥇.'],
         ['🚉', '<b>Step 1 — Stations.</b> Click a city, then <b>Build Station — $70k</b> in its panel. Trains only stop where you’ve built a station, so do this at each city you want to serve.'],
-        ['🛤', '<b>Step 2 — Track.</b> Click <b>Build Track</b> (or <b>B</b>), click your stationed cities in order — each lights up when it’s in range — then press <b>✓ Finish line</b>.'],
+        ['🛤', '<b>Step 2 — Track.</b> Click <b>Build Track</b> (or <b>B</b>), then <b>press a city and drag to the next</b> — a ghost rail line follows and the target town lights up when it’s in range. Release to lay it, chain on more, then <b>✓ Finish</b> (right-click undoes a point).'],
         ['🚂', '<b>Step 3 — Start a train.</b> Select the line and press <b>🚂 Start a train</b> (it runs the moment two of its cities have stations). Each city <b>wants</b> certain cargo (the ringed dots) — carry what it wants from where it’s made; long hauls of fresh freight pay most.'],
         ['🎥', '<b>Getting around</b> — <b>WASD</b> or drag to pan, <b>Q/E</b> rotate, <b>R/F</b> (or two-finger scroll) zoom, <b>Home</b> resets the view.'],
         ['📋', '<b>Contracts</b> — accept time-limited haul jobs for a premium reward (the Contracts button, top-left).'],

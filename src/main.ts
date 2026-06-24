@@ -86,7 +86,7 @@ async function boot(cfg: BootCfg): Promise<void> {
   };
 
   // Interactive track laying + HUD.
-  const builder = new TrackBuilder(rig.camera, renderer.gl.domElement, terrain.mesh, network, scene, () => selectedLoco);
+  const builder = new TrackBuilder(rig.camera, renderer.gl.domElement, terrain.mesh, network, field, scene, () => selectedLoco);
   // Synthesized sound — unlocked on the first interaction, chimes on deliveries.
   const audio = new AudioBus();
   // Dev diagnostics: count deliveries/revenue so a headless run can confirm the loop.
@@ -130,7 +130,10 @@ async function boot(cfg: BootCfg): Promise<void> {
     },
     (c) => network.acceptContract(c)
   );
-  builder.onStatus = (s) => hud.setBuildStatus(s);
+  builder.onStatus = (s) => {
+    hud.setBuildStatus(s);
+    rig.controls.enablePan = !s.active; // in build mode a drag lays track, so don't pan (WASD still pans)
+  };
   // Finishing a route: if the line links two depots, configure + run a train right away.
   // Otherwise just lay the track and say plainly what's needed to run it — a train earns
   // nothing without depots, so we never spawn (or charge for) one that can't work.
@@ -519,10 +522,11 @@ function driveConsistModal(cargo: CargoKind): boolean {
 }
 
 /** Dispatch a real click (pointerdown+up at one spot) on the canvas at pixel x,y. */
-function clickCanvas(canvas: HTMLElement, x: number, y: number): void {
-  for (const type of ['pointerdown', 'pointerup'] as const) {
-    canvas.dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true }));
-  }
+/** Press at (x1,y1), drag to (x2,y2), release — the primary track-laying gesture. */
+function dragCanvas(canvas: HTMLElement, x1: number, y1: number, x2: number, y2: number): void {
+  canvas.dispatchEvent(new PointerEvent('pointerdown', { clientX: x1, clientY: y1, button: 0, bubbles: true }));
+  canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: x2, clientY: y2, button: 0, bubbles: true }));
+  canvas.dispatchEvent(new PointerEvent('pointerup', { clientX: x2, clientY: y2, button: 0, bubbles: true }));
 }
 
 function runUiTest(
@@ -1445,8 +1449,9 @@ function layTrackTest(
 
   const linesBefore = network.lines.length;
   builder.start();
-  clickCanvas(canvas, sa.x, sa.y); // first stop
-  clickCanvas(canvas, sb.x, sb.y); // second stop (snaps to the city)
+  // Press the start city and drag to the destination — the new primary gesture lays the
+  // whole segment in one motion (drops the start on press, the end on release).
+  dragCanvas(canvas, sa.x, sa.y, sb.x, sb.y);
   // Finish via the on-screen ✓ button — the discoverable primary path (not the Enter shortcut).
   const finishBtn = document.querySelector('[data-finishroute]') as HTMLButtonElement | null;
   const finishReady = !!finishBtn && !finishBtn.disabled;
