@@ -391,13 +391,14 @@ export class HUD {
     });
     this.root.append(this.ledger);
 
-    // Fleet roster, bottom-right: every train at a glance, click to jump to it.
+    // Fleet roster, bottom-right ABOVE the minimap (190px tall) so the two never overlap —
+    // every train at a glance, click to jump to it.
     this.roster = el('div', {
       position: 'absolute',
-      bottom: '14px',
+      bottom: '218px',
       right: '14px',
       width: '244px',
-      maxHeight: '40vh',
+      maxHeight: 'calc(80vh - 230px)',
       overflowY: 'auto',
       padding: '8px 10px',
       background: 'rgba(18,22,28,0.72)',
