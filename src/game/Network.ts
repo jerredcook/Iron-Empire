@@ -123,14 +123,11 @@ export interface GStation {
   level: number;
   /** Cumulative revenue earned from deliveries to this station. */
   revenue: number;
-  /** Whether a depot has been built here — a route can only stop at built stations. */
+  /** Whether the PLAYER has built a depot here (convenience mirror of depots.has(player)). */
   hasStation: boolean;
-  /** The depot building (for removal on demolish), or null. */
-  depot: THREE.Object3D | null;
-  /** True once the depot has been sat beside a serving line's rails (so it isn't re-moved). */
-  depotAligned: boolean;
-  /** The company that built the depot — only it may demolish it. */
-  depotOwner: Company | null;
+  /** Every company's own depot at this city — each railroad builds and uses its own; a line
+   *  can only stop here if its owner has one. Industries, catchment + stock are city-shared. */
+  depots: Map<Company, GDepot>;
   /** Nearby depot-less cities this station gathers cargo from (its catchment). */
   catchment: GStation[];
   /** Maintenance buildings bought at this depot (roundhouse, warehouse, …). */
@@ -138,6 +135,14 @@ export interface GStation {
   /** Settlement growth stage (0 Hamlet … 3 Metropolis) — rises with sustained service
    *  and unlocks new cargo demands. Starts at the archetype's base size. */
   stage: number;
+}
+
+/** One company's depot building at a city. */
+export interface GDepot {
+  owner: Company;
+  mesh: THREE.Object3D;
+  /** True once it's been sat beside its owner's serving line's rails. */
+  aligned: boolean;
 }
 
 export interface GLine {
@@ -455,7 +460,7 @@ export class Network {
         level: s.level,
         revenue: Math.round(s.revenue),
         hasStation: s.hasStation,
-        depotOwner: s.depotOwner ? ci(s.depotOwner) : -1,
+        depotOwners: [...s.depots.keys()].map((co) => ci(co)),
         buildings: [...s.buildings],
       })),
       lines: this.lines.map((l) => ({
@@ -546,15 +551,15 @@ export class Network {
       if (s.owner) s.owner.industries.push(s);
       s.level = sd.level ?? 0;
       s.revenue = sd.revenue ?? 0;
-      if (sd.hasStation) {
-        this.placeDepot(s, sd.depotOwner >= 0 ? this.companies[sd.depotOwner] : this.player);
-        s.buildings.clear(); // restore strictly from the save, not stale in-memory state
+      // Restore every company's depot here. (Old saves: a single depotOwner + hasStation.)
+      const owners: number[] = sd.depotOwners ?? (sd.hasStation ? [sd.depotOwner >= 0 ? sd.depotOwner : 0] : []);
+      for (const oi of owners) this.placeDepot(s, this.companies[oi] ?? this.player);
+      s.buildings.clear(); // restore strictly from the save, not stale in-memory state
+      if (s.depots.has(this.player)) {
         for (const b of (sd.buildings ?? []) as StationBuilding[]) {
           s.buildings.add(b);
           this.placeStationStructure(s, b);
         }
-      } else {
-        s.buildings.clear();
       }
     });
 
@@ -586,8 +591,8 @@ export class Network {
         tr.restore(td.dist, td.dir, cargo);
       });
     }
-    // Depots were placed before the lines existed; now snap each onto its line's rails.
-    for (const s of this.stations) if (s.depot) { s.depotAligned = false; this.alignDepot(s); }
+    // Depots were placed before the lines existed; now snap each onto its owner's rails.
+    for (const s of this.stations) for (const [owner, d] of s.depots) { d.aligned = false; this.alignDepot(s, owner); }
     return true;
   }
 
@@ -684,9 +689,7 @@ export class Network {
       level: 0,
       revenue: 0,
       hasStation: false,
-      depot: null,
-      depotOwner: null,
-      depotAligned: false,
+      depots: new Map(),
       catchment: [],
       buildings: new Set(),
       stage: site.archetype.size,
@@ -716,9 +719,15 @@ export class Network {
     return CATCHMENT_RADIUS;
   }
 
-  /** Build a depot at a city so trains can serve it. Charged to the player. */
+  /** Does this company have its own depot at this city? */
+  hasDepot(st: GStation, company: Company): boolean {
+    return st.depots.has(company);
+  }
+
+  /** Build a depot at a city so the player's trains can serve it. Charged to the player. Each
+   *  railroad builds its OWN depot — the player can build here even if a rival already has one. */
   buildStationAt(st: GStation): boolean {
-    if (st.hasStation || this.status !== 'playing') return false;
+    if (st.depots.has(this.player) || this.status !== 'playing') return false;
     if (STATION_COST > this.player.money) return false;
     this.player.money -= STATION_COST;
     this.placeDepot(st, this.player);
@@ -729,20 +738,19 @@ export class Network {
   /** Demolish a player-built depot: scrap any lines that stop here (they can't run
    *  without it), remove the depot, refund part of its cost, and re-figure catchment. */
   demolishStation(st: GStation): boolean {
-    if (!st.hasStation || st.depotOwner !== this.player || this.status !== 'playing') return false;
+    const depot = st.depots.get(this.player);
+    if (!depot || this.status !== 'playing') return false;
+    // Only the player's own lines through here die — a rival keeps its separate depot + lines.
     for (const l of [...this.lines]) {
-      if (l.stops.includes(st)) this.demolishLine(l);
+      if (l.owner === this.player && l.stops.includes(st)) this.demolishLine(l);
     }
-    if (st.depot) {
-      this.scene.remove(st.depot);
-      st.depot.traverse((o) => {
-        const m = o as THREE.Mesh;
-        if (m.geometry) m.geometry.dispose(); // depot materials are shared (mats() singleton)
-      });
-      st.depot = null;
-    }
+    this.scene.remove(depot.mesh);
+    depot.mesh.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose(); // depot materials are shared (mats() singleton)
+    });
+    st.depots.delete(this.player);
     st.hasStation = false;
-    st.depotOwner = null;
     st.level = 0;
     st.revenue = 0;
     st.buildings.clear(); // their meshes were children of the depot, freed above
@@ -752,43 +760,53 @@ export class Network {
     return true;
   }
 
-  /** The depot building + flag at a city's station (also used on load). */
+  /** Build one company's depot building at a city (also used on load). */
   private placeDepot(st: GStation, owner: Company): void {
-    // Re-placing over an existing depot (loading into an active game) — free the old mesh
-    // and its building children first, or they'd be orphaned in the scene.
-    if (st.depot) {
-      this.scene.remove(st.depot);
-      st.depot.traverse((o) => {
+    // Re-placing this owner's depot (loading into an active game) — free the old mesh first.
+    const existing = st.depots.get(owner);
+    if (existing) {
+      this.scene.remove(existing.mesh);
+      existing.mesh.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.geometry) m.geometry.dispose();
       });
-      st.depot = null;
     }
-    st.hasStation = true;
-    st.depotOwner = owner;
-    st.depotAligned = false;
-    const depot = buildStation();
-    this.scene.add(depot);
-    st.depot = depot;
-    this.alignDepot(st); // sit it beside an existing line's rails, or face the nearest city
+    const mesh = buildStation();
+    this.scene.add(mesh);
+    const depot: GDepot = { owner, mesh, aligned: false };
+    st.depots.set(owner, depot);
+    if (owner === this.player) st.hasStation = true;
+    this.alignDepot(st, owner); // sit it beside its line's rails, or face the nearest city
     this.assignCatchment();
+  }
+
+  /** The player's depot mesh at a city (for building add-ons), or null. */
+  private playerDepotMesh(st: GStation): THREE.Object3D | null {
+    return st.depots.get(this.player)?.mesh ?? null;
   }
 
   /** Place the depot beside the rails of a line that stops here, with its platform running
    *  along the track so the station reads as part of the line. With no line yet, it faces
    *  the nearest neighbouring city as a sensible default until one arrives. Purely visual —
    *  catchment and the economy key off st.pos, never the depot mesh. */
-  private alignDepot(st: GStation): void {
-    if (!st.depot) return;
+  private alignDepot(st: GStation, owner: Company): void {
+    const depot = st.depots.get(owner);
+    if (!depot) return;
     const at = new THREE.Vector3();
     const dir = new THREE.Vector3();
-    const line = this.lines.find((l) => !l.through && l.stops.includes(st) && l.track.group.children.length > 0);
+    // Align beside a line OWNED BY this company that stops here, so each railroad's depot sits on
+    // its own rails — never a rival's.
+    const line = this.lines.find(
+      (l) => l.owner === owner && !l.through && l.stops.includes(st) && l.track.group.children.length > 0
+    );
+    // Stagger each railroad's depot further off the rails so two owners at one city never stack.
+    const slot = Math.max(0, [...st.depots.keys()].indexOf(owner));
     if (line) {
       const u = Math.max(0, Math.min(1, line.stopFracs[line.stops.indexOf(st)]));
       line.track.curve.getPointAt(u, at);
       line.track.curve.getTangentAt(u, dir);
       dir.y = 0;
-      st.depotAligned = true;
+      depot.aligned = true;
     } else {
       at.copy(st.pos);
       let near: GStation | null = null;
@@ -805,16 +823,16 @@ export class Network {
     // Sit the depot just off one side of the track so its platform's track edge (+X local)
     // runs right alongside the rails (its long axis +Z parallel to them) — a station ON the
     // line, not a building nearby.
-    const SIDE = 6.5;
+    const SIDE = 6.5 + slot * 9;
     const px = at.x - dir.z * SIDE;
     const pz = at.z + dir.x * SIDE;
-    st.depot.position.set(px, this.field.height(px, pz), pz);
-    st.depot.rotation.y = Math.atan2(dir.x, dir.z);
+    depot.mesh.position.set(px, this.field.height(px, pz), pz);
+    depot.mesh.rotation.y = Math.atan2(dir.x, dir.z);
   }
 
   /** Buy a maintenance building at a player-owned depot (one of each). */
   addStationBuilding(st: GStation, type: StationBuilding): boolean {
-    if (!st.hasStation || st.depotOwner !== this.player || this.status !== 'playing') return false;
+    if (!st.depots.has(this.player) || this.status !== 'playing') return false;
     if (st.buildings.has(type)) return false;
     const cost = STATION_BUILDINGS[type].cost;
     if (cost > this.player.money) return false;
@@ -828,11 +846,12 @@ export class Network {
   /** Set a maintenance structure beside the depot (laid out in a row in depot-local
    *  space, so demolishing the depot frees it along with the depot's own geometry). */
   private placeStationStructure(st: GStation, type: StationBuilding): void {
-    if (!st.depot) return;
+    const mesh = this.playerDepotMesh(st);
+    if (!mesh) return;
     const s = buildStationStructure(type);
     const idx = STATION_BUILDING_ORDER.indexOf(type);
     s.position.set(-18 + idx * 9, 0, -13);
-    st.depot.add(s);
+    mesh.add(s);
   }
 
   /** Most this station can stockpile of any one cargo — a warehouse raises it. */
@@ -859,11 +878,11 @@ export class Network {
   assignCatchment(): void {
     for (const s of this.stations) s.catchment = [];
     for (const city of this.stations) {
-      if (city.hasStation) continue;
+      if (city.depots.size > 0) continue; // any railroad's depot makes it its own node
       let best: GStation | null = null;
       let bd = CATCHMENT_RADIUS;
       for (const dep of this.stations) {
-        if (!dep.hasStation) continue;
+        if (dep.depots.size === 0) continue;
         const d = Math.hypot(dep.pos.x - city.pos.x, dep.pos.z - city.pos.z);
         if (d < bd) {
           bd = d;
@@ -1088,8 +1107,8 @@ export class Network {
    */
   buildLineFor(owner: Company, waypoints: THREE.Vector3[], stops: GStation[], loco?: LocoClass, cars?: CargoKind[]): boolean {
     if (waypoints.length < 2) return false;
-    // A train only runs (and is only paid for) when the line has two depots to serve.
-    const runnable = stops.length >= 2 && !!loco && stops.filter((s) => s.hasStation).length >= 2;
+    // A train only runs (and is only paid for) when this owner has its OWN depot at 2+ stops.
+    const runnable = stops.length >= 2 && !!loco && stops.filter((s) => s.depots.has(owner)).length >= 2;
     const cost = this.routeCost(waypoints) + (runnable ? loco!.cost : 0);
     if (cost > owner.money) return false;
     owner.money -= cost;
@@ -1112,8 +1131,11 @@ export class Network {
     }
     const trains = runnable ? [{ loco: loco!, cars: cars ?? this.defaultConsist(stops, loco!) }] : [];
     this.layLine(owner, stops, waypoints, trains);
-    // Snap each stop's depot onto this line's rails the first time a line serves it.
-    for (const st of stops) if (st.depot && !st.depotAligned) this.alignDepot(st);
+    // Snap this owner's depots onto this line's rails the first time it serves them.
+    for (const st of stops) {
+      const d = st.depots.get(owner);
+      if (d && !d.aligned) this.alignDepot(st, owner);
+    }
     if (bonus > 0) {
       owner.money += bonus;
       this.pushDelivery(`First link: ${stops[0].name} ↔ ${stops[stops.length - 1].name}`, bonus);
@@ -1914,7 +1936,7 @@ export class Network {
     let dep: GStation | null = null;
     let bestRev = -1;
     for (const s of this.stations) {
-      if (s.depotOwner === c && s.hasStation && s.revenue > bestRev) {
+      if (s.depots.has(c) && s.revenue > bestRev) {
         bestRev = s.revenue;
         dep = s;
       }
@@ -1953,7 +1975,9 @@ export class Network {
         const b = this.stations[j];
         if (c.connects(a, b)) continue;
         if (!this.offersOf(a).some((k) => b.demands.has(k)) && !this.offersOf(b).some((k) => a.demands.has(k))) continue;
-        const depots = (a.hasStation ? 0 : STATION_COST) + (b.hasStation ? 0 : STATION_COST);
+        // It must build its OWN depot at any endpoint it doesn't already serve — a rival's
+        // depot is no use to it.
+        const depots = (a.depots.has(c) ? 0 : STATION_COST) + (b.depots.has(c) ? 0 : STATION_COST);
         const cost = this.lineCost([a.pos, b.pos], loco) + depots;
         if (!best || cost < best.cost) best = { a, b, cost };
       }
@@ -1966,7 +1990,7 @@ export class Network {
     }
     if (best.cost > c.money - this.aiReserve) return false;
     for (const st of [best.a, best.b]) {
-      if (!st.hasStation) {
+      if (!st.depots.has(c)) {
         c.money -= STATION_COST;
         this.placeDepot(st, c);
       }

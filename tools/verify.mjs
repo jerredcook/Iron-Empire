@@ -296,6 +296,7 @@ async function main() {
     check('economy: rival stays solvent', (ec?.rivalNetWorth ?? -1e9) > -100_000, ec);
     check('economy: player state is sane', typeof ec?.money === 'number' && !!ec?.status, ec);
     check('economy: markets actually saturate over a long run', (ec?.peakSat ?? 0) > 0, ec);
+    check('ownership: each railroad builds its OWN depots — rivals never share a station', (ec?.aiDepots ?? 0) > 0 && (ec?.multiDepot ?? 0) > 0, ec);
 
     console.log('• Speed-control test…');
     const sp = extract(chromeDump('autostart&speedtest'), 'ie-speed');

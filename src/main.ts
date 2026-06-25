@@ -375,6 +375,10 @@ async function boot(cfg: BootCfg): Promise<void> {
       peakSat: +diag.peakSat.toFixed(3),
       steelStock: +steelMade.toFixed(1),
       rivalNetWorth: Math.round(network.rivals[0]?.netWorth ?? 0),
+      // Per-company depot separation: cities where 2+ railroads each built their OWN depot,
+      // and the rival's total self-built depots (it never free-rides on the player's).
+      multiDepot: network.stations.filter((s) => s.depots.size > 1).length,
+      aiDepots: network.stations.reduce((a, s) => a + [...s.depots.keys()].filter((o) => o.isAI).length, 0),
     });
   };
 
@@ -389,6 +393,16 @@ async function boot(cfg: BootCfg): Promise<void> {
     for (const s of network.stations) for (const v of s.sat.values()) if (v > diag.peakSat) diag.peakSat = v;
   }
   writeDiag();
+
+  // Dev visual-check (?compete): after the AI has expanded, frame a city where two railroads
+  // each built their OWN depot — confirms the per-company station separation.
+  if (location.search.includes('compete')) {
+    const city = network.stations.find((s) => s.depots.size > 1);
+    if (city) {
+      rig.controls.target.copy(city.pos);
+      rig.camera.position.set(city.pos.x + 70, city.pos.y + 85, city.pos.z + 70);
+    }
+  }
 
   // Headless UI test: drive the real consist modal DOM for both the add-train and
   // build-line paths, then report what actually happened in the model.
@@ -1421,8 +1435,9 @@ function runUiTest(
       network.buildStationAt(da);
       network.buildStationAt(db);
       network.buildLine([da.pos, db.pos], [da, db], loco);
-      depotAligned = da.depotAligned === true && !!da.depot;
-      const d = da.depot ? Math.hypot(da.depot.position.x - da.pos.x, da.depot.position.z - da.pos.z) : 999;
+      const dep = da.depots.get(network.player);
+      depotAligned = dep?.aligned === true;
+      const d = dep ? Math.hypot(dep.mesh.position.x - da.pos.x, dep.mesh.position.z - da.pos.z) : 999;
       besideTrack = d > 4 && d < 26; // beside the rails — not on top of the city, not far off
     }
     result.selectionUI = { startsHidden, shown, hidden, depotAligned, besideTrack };
@@ -1811,7 +1826,7 @@ function runAiTest(network: Network): void {
       (a, c) => a + [...c.holdings.values()].reduce((x, y) => x + y, 0),
       0
     );
-    const aiDepots = network.stations.filter((s) => !!s.depotOwner?.isAI);
+    const aiDepots = network.stations.filter((s) => [...s.depots.keys()].some((o) => o.isAI));
     const maxLevel = aiDepots.reduce((m, s) => Math.max(m, s.level), 0);
     const anyWarehouse = aiDepots.some((s) => s.buildings.has('warehouse'));
     const aliveAIs = network.companies.filter((c) => c.isAI && !c.defunct);

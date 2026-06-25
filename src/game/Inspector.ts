@@ -181,7 +181,7 @@ export class Inspector {
       if (reach > 0) html += `<div style="font-size:11.5px;opacity:0.7;margin-bottom:4px">🌐 Network: reaches ${reach} other station${reach === 1 ? '' : 's'}</div>`;
 
       // Maintenance facilities — built ones as green pills, the rest as buy buttons.
-      if (st.depotOwner === this.network.player) {
+      if (this.network.hasDepot(st, this.network.player)) {
         html += `<div style="opacity:0.55;font-size:10.5px;text-transform:uppercase;letter-spacing:0.5px;margin-top:8px">Facilities</div>`;
         const owned = STATION_BUILDING_ORDER.filter((b) => st.buildings.has(b));
         if (owned.length) {
@@ -254,7 +254,7 @@ export class Inspector {
     if (st.hasStation && st.level < 3) html += btn('data-upgrade', `⬆ Upgrade Depot — $${(90 * (st.level + 1)).toFixed(0)}k`);
     if (!st.recipe) html += btn('data-industry', '🏭 Build Factory — $160k');
     // Demolish your own depot (scraps lines that stop here) for a partial refund.
-    if (st.depotOwner === this.network.player) {
+    if (this.network.hasDepot(st, this.network.player)) {
       html += `<div data-demolishstation style="margin-top:8px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,119,102,0.5);color:#ff7766;font-size:12px">✕ Demolish Station — +$28k</div>`;
     }
 
