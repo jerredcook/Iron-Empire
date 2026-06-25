@@ -19,6 +19,7 @@ const DIVIDEND_RATE = 0.05; // share of operating value paid out to holders each
 const INDUSTRY_ROYALTY = 9; // $/unit the industry's owner earns on shipped output
 const STATION_BONUS = 0.18; // extra haul revenue per depot upgrade level
 const STATION_COST = 70_000; // price to build a depot at a city
+const DOUBLE_TRACK_GAP = 9; // lateral spacing when a line is laid alongside one it duplicates
 const CATCHMENT_RADIUS = 380; // a depot gathers cargo from towns within this range
 const MAX_STATION_LEVEL = 3;
 const SERVE_FULL = 55; // banked service that yields full prosperity
@@ -1099,6 +1100,27 @@ export class Network {
     return this.buildLineFor(this.player, waypoints, stops, loco, cars);
   }
 
+  /** If this owner already runs a line over the same set of cities, shift the new route sideways
+   *  by one (or more) track-widths so it lays as a clean parallel double-track rather than
+   *  overlapping the first — two independent tracks that never block each other. */
+  private parallelOffset(owner: Company, stops: GStation[], waypoints: THREE.Vector3[]): THREE.Vector3[] {
+    if (stops.length < 2 || waypoints.length < 2) return waypoints;
+    const key = stops.map((s) => s.id).sort((a, b) => a - b).join(',');
+    const dup = owner.lines.filter(
+      (l) => !l.through && l.stops.length >= 2 && l.stops.map((s) => s.id).sort((a, b) => a - b).join(',') === key
+    ).length;
+    if (dup === 0) return waypoints;
+    const dist = dup * DOUBLE_TRACK_GAP;
+    return waypoints.map((p, i) => {
+      const a = waypoints[Math.max(0, i - 1)];
+      const b = waypoints[Math.min(waypoints.length - 1, i + 1)];
+      const dx = b.x - a.x, dz = b.z - a.z;
+      const len = Math.hypot(dx, dz) || 1;
+      // Left-hand perpendicular — the same side the depot platform sits, so it lands between rails.
+      return new THREE.Vector3(p.x - (dz / len) * dist, p.y, p.z + (dx / len) * dist);
+    });
+  }
+
   /**
    * Commit a length of track along the given ground waypoints, stopping at the listed
    * cities. Track can be laid freely — with fewer than 2 stops it's just rail (no
@@ -1107,9 +1129,12 @@ export class Network {
    */
   buildLineFor(owner: Company, waypoints: THREE.Vector3[], stops: GStation[], loco?: LocoClass, cars?: CargoKind[]): boolean {
     if (waypoints.length < 2) return false;
+    // Lay a line that duplicates a corridor this railroad already runs ALONGSIDE the first as a
+    // clean parallel double-track, instead of overlapping (and blocking) it.
+    const route = this.parallelOffset(owner, stops, waypoints);
     // A train only runs (and is only paid for) when this owner has its OWN depot at 2+ stops.
     const runnable = stops.length >= 2 && !!loco && stops.filter((s) => s.depots.has(owner)).length >= 2;
-    const cost = this.routeCost(waypoints) + (runnable ? loco!.cost : 0);
+    const cost = this.routeCost(route) + (runnable ? loco!.cost : 0);
     if (cost > owner.money) return false;
     owner.money -= cost;
     // First-connection bonus (player only): a one-time grant for each pair of cities this
@@ -1130,7 +1155,7 @@ export class Network {
       }
     }
     const trains = runnable ? [{ loco: loco!, cars: cars ?? this.defaultConsist(stops, loco!) }] : [];
-    this.layLine(owner, stops, waypoints, trains);
+    this.layLine(owner, stops, route, trains);
     // Snap this owner's depots onto this line's rails the first time it serves them.
     for (const st of stops) {
       const d = st.depots.get(owner);

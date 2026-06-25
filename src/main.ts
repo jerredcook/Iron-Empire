@@ -327,6 +327,31 @@ async function boot(cfg: BootCfg): Promise<void> {
     }
   }
 
+  // Dev visual-check (?doubletrack): build two lines over the same flat-ish pair and frame the
+  // middle — the second must auto-snap into a parallel double-track beside the first.
+  if (location.search.includes('doubletrack')) {
+    const ss = network.stations;
+    let best: GStation[] | null = null;
+    let bestScore = 1e9;
+    for (let i = 0; i < ss.length; i++)
+      for (let j = i + 1; j < ss.length; j++) {
+        const d = ss[i].pos.distanceTo(ss[j].pos);
+        if (d < 180 || d > 380) continue;
+        const relief = Math.abs(ss[i].pos.y - ss[j].pos.y); // flattest pair reads clearest
+        if (relief < bestScore) { bestScore = relief; best = [ss[i], ss[j]]; }
+      }
+    if (best) {
+      network.buildStationAt(best[0]);
+      network.buildStationAt(best[1]);
+      network.buildLine([best[0].pos, best[1].pos], [best[0], best[1]], selectedLoco); // track 1
+      network.buildLine([best[0].pos, best[1].pos], [best[0], best[1]], selectedLoco); // track 2 → offset
+      const ln = network.lines[network.lines.length - 1];
+      const mid = ln.track.curve.getPointAt(0.5);
+      rig.controls.target.copy(mid);
+      rig.camera.position.set(mid.x + 18, mid.y + 22, mid.z + 18);
+    }
+  }
+
   if (import.meta.env.DEV) {
     (window as unknown as { __ie: unknown }).__ie = { scene, rig, renderer, field, terrain, water, scatter, network, builder, inspector, minimap, picker };
   }
