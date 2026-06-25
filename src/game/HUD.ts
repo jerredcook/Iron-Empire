@@ -478,10 +478,12 @@ export class HUD {
     this.helpOverlay.setAttribute('data-helpoverlay', '');
     this.root.append(this.helpOverlay);
 
+    // World-anchored overlays (city plates, floating money) belong UNDER the UI chrome, so a
+    // city name never bleeds over the left panel. Prepended → painted before the panels.
     this.labelLayer = el('div', { position: 'absolute', inset: '0' });
-    this.root.append(this.labelLayer);
     this.popLayer = el('div', { position: 'absolute', inset: '0', overflow: 'hidden' }) as HTMLDivElement;
-    this.root.append(this.popLayer);
+    this.root.prepend(this.popLayer);
+    this.root.prepend(this.labelLayer);
 
     // Win/lose overlay — hidden until the objective resolves.
     this.overlay = el('div', {

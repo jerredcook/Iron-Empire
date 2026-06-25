@@ -287,14 +287,19 @@ async function boot(cfg: BootCfg): Promise<void> {
   // close + side-on — a repeatable way to eyeball terrain grading in a headless screenshot.
   if (location.search.includes('trackshot')) {
     const ss = network.stations;
+    const wantWater = location.search.includes('water');
     let best: GStation[] | null = null;
-    let bestRelief = 0;
+    let bestScore = -1;
     for (let i = 0; i < ss.length; i++)
       for (let j = i + 1; j < ss.length; j++) {
         const d = ss[i].pos.distanceTo(ss[j].pos);
         if (d < 160 || d > 560) continue;
-        const relief = Math.abs(ss[i].pos.y - ss[j].pos.y);
-        if (relief > bestRelief) { bestRelief = relief; best = [ss[i], ss[j]]; }
+        // Default: the steepest pair (most cut/fill). ?water: a pair whose midpoint is over a
+        // lake, to confirm the line bridges water instead of filling it.
+        const mx = (ss[i].pos.x + ss[j].pos.x) / 2, mz = (ss[i].pos.z + ss[j].pos.z) / 2;
+        const midH = field.height(mx, mz);
+        const score = wantWater ? (field.params.seaLevel - midH) : Math.abs(ss[i].pos.y - ss[j].pos.y);
+        if (score > bestScore) { bestScore = score; best = [ss[i], ss[j]]; }
       }
     if (best) {
       const natural = best.map((s) => s.pos.clone());
@@ -331,7 +336,8 @@ async function boot(cfg: BootCfg): Promise<void> {
   const buildEl = document.createElement('div');
   buildEl.textContent = `build ${__BUILD_ID__}`;
   buildEl.style.cssText =
-    'position:fixed;top:4px;right:10px;z-index:60;font:10px -apple-system,Segoe UI,sans-serif;color:rgba(255,255,255,0.5);pointer-events:none';
+    'position:fixed;top:6px;right:10px;z-index:60;font:10px/1.4 ui-monospace,Menlo,monospace;color:#cfe8ff;' +
+    'background:rgba(12,16,22,0.66);padding:2px 7px;border-radius:5px;pointer-events:none';
   document.body.append(buildEl);
 
   // Dev diagnostics element (read by a headless verification run via ?diag).

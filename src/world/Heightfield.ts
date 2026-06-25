@@ -137,9 +137,11 @@ export class Heightfield {
       const t = 1 - smooth(p.inner, p.outer, d);
       h = lerp(h, Math.max(p.h, this.params.seaLevel + 4), t);
     }
-    // Track roadbeds cut and fill the land to meet the rails.
+    // Track roadbeds cut and fill the land to meet the rails — but never over water, where the
+    // line is carried on a trestle/bridge, not a causeway dumped into the lake.
+    const overWater = h < this.params.seaLevel;
     for (const c of this.corridors) {
-      if (x < c.minX || x > c.maxX || z < c.minZ || z > c.maxZ) continue;
+      if (overWater || x < c.minX || x > c.maxX || z < c.minZ || z > c.maxZ) continue;
       // Nearest point on the centreline polyline, with the bed height interpolated there.
       let best = Infinity;
       let bedY = 0;
