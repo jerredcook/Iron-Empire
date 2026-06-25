@@ -326,6 +326,14 @@ async function boot(cfg: BootCfg): Promise<void> {
     (window as unknown as { __ie: unknown }).__ie = { scene, rig, renderer, field, terrain, water, scatter, network, builder, inspector, minimap, picker };
   }
 
+  // Always-on build stamp so it's obvious which version is loaded (kills "I don't see changes"
+  // cache confusion — compare this to the latest commit).
+  const buildEl = document.createElement('div');
+  buildEl.textContent = `build ${__BUILD_ID__}`;
+  buildEl.style.cssText =
+    'position:fixed;top:4px;right:10px;z-index:60;font:10px -apple-system,Segoe UI,sans-serif;color:rgba(255,255,255,0.5);pointer-events:none';
+  document.body.append(buildEl);
+
   // Dev diagnostics element (read by a headless verification run via ?diag).
   const diagEl = location.search.includes('diag') ? document.createElement('pre') : null;
   if (diagEl) {
