@@ -437,6 +437,9 @@ export class Train {
     for (let i = 0; i < this.cars.length; i++) {
       const back = this.dist - this.dir * (10.5 + i * 6.2);
       this.placeBody(THREE.MathUtils.clamp(back, 0, len), this.dir, this.cars[i].group, -0.78);
+      // Show the load: heap/stack/lit windows ease toward how full this car is.
+      const cap = carCapacity(this.consist[i].kind);
+      this.cars[i].setLoad(cap > 0 ? this.consist[i].amount / cap : 0);
     }
 
     this.loco.group.updateMatrixWorld();

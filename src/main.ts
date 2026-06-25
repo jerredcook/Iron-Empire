@@ -439,6 +439,20 @@ async function boot(cfg: BootCfg): Promise<void> {
     }
   }
 
+  // Dev visual-check (?trainshot): freeze the sim and frame a LOADED train close-up to confirm
+  // the cars show their cargo (heaped hopper, stacked flat, lit coach windows).
+  if (location.search.includes('trainshot')) {
+    applySpeed(0); // freeze so the train stays in frame during the screenshot render
+    let tr: typeof network.player.lines[number]['trains'][number] | null = null;
+    for (const l of network.player.lines) for (const t of l.trains) if (t.cargoTotal() > 4) { tr = tr ?? t; }
+    tr = tr ?? network.player.lines[0]?.trains[0] ?? null;
+    if (tr) {
+      const p = tr.headPosition.clone();
+      rig.controls.target.set(p.x, p.y, p.z);
+      rig.camera.position.set(p.x + 12, p.y + 22, p.z + 12);
+    }
+  }
+
   // Headless UI test: drive the real consist modal DOM for both the add-train and
   // build-line paths, then report what actually happened in the model.
   if (location.search.includes('uitest')) {

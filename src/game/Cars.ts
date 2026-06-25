@@ -12,16 +12,20 @@ import { CarType } from './Cargo';
 export interface FreightCar {
   group: THREE.Group;
   setLivery(color: number | null): void;
-  /** Free this car's unique body material (its geometry is freed by Train.dispose). */
+  /** Show how full the car is (0..1): a heap in the hopper, a stack on the flat, lit windows in
+   *  the coach. Eased internally so a load fills in and empties out smoothly. */
+  setLoad(fraction: number): void;
+  /** Free this car's unique materials (its geometry is freed by Train.dispose). */
   dispose(): void;
 }
+
+const clamp01 = (x: number): number => (x < 0 ? 0 : x > 1 ? 1 : x);
 
 // Shared, app-lifetime materials — never disposed per car (only per-car body is unique).
 const FRAME = new THREE.MeshStandardMaterial({ color: 0x2a2622, metalness: 0.6, roughness: 0.5 });
 const WHEEL = new THREE.MeshStandardMaterial({ color: 0x14161a, metalness: 0.7, roughness: 0.4 });
 const ROOF = new THREE.MeshStandardMaterial({ color: 0x3b3631, metalness: 0.2, roughness: 0.8 });
 const SLAT = new THREE.MeshStandardMaterial({ color: 0x6e5a3e, metalness: 0.1, roughness: 0.85 });
-const GLASS = new THREE.MeshStandardMaterial({ color: 0x1c2630, metalness: 0.3, roughness: 0.3 });
 const EMPTY = 0x6b6660;
 
 function addUnderframe(g: THREE.Group, halfBase = 0.92): void {
@@ -41,7 +45,12 @@ function addUnderframe(g: THREE.Group, halfBase = 0.92): void {
   }
 }
 
-function finish(g: THREE.Group, body: THREE.MeshStandardMaterial): FreightCar {
+function finish(
+  g: THREE.Group,
+  body: THREE.MeshStandardMaterial,
+  setLoad: (fraction: number) => void = () => {},
+  extraMats: THREE.Material[] = []
+): FreightCar {
   g.traverse((o) => {
     if ((o as THREE.Mesh).isMesh) {
       o.castShadow = true;
@@ -53,9 +62,21 @@ function finish(g: THREE.Group, body: THREE.MeshStandardMaterial): FreightCar {
     setLivery(color: number | null) {
       body.color.setHex(color ?? EMPTY);
     },
+    setLoad,
     dispose() {
       body.dispose();
+      for (const m of extraMats) m.dispose();
     },
+  };
+}
+
+/** A load visual that eases toward its target each call (so it fills/empties smoothly). */
+function eased(apply: (shown: number) => void): (target: number) => void {
+  let shown = 0;
+  apply(0);
+  return (target: number) => {
+    shown += (clamp01(target) - shown) * 0.12;
+    apply(shown);
   };
 }
 
@@ -101,7 +122,19 @@ function hopper(): FreightCar {
   const bed = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.5, 4.2), FRAME);
   bed.position.y = 1.65;
   g.add(bed);
-  return finish(g, body);
+  // Heaped bulk in the bin (the livery-coloured cargo) — grows with the load.
+  const FLOOR = 1.9, FULL = 1.25;
+  const heap = new THREE.Mesh(new THREE.BoxGeometry(1.92, FULL, 4.3), body);
+  g.add(heap);
+  return finish(
+    g,
+    body,
+    eased((s) => {
+      heap.visible = s > 0.02;
+      heap.scale.y = Math.max(0.001, s);
+      heap.position.y = FLOOR + (FULL * s) / 2;
+    })
+  );
 }
 
 /** Slatted livestock car — a boxcar frame with gapped horizontal slats and an open roof
@@ -141,9 +174,11 @@ function coach(): FreightCar {
   const box = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.1, 5.0), body);
   box.position.y = 2.45;
   g.add(box);
-  // Continuous window band down each side.
+  // Continuous window band down each side — its own material so the lights can come on with
+  // passengers aboard and fade out as the coach empties at the platform.
+  const windows = new THREE.MeshStandardMaterial({ color: 0x1c2630, emissive: 0xffdf9e, emissiveIntensity: 0, metalness: 0.3, roughness: 0.3 });
   for (const sx of [-1, 1]) {
-    const band = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.62, 4.2), GLASS);
+    const band = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.62, 4.2), windows);
     band.position.set(sx * 1.12, 2.7, 0);
     g.add(band);
   }
@@ -154,7 +189,12 @@ function coach(): FreightCar {
   const clerestory = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.26, 4.4), ROOF);
   clerestory.position.y = 3.74;
   g.add(clerestory);
-  return finish(g, body);
+  return finish(
+    g,
+    body,
+    eased((s) => { windows.emissiveIntensity = s * 2.4; }), // lights brighten with passengers
+    [windows]
+  );
 }
 
 /** Low flatcar carrying a stacked load (the livery-coloured cargo) — lumber, steel. */
@@ -165,11 +205,14 @@ function flat(): FreightCar {
   const deck = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.2, 5.0), FRAME);
   deck.position.y = 1.5;
   g.add(deck);
-  // Two stacked rows of the load, banded by stakes.
+  // Two stacked rows of the load (the livery-coloured cargo), banded by stakes — the rows
+  // appear as the flat is loaded and clear off when it's emptied, so a bare deck reads "empty".
+  const rows: THREE.Mesh[] = [];
   for (let row = 0; row < 2; row++) {
     const load = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.55, 4.4), body);
     load.position.y = 1.95 + row * 0.6;
     g.add(load);
+    rows.push(load);
   }
   for (const sx of [-1, 1]) {
     for (const z of [-1.6, 0, 1.6]) {
@@ -178,7 +221,14 @@ function flat(): FreightCar {
       g.add(stake);
     }
   }
-  return finish(g, body);
+  return finish(
+    g,
+    body,
+    eased((s) => {
+      rows[0].visible = s > 0.06;
+      rows[1].visible = s > 0.5; // second tier only when more than half loaded
+    })
+  );
 }
 
 const BUILDERS: Record<CarType, () => FreightCar> = {
