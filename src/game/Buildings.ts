@@ -294,12 +294,13 @@ export function buildFactory(): THREE.Group {
 
 /** A small town: houses on a jittered ring (minR..maxR) facing the centre. Growth
  *  appends fresh outer rings by calling again with larger radii. */
-export function buildTown(seed: number, count: number, minR = 13, maxR = 47): THREE.Group {
+export function buildTown(seed: number, count: number, minR = 13, maxR = 47, avoid?: (x: number, z: number) => boolean): THREE.Group {
   const rng = mulberry32(seed);
   const g = new THREE.Group();
   const taken: { x: number; z: number; r: number }[] = [];
   let placed = 0;
-  for (let attempt = 0; attempt < count * 30 && placed < count; attempt++) {
+  // More attempts when avoiding a corridor, so the same house count still finds clear ground.
+  for (let attempt = 0; attempt < count * (avoid ? 60 : 30) && placed < count; attempt++) {
     const ang = rng() * Math.PI * 2;
     const rad = minR + rng() * (maxR - minR);
     const x = Math.cos(ang) * rad;
@@ -307,6 +308,7 @@ export function buildTown(seed: number, count: number, minR = 13, maxR = 47): TH
     const w = 5 + rng() * 4;
     const d = 6 + rng() * 4;
     const r = Math.hypot(w, d) * 0.62; // footprint clearance incl. eaves
+    if (avoid && avoid(x, z)) continue; // keep houses off the rails — they relocate clear
     if (taken.some((t) => Math.hypot(t.x - x, t.z - z) < t.r + r + 1.2)) continue;
     taken.push({ x, z, r });
     const house = buildHouse({

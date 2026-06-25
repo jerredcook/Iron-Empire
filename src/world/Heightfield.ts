@@ -94,6 +94,25 @@ export class Heightfield {
     return 6 + CORRIDOR_MAX_SLOPE;
   }
 
+  /** Is (x,z) within `dist` of any laid track corridor? Used to keep town houses off the rails. */
+  nearCorridor(x: number, z: number, dist: number): boolean {
+    const d2 = dist * dist;
+    for (const c of this.corridors) {
+      if (x < c.minX || x > c.maxX || z < c.minZ || z > c.maxZ) continue;
+      const m = c.xs.length;
+      for (let i = 0; i < m - 1; i++) {
+        const ax = c.xs[i], az = c.zs[i];
+        const dx = c.xs[i + 1] - ax, dz = c.zs[i + 1] - az;
+        const len2 = dx * dx + dz * dz || 1;
+        let s = ((x - ax) * dx + (z - az) * dz) / len2;
+        s = s < 0 ? 0 : s > 1 ? 1 : s;
+        const ex = x - (ax + s * dx), ez = z - (az + s * dz);
+        if (ex * ex + ez * ez < d2) return true;
+      }
+    }
+    return false;
+  }
+
   private rawHeight(x: number, z: number): number {
     const { size, seaLevel } = this.params;
     const f = 1.15 / size; // base feature frequency tied to world size

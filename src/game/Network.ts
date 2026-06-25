@@ -20,6 +20,16 @@ const INDUSTRY_ROYALTY = 9; // $/unit the industry's owner earns on shipped outp
 const STATION_BONUS = 0.18; // extra haul revenue per depot upgrade level
 const STATION_COST = 70_000; // price to build a depot at a city
 const DOUBLE_TRACK_GAP = 9; // lateral spacing when a line is laid alongside one it duplicates
+const TOWN_CLEAR = 15; // keep town houses this far off the rails (they relocate clear)
+
+/** Distance from point p to segment a→b in the XZ plane. */
+function pointSegDist(p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): number {
+  const dx = b.x - a.x, dz = b.z - a.z;
+  const len2 = dx * dx + dz * dz || 1;
+  let s = ((p.x - a.x) * dx + (p.z - a.z) * dz) / len2;
+  s = s < 0 ? 0 : s > 1 ? 1 : s;
+  return Math.hypot(p.x - (a.x + s * dx), p.z - (a.z + s * dz));
+}
 const CATCHMENT_RADIUS = 380; // a depot gathers cargo from towns within this range
 const MAX_STATION_LEVEL = 3;
 const SERVE_FULL = 55; // banked service that yields full prosperity
@@ -129,6 +139,8 @@ export interface GStation {
   /** Every company's own depot at this city — each railroad builds and uses its own; a line
    *  can only stop here if its owner has one. Industries, catchment + stock are city-shared. */
   depots: Map<Company, GDepot>;
+  /** Holds the town's house-ring meshes; rebuilt to keep houses off freshly-laid track. */
+  townGroup: THREE.Group;
   /** Nearby depot-less cities this station gathers cargo from (its catchment). */
   catchment: GStation[];
   /** Maintenance buildings bought at this depot (roundhouse, warehouse, …). */
@@ -691,18 +703,55 @@ export class Network {
       revenue: 0,
       hasStation: false,
       depots: new Map(),
+      townGroup: new THREE.Group(),
       catchment: [],
       buildings: new Set(),
       stage: site.archetype.size,
     };
     this.stations.push(st);
 
-    // The town exists from the start; the depot is built (and paid for) by a railroad.
-    const town = buildTown(this.seed + st.id * 131, site.archetype.houses);
-    town.position.copy(pos);
-    this.scene.add(town);
+    // The town exists from the start; the depot is built (and paid for) by a railroad. The
+    // house rings live in townGroup so they can be rebuilt clear of track laid later.
+    st.townGroup.position.copy(pos);
+    this.scene.add(st.townGroup);
+    this.rebuildTown(st);
 
     return st;
+  }
+
+  /** (Re)build a town's house rings, relocating any house off freshly-laid track. Deterministic
+   *  per seed+id+tier, so it reproduces the same town minus what the rails now occupy. */
+  private rebuildTown(st: GStation): void {
+    for (const child of [...st.townGroup.children]) {
+      st.townGroup.remove(child);
+      child.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose();
+      });
+    }
+    const base = this.seed + st.id * 131;
+    const avoid = (lx: number, lz: number): boolean => this.field.nearCorridor(st.pos.x + lx, st.pos.z + lz, TOWN_CLEAR);
+    st.townGroup.add(buildTown(base, st.archetype.houses, 13, 47, avoid));
+    for (let t = 0; t < st.tier; t++) {
+      st.townGroup.add(buildTown(base + (t + 1) * 7919, 5 + t, 50 + t * 16, 64 + t * 16, avoid));
+    }
+  }
+
+  /** Outer reach of a town's houses (for deciding which towns a new line disturbs). */
+  private townRadius(st: GStation): number {
+    return st.tier > 0 ? 64 + (st.tier - 1) * 16 : 47;
+  }
+
+  /** A line was laid — shoulder the houses of every town it passes off the new rails. */
+  private clearTownsForCorridor(waypoints: THREE.Vector3[]): void {
+    for (const st of this.stations) {
+      let near = false;
+      const reach = this.townRadius(st) + TOWN_CLEAR;
+      for (let i = 0; i < waypoints.length - 1 && !near; i++) {
+        near = pointSegDist(st.pos, waypoints[i], waypoints[i + 1]) < reach;
+      }
+      if (near) this.rebuildTown(st);
+    }
   }
 
   /** What it costs to put a depot at a city — required before a route can stop there. */
@@ -1186,7 +1235,10 @@ export class Network {
     const line: GLine = { stops, track, stopFracs, trains: [], owner, value, waypoints, through, earned: 0, trips: 0, bornClock: this.clock, blockedUntil: 0 };
     this.lines.push(line);
     owner.lines.push(line);
-    if (!through) this.onTrackBuilt?.(waypoints); // grade terrain + clear scatter to the new bed
+    if (!through) {
+      this.clearTownsForCorridor(waypoints); // shoulder town houses off the new rails
+      this.onTrackBuilt?.(waypoints); // grade terrain + clear scatter to the new bed
+    }
     for (const t of trains) this.spawnTrain(line, t.loco, t.cars);
     return line;
   }
@@ -1573,13 +1625,12 @@ export class Network {
    *  up the settlement ladder — each new stage brings new appetites. `announce` posts a
    *  headline for the notable milestones (suppressed when re-growing a loaded save). */
   private maybeGrowCity(s: GStation, announce = false): void {
+    let grew = false;
     while (s.tier < GROWTH_TIERS.length && s.growth >= GROWTH_TIERS[s.tier]) {
-      const t = s.tier;
-      const ring = buildTown(this.seed + s.id * 131 + (t + 1) * 7919, 5 + t, 50 + t * 16, 64 + t * 16);
-      ring.position.copy(s.pos);
-      this.scene.add(ring);
       s.tier++;
+      grew = true;
     }
+    if (grew) this.rebuildTown(s); // re-lay all rings (the new outer one included), off the rails
     const target = Math.min(STAGES.length - 1, s.archetype.size + s.tier);
     while (s.stage < target) {
       s.stage += 1;

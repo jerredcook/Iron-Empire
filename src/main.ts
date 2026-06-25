@@ -327,6 +327,16 @@ async function boot(cfg: BootCfg): Promise<void> {
     }
   }
 
+  // Dev visual-check (?townshot): frame a city the starter line runs through, from above, to
+  // confirm its houses relocated clear of the rails.
+  if (location.search.includes('townshot')) {
+    const city = network.player.lines[0]?.stops[0];
+    if (city) {
+      rig.controls.target.copy(city.pos);
+      rig.camera.position.set(city.pos.x + 55, city.pos.y + 70, city.pos.z + 55);
+    }
+  }
+
   // Dev visual-check (?doubletrack): build two lines over the same flat-ish pair and frame the
   // middle — the second must auto-snap into a parallel double-track beside the first.
   if (location.search.includes('doubletrack')) {
