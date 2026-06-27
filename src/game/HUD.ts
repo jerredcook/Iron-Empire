@@ -314,10 +314,10 @@ export class HUD {
     this.banner.append(this.bannerText, bannerBtns);
     this.root.append(this.banner);
 
-    // News toast — economic events scroll across just under the build banner.
+    // News toast — economic events appear clear below the build banner (so the two never overlap).
     this.newsEl = el('div', {
       position: 'absolute',
-      top: '54px',
+      top: '112px',
       left: '50%',
       transform: 'translateX(-50%)',
       padding: '8px 16px',
@@ -411,13 +411,14 @@ export class HUD {
     });
     this.root.append(this.roster);
 
-    // Bottom-centre controls hint — click it (or the ❓) to open the full how-to-play card.
+    // Bottom-centre controls hint — sits ABOVE the speed bar (never over it). Click it (or the
+    // ❓) to open the full how-to-play card.
     const help = el('div', {
       position: 'absolute',
-      bottom: '14px',
+      bottom: '58px',
       left: '50%',
       transform: 'translateX(-50%)',
-      padding: '8px 12px',
+      padding: '6px 12px',
       background: 'rgba(18,22,28,0.5)',
       borderRadius: '8px',
       fontSize: '11.5px',
@@ -425,9 +426,10 @@ export class HUD {
       textAlign: 'center',
       pointerEvents: 'auto',
       cursor: 'pointer',
+      whiteSpace: 'nowrap',
     });
     help.innerHTML =
-      'WASD/drag pan · Q/E rotate · R/F zoom · two-finger zoom · Home reset<br>Space pause · B build track · Esc cancel · <b style="color:#bfe0ff">❓ How to play</b>';
+      'WASD/drag pan · Q/E rotate · R/F zoom · Home reset · B build track · Esc cancel · <b style="color:#bfe0ff">❓ How to play</b>';
     help.onclick = () => this.showHelp();
     this.root.append(help);
 
@@ -461,6 +463,7 @@ export class HUD {
         ['🚉', '<b>Step 1 — Stations.</b> Click a city, then <b>Build Station — $70k</b> in its panel. Trains only stop where you’ve built a station, so do this at each city you want to serve.'],
         ['🛤', '<b>Step 2 — Track.</b> Click <b>Build Track</b> (or <b>B</b>), then <b>press a city and drag to the next</b> — a ghost rail line follows and the target town lights up when it’s in range. Release to lay it, chain on more, then <b>✓ Finish</b> (right-click undoes a point).'],
         ['🚂', '<b>Step 3 — Start a train.</b> Select the line and press <b>🚂 Start a train</b> (it runs the moment two of its cities have stations). Each city <b>wants</b> certain cargo (the ringed dots) — carry what it wants from where it’s made; long hauls of fresh freight pay most.'],
+        ['⠿', '<b>Double track.</b> A busy route bottlenecking on one line? Lay a <b>second line between the same two cities</b> — it snaps in <b>alongside</b> the first as a parallel track, so a second train runs it without ever waiting on the first.'],
         ['🎥', '<b>Getting around</b> — <b>WASD</b> or drag to pan, <b>Q/E</b> rotate, <b>R/F</b> (or two-finger scroll) zoom, <b>Home</b> resets the view.'],
         ['📋', '<b>Contracts</b> — accept time-limited haul jobs for a premium reward (the Contracts button, top-left).'],
         ['🔍', '<b>Inspect</b> — click a train, a length of track, or a city for details. The fleet list (bottom-right) jumps the camera to any train.'],

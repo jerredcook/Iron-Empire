@@ -1181,6 +1181,7 @@ export class Network {
     // Lay a line that duplicates a corridor this railroad already runs ALONGSIDE the first as a
     // clean parallel double-track, instead of overlapping (and blocking) it.
     const route = this.parallelOffset(owner, stops, waypoints);
+    const isDouble = route !== waypoints; // parallelOffset shifted it → laid alongside an existing line
     // A train only runs (and is only paid for) when this owner has its OWN depot at 2+ stops.
     const runnable = stops.length >= 2 && !!loco && stops.filter((s) => s.depots.has(owner)).length >= 2;
     const cost = this.routeCost(route) + (runnable ? loco!.cost : 0);
@@ -1215,6 +1216,9 @@ export class Network {
       this.pushDelivery(`First link: ${stops[0].name} ↔ ${stops[stops.length - 1].name}`, bonus);
     }
     if (owner === this.player) this.onBuilt?.();
+    if (isDouble && owner === this.player) {
+      this.onNews?.(`Double track — a second line now runs alongside ${stops[0].name} ↔ ${stops[stops.length - 1].name}. Start a train on it.`, true, stops[0].pos);
+    }
     return true;
   }
 
