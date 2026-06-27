@@ -463,7 +463,7 @@ export class HUD {
         ['🚉', '<b>Step 1 — Stations.</b> Click a city, then <b>Build Station — $70k</b> in its panel. Trains only stop where you’ve built a station, so do this at each city you want to serve.'],
         ['🛤', '<b>Step 2 — Track.</b> Click <b>Build Track</b> (or <b>B</b>), then <b>press a city and drag to the next</b> — a ghost rail line follows and the target town lights up when it’s in range. Release to lay it, chain on more, then <b>✓ Finish</b> (right-click undoes a point).'],
         ['🚂', '<b>Step 3 — Start a train.</b> Select the line and press <b>🚂 Start a train</b> (it runs the moment two of its cities have stations). Each city <b>wants</b> certain cargo (the ringed dots) — carry what it wants from where it’s made; long hauls of fresh freight pay most.'],
-        ['⠿', '<b>Double track.</b> A busy route bottlenecking on one line? Lay a <b>second line between the same two cities</b> — it snaps in <b>alongside</b> the first as a parallel track, so a second train runs it without ever waiting on the first.'],
+        ['🌐', '<b>Build outward.</b> Every new line must <b>start from a city you already serve</b> and reach somewhere new — your network always stays connected. A station can host up to <b>4 lines</b>, each heading wherever you like.'],
         ['🎥', '<b>Getting around</b> — <b>WASD</b> or drag to pan, <b>Q/E</b> rotate, <b>R/F</b> (or two-finger scroll) zoom, <b>Home</b> resets the view.'],
         ['📋', '<b>Contracts</b> — accept time-limited haul jobs for a premium reward (the Contracts button, top-left).'],
         ['🔍', '<b>Inspect</b> — click a train, a length of track, or a city for details. The fleet list (bottom-right) jumps the camera to any train.'],

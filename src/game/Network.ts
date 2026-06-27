@@ -1108,6 +1108,57 @@ export class Network {
     return this.lines.some((l) => l.stops.includes(a) && l.stops.includes(b));
   }
 
+  /** Is this city part of the company's connected network (a depot here, or a stop it serves)? */
+  inNetwork(company: Company, city: GStation): boolean {
+    return city.depots.has(company) || company.lines.some((l) => l.stops.includes(city));
+  }
+
+  /** How many of the company's real routes (2+ stops) already stop at this city. */
+  lineCountAt(company: Company, city: GStation): number {
+    return company.lines.filter((l) => l.stops.length >= 2 && l.stops.includes(city)).length;
+  }
+
+  /** Most lines one station may host. */
+  readonly maxLinesPerStation = 4;
+
+  /** Why this company can't lay a line over these stops, or null if it's allowed. Enforces the
+   *  two network rules: build OUT from your own network (no floating track), ≤4 lines a station. */
+  lineBuildIssue(company: Company, stops: GStation[]): string | null {
+    const unique = stops.filter((s, i) => stops.indexOf(s) === i);
+    // Connected: once you have any track or station, a new line must touch a city you serve.
+    const hasNetwork = company.lines.length > 0 || this.stations.some((s) => s.depots.has(company));
+    if (hasNetwork && stops.length >= 1 && !stops.some((s) => this.inNetwork(company, s))) {
+      return 'New track must connect to your network — start it from a city you already serve.';
+    }
+    for (const s of unique) {
+      if (this.lineCountAt(company, s) >= this.maxLinesPerStation) {
+        return `${s.name} already has ${this.maxLinesPerStation} lines — the most a station can take.`;
+      }
+    }
+    return null;
+  }
+
+  /** Spawn a company's home: a maxed-out station at a city plus a short stub of track to grow
+   *  out from — free (the starting setup). No train yet; the network is built from here. */
+  seedStarter(company: Company, city: GStation): void {
+    const money = company.money;
+    this.placeDepot(city, company);
+    city.level = 3; // fully upgraded (depot level is city-shared)
+    // A short stub of rail off the station, aimed at the nearest neighbour but stopping short.
+    let near: GStation | null = null;
+    let best = Infinity;
+    for (const o of this.stations) {
+      if (o === city) continue;
+      const d = o.pos.distanceToSquared(city.pos);
+      if (d < best) { best = d; near = o; }
+    }
+    const dir = near ? near.pos.clone().sub(city.pos).setY(0).normalize() : new THREE.Vector3(1, 0, 0);
+    const end = city.pos.clone().addScaledVector(dir, 40);
+    end.y = this.field.height(end.x, end.z);
+    this.buildLineFor(company, [city.pos.clone(), end], [city]); // 1-stop stub: track only
+    company.money = money; // the home setup is on the house
+  }
+
   /** Grading cost of a route through the given ground waypoints (track only). */
   routeCost(points: THREE.Vector3[]): number {
     let len = 0;
@@ -1180,8 +1231,9 @@ export class Network {
     if (waypoints.length < 2) return false;
     // Lay a line that duplicates a corridor this railroad already runs ALONGSIDE the first as a
     // clean parallel double-track, instead of overlapping (and blocking) it.
+    // A duplicate corridor is silently shouldered aside so two lines never overlap-and-jam — but
+    // it's not advertised: the point of a new line is to reach a NEW place, not parallel an old one.
     const route = this.parallelOffset(owner, stops, waypoints);
-    const isDouble = route !== waypoints; // parallelOffset shifted it → laid alongside an existing line
     // A train only runs (and is only paid for) when this owner has its OWN depot at 2+ stops.
     const runnable = stops.length >= 2 && !!loco && stops.filter((s) => s.depots.has(owner)).length >= 2;
     const cost = this.routeCost(route) + (runnable ? loco!.cost : 0);
@@ -1216,9 +1268,6 @@ export class Network {
       this.pushDelivery(`First link: ${stops[0].name} ↔ ${stops[stops.length - 1].name}`, bonus);
     }
     if (owner === this.player) this.onBuilt?.();
-    if (isDouble && owner === this.player) {
-      this.onNews?.(`Double track — a second line now runs alongside ${stops[0].name} ↔ ${stops[stops.length - 1].name}. Start a train on it.`, true, stops[0].pos);
-    }
     return true;
   }
 
@@ -2048,6 +2097,9 @@ export class Network {
     const lineCap = Math.min(10, 3 + Math.floor(Math.max(0, c.netWorth) / 1_500_000));
     if (c.lines.length >= lineCap) return false;
     const loco = defaultLoco(this.year);
+    // Build OUT from its own network, just like the player — once it has any track, a new line
+    // must touch a city it already serves (its first line bootstraps the network from anywhere).
+    const rooted = c.lines.length > 0;
     let best: { a: GStation; b: GStation; cost: number } | null = null;
     for (let i = 0; i < this.stations.length; i++) {
       for (let j = i + 1; j < this.stations.length; j++) {
@@ -2055,6 +2107,8 @@ export class Network {
         const b = this.stations[j];
         if (c.connects(a, b)) continue;
         if (!this.offersOf(a).some((k) => b.demands.has(k)) && !this.offersOf(b).some((k) => a.demands.has(k))) continue;
+        if (rooted && !this.inNetwork(c, a) && !this.inNetwork(c, b)) continue; // stay connected
+        if (this.lineCountAt(c, a) >= this.maxLinesPerStation || this.lineCountAt(c, b) >= this.maxLinesPerStation) continue;
         // It must build its OWN depot at any endpoint it doesn't already serve — a rival's
         // depot is no use to it.
         const depots = (a.depots.has(c) ? 0 : STATION_COST) + (b.depots.has(c) ? 0 : STATION_COST);

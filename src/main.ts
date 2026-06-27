@@ -144,6 +144,13 @@ async function boot(cfg: BootCfg): Promise<void> {
   builder.onCommit = (nodes) => {
     const waypoints = nodes.map((n) => n.pos);
     const stops = nodes.filter((n) => n.station).map((n) => n.station!);
+    // Network rules: a new line must connect to track you already own, and no station may host
+    // more than 4 lines. Reject (without spending) and say why.
+    const issue = network.lineBuildIssue(network.player, stops);
+    if (issue) {
+      hud.news(issue, false);
+      return;
+    }
     // Lay TRACK ONLY — never auto-start a train. The player adds trains deliberately from the
     // line's panel ("🚂 Start a train"), so a line never sprouts a train it didn't ask for.
     network.buildLine(waypoints, stops); // onTrackBuilt grades the terrain + clears the corridor
@@ -264,23 +271,52 @@ async function boot(cfg: BootCfg): Promise<void> {
     rig.resize();
   });
 
+  let startHome: (typeof network.stations)[number] | undefined;
   if (cfg.load) {
     // Restore the saved game over this freshly generated (same-seed) world.
     network.loadFromStorage();
   } else if (cfg.seedStarter) {
-    // Tests only: seed one productive line so the world opens in motion. Real play starts
-    // empty — you lay your own first track + train.
+    // Tests only: seed one productive line so the world opens in motion.
     const pair = starterPair(network);
     if (pair) {
       network.buildStationAt(pair[0]);
       network.buildStationAt(pair[1]);
       network.buildLine([pair[0].pos, pair[1].pos], [pair[0], pair[1]], selectedLoco);
     }
+  } else {
+    // Real play: each railroad starts at its OWN random city with a fully-upgraded station and a
+    // short stub of track — you build your network out from there. Spread the homes apart.
+    const cities = network.stations.filter((s) => !s.recipe || s.archetype.size >= 1); // any real town
+    const pool = cities.length >= 4 ? cities : network.stations;
+    const picked: typeof network.stations = [];
+    for (const co of [network.player, ...network.rivals]) {
+      let choice = pool[Math.floor(Math.random() * pool.length)];
+      if (picked.length) {
+        // Farthest-from-everyone-so-far, sampled, so homes don't crowd together.
+        let bestD = -1;
+        for (let k = 0; k < 12; k++) {
+          const c = pool[Math.floor(Math.random() * pool.length)];
+          if (picked.includes(c)) continue;
+          const d = Math.min(...picked.map((p) => p.pos.distanceToSquared(c.pos)));
+          if (d > bestD) { bestD = d; choice = c; }
+        }
+      }
+      if (!picked.includes(choice)) {
+        picked.push(choice);
+        network.seedStarter(co, choice);
+      }
+    }
+    startHome = picked[0];
   }
 
-  // Open on a high three-quarter overview so several cities are in frame.
+  // Open on a high three-quarter overview so several cities are in frame…
   rig.controls.target.set(0, 20, 0);
   rig.camera.position.set(-620, 640, 820);
+  // …but in real play, open looking at YOUR home station so you know where you start.
+  if (startHome) {
+    rig.controls.target.copy(startHome.pos);
+    rig.camera.position.set(startHome.pos.x - 90, startHome.pos.y + 130, startHome.pos.z + 150);
+  }
 
   // Dev visual-check (?trackshot, never in normal play): build a line across the steepest city
   // pair, then frame the spot where the bed departs most from the land (the biggest cut or fill)
@@ -601,8 +637,8 @@ async function boot(cfg: BootCfg): Promise<void> {
   loop();
   document.getElementById('loading')?.classList.add('hidden');
 
-  // First-time players get the how-to-play card once (skipped for headless test runs).
-  if (!location.search.includes('autostart')) {
+  // First-time players get the how-to-play card once (skipped for headless test + screenshot runs).
+  if (!location.search.includes('autostart') && !location.search.includes('playstart')) {
     try {
       if (!localStorage.getItem('ie.helpSeen')) {
         hud.showHelp();
@@ -1436,27 +1472,27 @@ function runUiTest(
   {
     network.status = 'playing';
     network.player.money = 5_000_000;
-    // Earlier tests have given most cities depots, so deliberately strip two back to bare
-    // to exercise the station-missing warning path deterministically.
+    // A line must connect to your network, so set X up as a clean network city (depot, no lines)
+    // and strip Y bare — the line X→Y is then legal but should warn that Y still needs a station.
     const x = network.stations[0];
     const y = network.stations[1];
-    network.demolishStation(x);
-    network.demolishStation(y);
+    if (x.hasStation) network.demolishStation(x);
+    network.buildStationAt(x); // X: a player depot, on the network, with no lines yet
+    if (y.hasStation) network.demolishStation(y); // Y: bare
     const newsEl = document.querySelector('[data-news]') as HTMLElement | null;
     let warnedStationless = false;
-    if (!x.hasStation && !y.hasStation && newsEl) {
+    if (x.hasStation && !y.hasStation && newsEl) {
       newsEl.textContent = '';
       builder.onCommit?.([
         { pos: x.pos, station: x },
         { pos: y.pos, station: y },
       ]);
-      driveConsistModal('goods'); // confirm the train → fires the warning
       warnedStationless = /station/i.test(newsEl.textContent ?? '');
     }
     result.buildGuidance = {
       warnedStationless,
       finishButton: !!document.querySelector('[data-finishroute]'),
-      bothBare: !x.hasStation && !y.hasStation,
+      connectedBare: x.hasStation && !y.hasStation,
     };
   }
 
@@ -1476,8 +1512,12 @@ function runUiTest(
 
     network.status = 'playing';
     network.player.money = 5_000_000;
-    const da = network.stations.find((s) => !s.hasStation);
-    const db = network.stations.filter((s) => !s.hasStation && s !== da)[0];
+    // Two cities to lay a fresh line between — clear them to bare first so this doesn't depend on
+    // how many depots earlier tests happened to leave lying around.
+    const da = network.stations[network.stations.length - 1];
+    const db = network.stations[network.stations.length - 2];
+    if (da?.hasStation) network.demolishStation(da);
+    if (db?.hasStation) network.demolishStation(db);
     let depotAligned = false;
     let besideTrack = false;
     if (da && db) {
@@ -1490,6 +1530,33 @@ function runUiTest(
       besideTrack = d > 4 && d < 26; // beside the rails — not on top of the city, not far off
     }
     result.selectionUI = { startsHidden, shown, hidden, depotAligned, besideTrack };
+  }
+
+  // HH2) Network rules: a new line must connect to track you already own, and a station can host
+  //      at most 4 lines.
+  {
+    network.status = 'playing';
+    network.player.money = 5_000_000;
+    const A = network.stations[2];
+    const B = network.stations[3];
+    const C = network.stations[4];
+    for (const s of [A, B, C]) if (s.hasStation) network.demolishStation(s);
+    network.buildStationAt(A); // A is on the player's network; B and C are not
+    result.networkRules = {
+      rejectsDisconnected: !!network.lineBuildIssue(network.player, [B, C]), // neither owned → blocked
+      allowsConnected: !network.lineBuildIssue(network.player, [A, B]), // touches A → allowed
+      capsAtFour: (() => {
+        // Fan lines out of A until it's full, then a further line off A must be refused.
+        const dests = network.stations.filter((s) => s !== A);
+        for (const d of dests) {
+          if (network.lineCountAt(network.player, A) >= 4) break;
+          if (!network.lineBuildIssue(network.player, [A, d])) network.buildLine([A.pos, d.pos], [A, d]);
+        }
+        const free = dests.find((d) => network.lineCountAt(network.player, d) < 4) ?? dests[0];
+        const issue = network.lineBuildIssue(network.player, [A, free]) ?? '';
+        return network.lineCountAt(network.player, A) >= 4 && /lines/.test(issue);
+      })(),
+    };
   }
 
   // II) Start-a-train flow (line-panel CTA, gated on depots) + keyboard navigation.
@@ -1903,8 +1970,9 @@ const FALLBACK_GOAL: Goal = networthGoal(2_500_000, 1890);
 /** Show the start menu, then boot the chosen setup — or regenerate the saved world and
  *  restore it when the player chooses Continue. */
 async function start(): Promise<void> {
-  // Headless verification: ?autostart skips the menu and boots a default game.
-  if (location.search.includes('autostart')) {
+  // Headless verification: ?autostart skips the menu and boots a default game. ?playstart does
+  // the same but takes the REAL play path (random home station + stub, no seeded running line).
+  if (location.search.includes('autostart') || location.search.includes('playstart')) {
     const s = SCENARIOS[0];
     await boot({
       seed: s.seed,
@@ -1916,7 +1984,7 @@ async function start(): Promise<void> {
       player: { name: 'Iron Empire', color: 0x8fffa8 },
       ais: [{ name: 'Atlas & Pacific', color: 0xff8a4d }],
       load: false,
-      seedStarter: true, // headless tests expect a running line from frame one
+      seedStarter: !location.search.includes('playstart'), // playstart → real-play random home
     });
     return;
   }

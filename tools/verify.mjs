@@ -241,6 +241,11 @@ async function main() {
       ui?.selectionUI
     );
     check(
+      'ui: network rules — track must connect to your own network; a station caps at 4 lines',
+      ui?.networkRules?.rejectsDisconnected && ui?.networkRules?.allowsConnected && ui?.networkRules?.capsAtFour,
+      ui?.networkRules
+    );
+    check(
       'ui: trains gate on depots, the line-panel CTA starts one, and keyboard nav (reset/rotate/zoom) works',
       ui?.startTrainAndNav?.trainGatedOffDepots &&
         ui?.startTrainAndNav?.trainRunsWithDepots &&
