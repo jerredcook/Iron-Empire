@@ -12,10 +12,18 @@ export type CargoKind =
   | 'lumber'
   | 'cattle'
   | 'iron'
-  | 'steel';
+  | 'steel'
+  // Processed + new raws — the deeper supply web.
+  | 'fish' // raw: from a fishery
+  | 'oil' // raw: from an oil well
+  | 'food' // processed: grain, meat (cattle) or fish → food
+  | 'furniture' // processed: lumber → furniture
+  | 'paper' // processed: lumber → paper (newsprint)
+  | 'cars' // processed: steel → automobiles
+  | 'weapons'; // processed: steel → arms
 
 /** The kind of rolling stock a cargo rides in — distinct silhouette and capacity. */
-export type CarType = 'boxcar' | 'hopper' | 'stock' | 'coach' | 'flat';
+export type CarType = 'boxcar' | 'hopper' | 'stock' | 'coach' | 'flat' | 'tank';
 
 /** Units a car of each type holds — bulk hoppers carry the most, stock cars the least. */
 export const CAR_CAPACITY: Record<CarType, number> = {
@@ -24,6 +32,7 @@ export const CAR_CAPACITY: Record<CarType, number> = {
   hopper: 28, // bulk: coal, ore, grain
   stock: 18, // livestock
   flat: 22, // lumber & steel
+  tank: 26, // liquids: oil
 };
 
 /** Human label for a car type — shown next to each car in the inspector. */
@@ -33,6 +42,7 @@ export const CAR_LABEL: Record<CarType, string> = {
   stock: 'Stock car',
   coach: 'Coach',
   flat: 'Flatcar',
+  tank: 'Tank car',
 };
 
 export interface CargoDef {
@@ -56,6 +66,13 @@ export const CARGO: Record<CargoKind, CargoDef> = {
   cattle: { kind: 'cattle', label: 'Cattle', color: 0xb89a7a, basePrice: 40, car: 'stock' },
   iron: { kind: 'iron', label: 'Iron Ore', color: 0x9a6b4f, basePrice: 32, car: 'hopper' },
   steel: { kind: 'steel', label: 'Steel', color: 0x7f8a99, basePrice: 78, car: 'flat' },
+  fish: { kind: 'fish', label: 'Fish', color: 0x8fb8c9, basePrice: 36, car: 'boxcar' },
+  oil: { kind: 'oil', label: 'Oil', color: 0x26221d, basePrice: 40, car: 'tank' },
+  food: { kind: 'food', label: 'Food', color: 0xe3c66a, basePrice: 74, car: 'boxcar' },
+  furniture: { kind: 'furniture', label: 'Furniture', color: 0xb5651d, basePrice: 82, car: 'boxcar' },
+  paper: { kind: 'paper', label: 'Paper', color: 0xe6e2d6, basePrice: 60, car: 'boxcar' },
+  cars: { kind: 'cars', label: 'Automobiles', color: 0x4a6fa5, basePrice: 104, car: 'flat' },
+  weapons: { kind: 'weapons', label: 'Weapons', color: 0x55602c, basePrice: 124, car: 'boxcar' },
 };
 
 export const ALL_CARGO = Object.keys(CARGO) as CargoKind[];

@@ -42,30 +42,39 @@ export const STAGES = ['Hamlet', 'Town', 'City', 'Metropolis'];
 export const STAGE_DEMANDS: CargoKind[][] = [
   [], // Hamlet — its base demands only
   ['goods'], // Town
-  ['cattle'], // City
-  ['steel'], // Metropolis
+  ['furniture', 'cars'], // City — a developed populace wants manufactured goods
+  ['paper', 'weapons'], // Metropolis — newsprint and an arsenal
 ];
 
 export const ARCHETYPES: Record<string, Archetype> = {
+  // ── Settlements (consumers) ────────────────────────────────────────────────
   city: {
     kind: 'City',
     houses: 22,
     size: 2,
     supplies: { passengers: 1.6, mail: 1.1 },
-    demands: ['goods', 'grain', 'cattle', 'steel', 'passengers', 'mail'],
+    demands: ['food', 'goods', 'furniture', 'cars', 'steel', 'grain', 'cattle', 'fish', 'oil', 'passengers', 'mail'],
   },
   town: {
     kind: 'Town',
     houses: 11,
     size: 1,
     supplies: { passengers: 0.9, mail: 0.6 },
-    demands: ['goods', 'mail', 'passengers'],
+    demands: ['food', 'goods', 'mail', 'passengers'],
   },
+  // ── Raw resource sites (pure producers) ────────────────────────────────────
   farm: {
     kind: 'Farmstead',
     houses: 6,
     size: 0,
     supplies: { grain: 1.4, cattle: 0.9 },
+    demands: ['goods', 'mail'],
+  },
+  fishery: {
+    kind: 'Fishery',
+    houses: 6,
+    size: 0,
+    supplies: { fish: 1.4 },
     demands: ['goods', 'mail'],
   },
   mine: {
@@ -82,6 +91,13 @@ export const ARCHETYPES: Record<string, Archetype> = {
     supplies: { iron: 1.5 },
     demands: ['goods', 'lumber'],
   },
+  oilwell: {
+    kind: 'Oil Field',
+    houses: 6,
+    size: 0,
+    supplies: { oil: 1.5 },
+    demands: ['goods', 'lumber'],
+  },
   mill: {
     kind: 'Timber Mill',
     houses: 8,
@@ -89,6 +105,7 @@ export const ARCHETYPES: Record<string, Archetype> = {
     supplies: { lumber: 1.5 },
     demands: ['goods'],
   },
+  // ── Processing plants (convert a raw input into a finished good) ────────────
   factory: {
     kind: 'Factory',
     houses: 9,
@@ -104,6 +121,70 @@ export const ARCHETYPES: Record<string, Archetype> = {
     supplies: {},
     demands: ['passengers', 'mail'],
     recipe: { inputs: { coal: 1, iron: 1 }, output: 'steel', rate: 0.5 },
+  },
+  foodplant: {
+    kind: 'Grain Mill',
+    houses: 8,
+    size: 0,
+    supplies: {},
+    demands: ['passengers', 'mail'],
+    recipe: { inputs: { grain: 1 }, output: 'food', rate: 0.6 },
+  },
+  packinghouse: {
+    kind: 'Packing House',
+    houses: 8,
+    size: 0,
+    supplies: {},
+    demands: ['passengers', 'mail'],
+    recipe: { inputs: { cattle: 1 }, output: 'food', rate: 0.55 },
+  },
+  cannery: {
+    kind: 'Cannery',
+    houses: 7,
+    size: 0,
+    supplies: {},
+    demands: ['passengers', 'mail'],
+    recipe: { inputs: { fish: 1 }, output: 'food', rate: 0.55 },
+  },
+  furnitureworks: {
+    kind: 'Furniture Works',
+    houses: 9,
+    size: 0,
+    supplies: {},
+    demands: ['passengers', 'mail'],
+    recipe: { inputs: { lumber: 1 }, output: 'furniture', rate: 0.5 },
+  },
+  papermill: {
+    kind: 'Paper Mill',
+    houses: 9,
+    size: 0,
+    supplies: {},
+    demands: ['passengers', 'mail'],
+    recipe: { inputs: { lumber: 1 }, output: 'paper', rate: 0.55 },
+  },
+  refinery: {
+    kind: 'Refinery',
+    houses: 9,
+    size: 0,
+    supplies: {},
+    demands: ['passengers', 'mail'],
+    recipe: { inputs: { oil: 1 }, output: 'goods', rate: 0.55 },
+  },
+  autoplant: {
+    kind: 'Auto Plant',
+    houses: 11,
+    size: 0,
+    supplies: {},
+    demands: ['passengers', 'mail'],
+    recipe: { inputs: { steel: 1 }, output: 'cars', rate: 0.42 },
+  },
+  armsfactory: {
+    kind: 'Arsenal',
+    houses: 10,
+    size: 0,
+    supplies: {},
+    demands: ['passengers', 'mail'],
+    recipe: { inputs: { steel: 1 }, output: 'weapons', rate: 0.4 },
   },
 };
 
@@ -144,7 +225,8 @@ function catchment(key: string, field: Heightfield, x: number, z: number): numbe
       if (key === 'farm') v = h > sea + 4 && h < 60 && s < 0.12 ? 1 : s < 0.2 ? 0.4 : 0;
       else if (key === 'mill') v = h > 40 && h < 165 && s > 0.04 && s < 0.42 ? 1 : 0.3;
       else if (key === 'mine' || key === 'ironmine') v = h > 125 || s > 0.36 ? 1 : h > 80 ? 0.4 : 0;
-      else v = h > sea + 3 && s < 0.16 ? 1 : 0.5; // city / town / factory / steelmill want buildable flats
+      else if (key === 'fishery') v = h < sea ? 1 : h < sea + 16 ? 0.5 : 0.1; // wants the waterline
+      else v = h > sea + 3 && s < 0.16 ? 1 : 0.5; // settlements, plants + oil fields want buildable flats
       score += v;
       n++;
     }
@@ -181,32 +263,36 @@ export function placeCities(field: Heightfield, seed: number, count: number): Ci
     // Pack the map densely so a depot's catchment can gather a regional cluster.
     if (picks.some((p) => Math.hypot(p.x - x, p.z - z) < 260)) continue;
 
-    // A few full cities anchor the map; the rest are smaller towns and industries
-    // (the catchment fodder), biased by elevation.
+    // A few full cities anchor the map; the rest are smaller towns, raw sites, and processing
+    // plants (the catchment fodder + supply web), biased by elevation.
+    const PLANTS: (keyof typeof ARCHETYPES)[] = [
+      'factory', 'steelmill', 'foodplant', 'packinghouse', 'furnitureworks', 'papermill', 'refinery', 'autoplant', 'armsfactory', 'cannery',
+    ];
+    const plant = (): keyof typeof ARCHETYPES => PLANTS[Math.floor(rng() * PLANTS.length)];
     let key: keyof typeof ARCHETYPES;
     if (h > 170) key = rng() > 0.5 ? 'mine' : 'ironmine';
-    else if (h > 95) key = rng() > 0.6 ? 'mill' : rng() > 0.5 ? 'mine' : 'ironmine';
-    else if (h > 45) key = rng() > 0.4 ? 'farm' : 'mill';
-    else
-      key =
-        picks.length < 3
-          ? 'city'
-          : rng() > 0.72
-            ? 'city'
-            : rng() > 0.48
-              ? 'town'
-              : rng() > 0.5
-                ? 'farm'
-                : rng() > 0.5
-                  ? 'factory'
-                  : 'steelmill';
+    else if (h > 95) {
+      const r = rng();
+      key = r > 0.72 ? 'mill' : r > 0.5 ? 'mine' : r > 0.28 ? 'ironmine' : 'oilwell';
+    } else if (h > 45) {
+      const r = rng();
+      key = r > 0.62 ? 'farm' : r > 0.42 ? 'mill' : r > 0.28 ? 'oilwell' : plant();
+    } else if (picks.length < 3) {
+      key = 'city';
+    } else {
+      const r = rng();
+      key = r > 0.8 ? 'city' : r > 0.62 ? 'town' : r > 0.48 ? 'farm' : r > 0.36 ? 'fishery' : plant();
+    }
     picks.push({ x, z, key });
   }
 
-  // Guarantee both chains can close — goods (coal+lumber) and steel (coal+iron) — by
+  // Guarantee every chain can close — raws have a producer, each finished good a plant — by
   // forcing any missing link onto the best-fitting site not already claimed this pass.
   const forced = new Set<number>();
-  for (const need of ['mine', 'mill', 'factory', 'ironmine', 'steelmill'] as const) {
+  for (const need of [
+    'mine', 'mill', 'factory', 'ironmine', 'steelmill',
+    'farm', 'oilwell', 'fishery', 'foodplant', 'furnitureworks', 'papermill', 'autoplant',
+  ] as const) {
     if (picks.some((p) => p.key === need)) continue;
     let bi = -1;
     let bs = -Infinity;

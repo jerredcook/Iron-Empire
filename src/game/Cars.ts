@@ -231,12 +231,35 @@ function flat(): FreightCar {
   );
 }
 
+/** Tank car — a horizontal cylindrical barrel with end domes and a top hatch. Oil. Sealed, so
+ *  no visible load (the livery tints the barrel). */
+function tank(): FreightCar {
+  const g = new THREE.Group();
+  const body = new THREE.MeshStandardMaterial({ color: EMPTY, metalness: 0.5, roughness: 0.45 });
+  addUnderframe(g);
+  const barrelGeo = new THREE.CylinderGeometry(1.05, 1.05, 4.6, 20);
+  barrelGeo.rotateX(Math.PI / 2); // lie along the car's length
+  const barrel = new THREE.Mesh(barrelGeo, body);
+  barrel.position.y = 2.45;
+  g.add(barrel);
+  for (const z of [-2.3, 2.3]) {
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(1.05, 16, 10), body);
+    cap.position.set(0, 2.45, z);
+    g.add(cap);
+  }
+  const hatch = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.3, 12), FRAME);
+  hatch.position.set(0, 3.55, 0);
+  g.add(hatch);
+  return finish(g, body);
+}
+
 const BUILDERS: Record<CarType, () => FreightCar> = {
   boxcar,
   hopper,
   stock,
   coach,
   flat,
+  tank,
 };
 
 /** Build the rolling stock for a cargo's car type. */
