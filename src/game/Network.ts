@@ -1144,6 +1144,21 @@ export class Network {
     const money = company.money;
     this.placeDepot(city, company);
     city.level = 3; // fully upgraded (depot level is city-shared)
+    // A home city has industry: a works that turns hauled-in raw materials into goods to ship —
+    // so from frame one there's a supply chain to build (raw → here → goods → elsewhere).
+    if (!city.recipe) {
+      city.recipe = ARCHETYPES.factory.recipe;
+      for (const k of Object.keys(city.recipe!.inputs) as CargoKind[]) city.demands.add(k);
+      city.owner = company;
+      city.bookValue = 160_000;
+      company.industries.push(city);
+      const f = buildFactory();
+      const fx = city.pos.x - 28;
+      const fz = city.pos.z + 22;
+      f.position.set(fx, this.field.height(fx, fz), fz);
+      f.rotation.y = city.id * 0.7;
+      this.scene.add(f);
+    }
     // A short stub of rail off the station, aimed at the nearest neighbour but stopping short.
     let near: GStation | null = null;
     let best = Infinity;

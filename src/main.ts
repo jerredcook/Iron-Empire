@@ -284,12 +284,15 @@ async function boot(cfg: BootCfg): Promise<void> {
       network.buildLine([pair[0].pos, pair[1].pos], [pair[0], pair[1]], selectedLoco);
     }
   } else {
-    // Real play: each railroad starts at its OWN random city with a fully-upgraded station and a
-    // short stub of track — you build your network out from there. Spread the homes apart.
-    const cities = network.stations.filter((s) => !s.recipe || s.archetype.size >= 1); // any real town
-    const pool = cities.length >= 4 ? cities : network.stations;
+    // Real play: each railroad starts at its OWN random CITY (size 2 — a consumer hub, never a
+    // farm/mine resource that only produces) with a fully-upgraded station + a short stub of
+    // track, and builds out from there. Fall back to towns, then anything, if cities run short.
+    const companies = [network.player, ...network.rivals];
+    const byCity = network.stations.filter((s) => s.archetype.size >= 2);
+    const byTown = network.stations.filter((s) => s.archetype.size >= 1);
+    const pool = byCity.length >= companies.length ? byCity : byTown.length >= companies.length ? byTown : network.stations;
     const picked: typeof network.stations = [];
-    for (const co of [network.player, ...network.rivals]) {
+    for (const co of companies) {
       let choice = pool[Math.floor(Math.random() * pool.length)];
       if (picked.length) {
         // Farthest-from-everyone-so-far, sampled, so homes don't crowd together.
