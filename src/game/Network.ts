@@ -1138,6 +1138,56 @@ export class Network {
     return null;
   }
 
+  /** The free ends of a company's real lines — where track can be extended from. Each carries
+   *  the outward direction so a new run curves smoothly out of it instead of kinking. */
+  lineEnds(company: Company): { line: GLine; end: 'head' | 'tail'; pos: THREE.Vector3; dir: THREE.Vector3 }[] {
+    const out: { line: GLine; end: 'head' | 'tail'; pos: THREE.Vector3; dir: THREE.Vector3 }[] = [];
+    for (const l of company.lines) {
+      if (l.through || l.waypoints.length < 2) continue;
+      const w = l.waypoints;
+      out.push({ line: l, end: 'head', pos: w[0].clone(), dir: w[0].clone().sub(w[1]).setY(0).normalize() });
+      out.push({ line: l, end: 'tail', pos: w[w.length - 1].clone(), dir: w[w.length - 1].clone().sub(w[w.length - 2]).setY(0).normalize() });
+    }
+    return out;
+  }
+
+  /** Extend an existing line from one of its ends: append the new ground waypoints (and an
+   *  optional new city stop), charge the added track, and re-lay the rails — the smoothed curve
+   *  flows naturally out of the old end. Returns false if unaffordable. */
+  extendLine(line: GLine, end: 'head' | 'tail', addWaypoints: THREE.Vector3[], newStop: GStation | null): boolean {
+    if (line.through || addWaypoints.length < 1) return false;
+    const owner = line.owner;
+    const anchor = end === 'tail' ? line.waypoints[line.waypoints.length - 1] : line.waypoints[0];
+    const added = addWaypoints.map((p) => p.clone());
+    const segCost = this.routeCost([anchor.clone(), ...added]);
+    if (segCost > owner.money) return false;
+    owner.money -= segCost;
+    const wp = end === 'tail' ? [...line.waypoints, ...added] : [...added.reverse(), ...line.waypoints];
+    this.scene.remove(line.track.group);
+    line.track.dispose();
+    line.track = new Track(this.field, wp, true, false, owner.color);
+    this.scene.add(line.track.group);
+    line.waypoints = wp;
+    if (newStop && !line.stops.includes(newStop)) {
+      if (end === 'tail') line.stops.push(newStop);
+      else line.stops.unshift(newStop);
+    }
+    line.stopFracs = line.stops.map((s) => line.track.nearestU(s.pos));
+    line.value = this.routeCost(wp);
+    this.clearTownsForCorridor(wp);
+    this.onTrackBuilt?.(wp);
+    for (const st of line.stops) {
+      const d = st.depots.get(owner);
+      if (d) { d.aligned = false; this.alignDepot(st, owner); }
+    }
+    // The rails moved under any running train — set each back at the start of the rebuilt line.
+    for (const t of line.trains) {
+      t.restore(0, 1, t.consist.map((c) => ({ amount: c.amount, origin: [c.origin.x, c.origin.y, c.origin.z] as [number, number, number] })));
+    }
+    if (owner === this.player) this.onBuilt?.();
+    return true;
+  }
+
   /** Spawn a company's home: a maxed-out station at a city plus a short stub of track to grow
    *  out from — free (the starting setup). No train yet; the network is built from here. */
   seedStarter(company: Company, city: GStation): void {

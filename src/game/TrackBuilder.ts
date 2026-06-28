@@ -1,9 +1,10 @@
 import * as THREE from 'three';
-import { Network, GStation } from './Network';
+import { Network, GStation, GLine } from './Network';
 import { LocoClass } from './Locomotives';
 import { Heightfield } from '../world/Heightfield';
 
 const SNAP = 60; // ground-distance within which the cursor latches to a city
+const END_SNAP = 30; // tighter latch onto a free end of your own track to extend it
 const CLICK_SLOP = 9; // px of pointer travel still counted as a click, not a drag
 const DECK = 0.7; // preview rail deck height above the draped ground
 const GAUGE = 2.6; // preview rail centre-to-centre
@@ -36,8 +37,10 @@ export interface BuildStatus {
  */
 export class TrackBuilder {
   onStatus?: (s: BuildStatus) => void;
-  /** Fired when a route is finished — the listener configures + commits it. */
+  /** Fired when a brand-new route is finished — the listener configures + commits it. */
   onCommit?: (nodes: RouteNode[]) => void;
+  /** Fired when the route EXTENDS one of the player's existing lines from a free end. */
+  onExtend?: (line: GLine, end: 'head' | 'tail', waypoints: THREE.Vector3[], finalStop: GStation | null) => void;
 
   private active = false;
   private pulseT = 0;
@@ -46,12 +49,17 @@ export class TrackBuilder {
   private cursor = new THREE.Vector3();
   private cursorValid = false;
   private snapTarget: GStation | null = null;
+  /** When the cursor is over a free end of one of your lines: connect + extend it. */
+  private snapEnd: { line: GLine; end: 'head' | 'tail'; pos: THREE.Vector3; dir: THREE.Vector3 } | null = null;
+  /** Locked once the route starts from a line end — this run extends that line. */
+  private extendFrom: { line: GLine; end: 'head' | 'tail' } | null = null;
 
   private ray = new THREE.Raycaster();
   private ndc = new THREE.Vector2();
   private down = new THREE.Vector2();
   private ghost: THREE.Mesh;
   private snapRing: THREE.Mesh;
+  private connectMarker: THREE.Mesh;
   private previewTrack: THREE.Group | null = null;
   private previewSig = '';
 
@@ -84,6 +92,16 @@ export class TrackBuilder {
     this.snapRing.visible = false;
     overlay.add(this.snapRing);
 
+    // A cyan diamond that latches onto the free END of one of your lines — "connect here and
+    // extend". Distinct from the city ring so connecting to your own track is unmistakable.
+    this.connectMarker = new THREE.Mesh(
+      new THREE.OctahedronGeometry(4.2),
+      new THREE.MeshBasicMaterial({ color: 0x5fe0ff, transparent: true, opacity: 0.9, depthTest: false })
+    );
+    this.connectMarker.renderOrder = 1001;
+    this.connectMarker.visible = false;
+    overlay.add(this.connectMarker);
+
     this.dom.addEventListener('pointerdown', this.onDown);
     this.dom.addEventListener('pointerup', this.onUp);
     this.dom.addEventListener('pointermove', this.onMove);
@@ -103,8 +121,11 @@ export class TrackBuilder {
   cancel(): void {
     this.active = false;
     this.nodes = [];
+    this.extendFrom = null;
+    this.snapEnd = null;
     this.ghost.visible = false;
     this.snapRing.visible = false;
+    this.connectMarker.visible = false;
     this.clearPreviewTrack();
     this.emit();
   }
@@ -143,6 +164,7 @@ export class TrackBuilder {
     // Drop the start point immediately so a drag has something to draw from. (If the press
     // turns out to be a plain click, that's fine — the start is exactly where we want it.)
     if (this.nodes.length === 0 && this.cursorValid) {
+      if (this.snapEnd) this.extendFrom = { line: this.snapEnd.line, end: this.snapEnd.end };
       this.nodes.push(this.snapNode());
       this.placedOnDown = true;
     }
@@ -181,6 +203,7 @@ export class TrackBuilder {
   };
 
   private snapNode(): RouteNode {
+    if (this.snapEnd) return { pos: this.snapEnd.pos.clone(), station: null };
     return { pos: this.snapTarget ? this.snapTarget.pos.clone() : this.cursor.clone(), station: this.snapTarget };
   }
 
@@ -202,6 +225,14 @@ export class TrackBuilder {
       return;
     }
     this.cursor.copy(hit.point);
+    // Starting a run: latch onto a FREE END of your own track (the stub's tip) so the new track
+    // continues out of it — connect-and-extend, never a T off the station.
+    this.snapEnd = this.nodes.length === 0 ? this.nearestLineEnd(this.cursor, END_SNAP) : null;
+    if (this.snapEnd) {
+      this.snapTarget = null;
+      this.cursor.copy(this.snapEnd.pos);
+      return;
+    }
     // Snap to ANY city in range, depot or not — you connect the track first, then build the
     // depot. (Using only stationed cities meant a bare destination never latched, so the line
     // didn't actually reach it.)
@@ -210,16 +241,36 @@ export class TrackBuilder {
     if (this.snapTarget) this.cursor.copy(this.snapTarget.pos);
   }
 
+  /** The free line-end of yours nearest the cursor, within `maxDist` — or null. */
+  private nearestLineEnd(p: THREE.Vector3, maxDist: number): typeof this.snapEnd {
+    let best: typeof this.snapEnd = null;
+    let bd = maxDist;
+    for (const e of this.network.lineEnds(this.network.player)) {
+      const d = Math.hypot(e.pos.x - p.x, e.pos.z - p.z);
+      if (d < bd) { bd = d; best = e; }
+    }
+    return best;
+  }
+
   private get lastStation(): GStation | null {
     for (let i = this.nodes.length - 1; i >= 0; i--) if (this.nodes[i].station) return this.nodes[i].station;
     return null;
   }
 
-  /** Hand the finished route (≥2 points) to the listener to configure + commit. */
+  /** Hand the finished route (≥2 points) to the listener. Extending an existing line takes the
+   *  extend path; a fresh route takes the commit path. */
   private finish(): void {
     if (this.nodes.length < 2) return;
-    this.onCommit?.(this.nodes.map((n) => ({ pos: n.pos.clone(), station: n.station })));
+    if (this.extendFrom) {
+      // nodes[0] is the line end (the anchor, already on the line); the rest are new ground.
+      const wp = this.nodes.slice(1).map((n) => n.pos.clone());
+      const finalStop = [...this.nodes].reverse().find((n) => n.station)?.station ?? null;
+      this.onExtend?.(this.extendFrom.line, this.extendFrom.end, wp, finalStop);
+    } else {
+      this.onCommit?.(this.nodes.map((n) => ({ pos: n.pos.clone(), station: n.station })));
+    }
     this.nodes = [];
+    this.extendFrom = null;
     this.refreshVisuals();
     this.emit();
   }
@@ -231,12 +282,15 @@ export class TrackBuilder {
 
     // Green = snapping to a city that already has a depot (ready to run); amber = snapping to
     // a city that still needs one (the track will connect, but build a Station to run trains).
-    const tint = this.snapTarget ? (this.snapTarget.hasStation ? 0x7dffb0 : 0xffcf73) : 0xcfe3ff;
+    const tint = this.snapEnd ? 0x5fe0ff : this.snapTarget ? (this.snapTarget.hasStation ? 0x7dffb0 : 0xffcf73) : 0xcfe3ff;
     this.snapRing.visible = !!this.snapTarget;
     if (this.snapTarget) {
       this.snapRing.position.set(this.snapTarget.pos.x, this.snapTarget.pos.y + 2, this.snapTarget.pos.z);
       (this.snapRing.material as THREE.MeshBasicMaterial).color.setHex(tint);
     }
+    // Cyan diamond on the line end you'd connect to + extend.
+    this.connectMarker.visible = !!this.snapEnd;
+    if (this.snapEnd) this.connectMarker.position.set(this.snapEnd.pos.x, this.snapEnd.pos.y + 5, this.snapEnd.pos.z);
 
     this.rebuildPreviewTrack(tint);
     (this.ghost.material as THREE.MeshBasicMaterial).color.setHex(this.snapTarget ? tint : 0xffffff);
@@ -271,10 +325,16 @@ export class TrackBuilder {
     this.previewSig = '';
   }
 
-  /** Polyline through every placed point, then out to the cursor. */
+  /** Polyline through every placed point, then out to the cursor. When extending a line, a
+   *  lead-in point along the line's existing direction makes the preview curve out of the old
+   *  end exactly as the committed track will. */
   private routePoints(): THREE.Vector3[] {
     const pts = this.nodes.map((n) => n.pos.clone());
     if (this.cursorValid) pts.push(this.snapTarget ? this.snapTarget.pos.clone() : this.cursor.clone());
+    if (this.extendFrom && pts.length >= 1) {
+      const e = this.network.lineEnds(this.network.player).find((x) => x.line === this.extendFrom!.line && x.end === this.extendFrom!.end);
+      if (e) pts.unshift(e.pos.clone().addScaledVector(e.dir, -24)); // a step back INTO the old track
+    }
     return pts;
   }
 
@@ -293,12 +353,14 @@ export class TrackBuilder {
   }
 
   private routingHint(stops: number): string {
+    if (this.snapEnd) return '🔗 <b>Connected to your line</b> — drag out to a city and the track curves from here.';
     if (this.snapTarget) {
       return this.snapTarget.hasStation
         ? `Release on <b>${this.snapTarget.name}</b> to connect it — then <b>✓ Finish</b>.`
         : `<b>${this.snapTarget.name}</b> needs a <b>Station</b> first (click the city → Build Station).`;
     }
-    if (this.nodes.length === 0) return 'Press a <b>stationed</b> city and drag to another to lay track. (Build Stations first.)';
+    if (this.extendFrom) return `Extending your line — drag to a city, then <b>✓ Finish</b> · right-click undoes.`;
+    if (this.nodes.length === 0) return 'Start from a <b>city</b> or the <b>end of your track</b> (cyan), and drag out. (Build Stations to run trains.)';
     return `Route: ${stops} stop${stops === 1 ? '' : 's'} — drag on to the next city, or <b>✓ Finish</b> · right-click undoes · <b>✕ Cancel</b> discards.`;
   }
 }

@@ -162,6 +162,19 @@ async function boot(cfg: BootCfg): Promise<void> {
       hud.news('Track laid. Select the line → 🚂 Start a train to run it.', true);
     }
   };
+  // Extending an existing line from its free end (continuing the stub) — the track flows out of
+  // the old end with a curve, and the new city becomes a stop on that same line.
+  builder.onExtend = (line, end, waypoints, finalStop) => {
+    if (!network.extendLine(line, end, waypoints, finalStop)) {
+      hud.news("Not enough cash for that track.", false);
+      return;
+    }
+    if (finalStop && !finalStop.hasStation) {
+      hud.news(`Track extended to ${finalStop.name} — build a Station there to serve it, then 🚂 Start a train.`, false);
+    } else {
+      hud.news('Track extended along your line.', true);
+    }
+  };
   renderer.gl.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 
   // Inspection: minimap + click-to-select + detail panel, all reading live state.
@@ -319,6 +332,25 @@ async function boot(cfg: BootCfg): Promise<void> {
   if (startHome) {
     rig.controls.target.copy(startHome.pos);
     rig.camera.position.set(startHome.pos.x - 90, startHome.pos.y + 130, startHome.pos.z + 150);
+  }
+
+  // Dev visual-check (?extendshot): extend the home stub from its FREE END to the nearest city
+  // and frame the junction — confirms the track continues + curves out of the stub (no T).
+  if (location.search.includes('extendshot') && startHome) {
+    const line = network.player.lines[0];
+    const tip = network.lineEnds(network.player).find((e) => e.line === line && e.pos.distanceTo(startHome!.pos) > 8);
+    let dest: (typeof network.stations)[number] | null = null;
+    let bd = Infinity;
+    if (tip) for (const s of network.stations) {
+      if (s === startHome) continue;
+      const d = s.pos.distanceTo(tip.pos);
+      if (d < bd && d > 70) { bd = d; dest = s; }
+    }
+    if (tip && dest) {
+      network.extendLine(line, tip.end, [dest.pos.clone()], dest);
+      rig.controls.target.copy(tip.pos);
+      rig.camera.position.set(tip.pos.x + 38, tip.pos.y + 52, tip.pos.z + 38);
+    }
   }
 
   // Dev visual-check (?trackshot, never in normal play): build a line across the steepest city
@@ -643,7 +675,7 @@ async function boot(cfg: BootCfg): Promise<void> {
   document.getElementById('loading')?.classList.add('hidden');
 
   // First-time players get the how-to-play card once (skipped for headless test + screenshot runs).
-  if (!location.search.includes('autostart') && !location.search.includes('playstart')) {
+  if (!location.search.includes('autostart') && !location.search.includes('playstart') && !location.search.includes('extendshot')) {
     try {
       if (!localStorage.getItem('ie.helpSeen')) {
         hud.showHelp();
@@ -1975,9 +2007,9 @@ const FALLBACK_GOAL: Goal = networthGoal(2_500_000, 1890);
 /** Show the start menu, then boot the chosen setup — or regenerate the saved world and
  *  restore it when the player chooses Continue. */
 async function start(): Promise<void> {
-  // Headless verification: ?autostart skips the menu and boots a default game. ?playstart does
-  // the same but takes the REAL play path (random home station + stub, no seeded running line).
-  if (location.search.includes('autostart') || location.search.includes('playstart')) {
+  // Headless verification: ?autostart skips the menu and boots a default game. ?playstart (and
+  // ?extendshot) take the REAL play path (random home station + stub, no seeded running line).
+  if (location.search.includes('autostart') || location.search.includes('playstart') || location.search.includes('extendshot')) {
     const s = SCENARIOS[0];
     await boot({
       seed: s.seed,
@@ -1989,7 +2021,7 @@ async function start(): Promise<void> {
       player: { name: 'Iron Empire', color: 0x8fffa8 },
       ais: [{ name: 'Atlas & Pacific', color: 0xff8a4d }],
       load: false,
-      seedStarter: !location.search.includes('playstart'), // playstart → real-play random home
+      seedStarter: !location.search.includes('playstart') && !location.search.includes('extendshot'), // → real-play random home
     });
     return;
   }
