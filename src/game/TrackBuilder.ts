@@ -1,10 +1,12 @@
 import * as THREE from 'three';
 import { Network, GStation, GLine } from './Network';
 import { LocoClass } from './Locomotives';
+import { DOUBLE_OFFSET } from './Track';
 import { Heightfield } from '../world/Heightfield';
 
 const SNAP = 60; // ground-distance within which the cursor latches to a city
 const END_SNAP = 30; // tighter latch onto a free end of your own track to extend it
+const DOUBLE_SNAP = 26; // ground-distance within which a press latches onto your own track to double it
 const CLICK_SLOP = 9; // px of pointer travel still counted as a click, not a drag
 const DECK = 0.7; // preview rail deck height above the draped ground
 const GAUGE = 2.6; // preview rail centre-to-centre
@@ -26,6 +28,8 @@ export interface BuildStatus {
   canFinish: boolean;
   /** Short instruction shown in the HUD banner. */
   hint: string;
+  /** Which laying mode is engaged — single (new track) or double (parallel rail). */
+  mode: 'single' | 'double';
 }
 
 /**
@@ -41,7 +45,14 @@ export class TrackBuilder {
   onCommit?: (nodes: RouteNode[]) => void;
   /** Fired when the route EXTENDS one of the player's existing lines from a free end. */
   onExtend?: (line: GLine, end: 'head' | 'tail', waypoints: THREE.Vector3[], finalStop: GStation | null) => void;
+  /** Fired when a stretch of one of the player's lines is traced to lay a parallel (double) rail. */
+  onDouble?: (line: GLine, u0: number, u1: number) => void;
 
+  /** 'single' lays new track; 'double' traces along your own track to lay a parallel rail beside it. */
+  private mode: 'single' | 'double' = 'single';
+  /** The stretch of your track being traced for a double rail (arc-fractions along that line). */
+  private doubleTrace: { line: GLine; u0: number; u1: number } | null = null;
+  private dragging = false;
   private active = false;
   private pulseT = 0;
   private placedOnDown = false;
@@ -136,11 +147,34 @@ export class TrackBuilder {
     this.nodes = [];
     this.extendFrom = null;
     this.snapEnd = null;
+    this.doubleTrace = null;
+    this.dragging = false;
     this.ghost.visible = false;
     this.snapRing.visible = false;
     this.connectMarker.visible = false;
     this.clearPreviewTrack();
     this.emit();
+  }
+
+  /** Single = lay new track; double = trace your own track to lay a parallel rail. Switching
+   *  clears any half-built route/trace. */
+  setMode(m: 'single' | 'double'): void {
+    if (this.mode === m) return;
+    this.mode = m;
+    this.nodes = [];
+    this.extendFrom = null;
+    this.snapEnd = null;
+    this.doubleTrace = null;
+    this.dragging = false;
+    this.ghost.visible = false;
+    this.snapRing.visible = false;
+    this.connectMarker.visible = false;
+    this.clearPreviewTrack();
+    this.emit();
+  }
+
+  getMode(): 'single' | 'double' {
+    return this.mode;
   }
 
   toggle(): void {
@@ -172,7 +206,9 @@ export class TrackBuilder {
   private onDown = (e: PointerEvent): void => {
     this.down.set(e.clientX, e.clientY);
     this.placedOnDown = false;
-    if (!this.active || e.button !== 0) return;
+    if (!this.active) return;
+    if (this.mode === 'double') { this.onDoubleDown(e); return; }
+    if (e.button !== 0) return;
     this.raycast(e);
     // Drop the start point immediately so a drag has something to draw from. (If the press
     // turns out to be a plain click, that's fine — the start is exactly where we want it.)
@@ -186,6 +222,7 @@ export class TrackBuilder {
 
   private onUp = (e: PointerEvent): void => {
     if (!this.active) return;
+    if (this.mode === 'double') { this.onDoubleUp(e); return; }
     const wasDrag = Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y) > CLICK_SLOP;
     if (e.button === 2) {
       // Right-click undoes the last point, or leaves build mode if the route is empty.
@@ -211,9 +248,100 @@ export class TrackBuilder {
 
   private onMove = (e: PointerEvent): void => {
     if (!this.active) return;
+    if (this.mode === 'double') { this.onDoubleMove(e); return; }
     this.raycast(e);
     this.refreshVisuals();
   };
+
+  // ---- Double-track mode: press on your own track, drag along it, release to lay a parallel rail.
+
+  private onDoubleDown(e: PointerEvent): void {
+    if (e.button !== 0) return;
+    this.dragging = true;
+    this.raycastGround(e);
+    const near = this.cursorValid ? this.network.nearestOnLine(this.network.player, this.cursor, DOUBLE_SNAP) : null;
+    this.doubleTrace = near ? { line: near.line, u0: near.u, u1: near.u } : null;
+    this.refreshDoubleVisuals();
+  }
+
+  private onDoubleMove(e: PointerEvent): void {
+    this.raycastGround(e);
+    if (this.dragging && this.doubleTrace && this.cursorValid) {
+      this.doubleTrace.u1 = THREE.MathUtils.clamp(this.doubleTrace.line.track.nearestU(this.cursor), 0, 1);
+    }
+    this.refreshDoubleVisuals();
+  }
+
+  private onDoubleUp(e: PointerEvent): void {
+    if (e.button === 2) { this.cancel(); return; } // right-click leaves build mode
+    if (e.button !== 0) return;
+    this.dragging = false;
+    const tr = this.doubleTrace;
+    if (tr && Math.abs(tr.u1 - tr.u0) * tr.line.track.length >= 24) {
+      this.onDouble?.(tr.line, Math.min(tr.u0, tr.u1), Math.max(tr.u0, tr.u1));
+    }
+    this.doubleTrace = null;
+    this.clearPreviewTrack();
+    this.emit();
+  }
+
+  /** Project the pointer onto the terrain only (no city/line snap) — for double-mode tracing. */
+  private raycastGround(e: PointerEvent): void {
+    const r = this.dom.getBoundingClientRect();
+    this.ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    this.ray.setFromCamera(this.ndc, this.camera as THREE.PerspectiveCamera);
+    const hit = this.ray.intersectObject(this.terrain, true)[0];
+    this.cursorValid = !!hit;
+    if (hit) this.cursor.copy(hit.point);
+  }
+
+  private refreshDoubleVisuals(): void {
+    if (!this.active) return;
+    this.ghost.visible = false;
+    this.snapRing.visible = false;
+    this.connectMarker.visible = false;
+    const pts = this.doubleTrace ? this.doubleGhostPoints(this.doubleTrace) : [];
+    if (pts.length >= 2) {
+      const sig = `d|${Math.round(this.doubleTrace!.u0 * 200)}|${Math.round(this.doubleTrace!.u1 * 200)}`;
+      if (sig !== this.previewSig || !this.previewTrack) {
+        this.previewSig = sig;
+        this.clearPreviewTrack();
+        this.previewTrack = buildGhostTrack(pts, 0x9fd0ff, this.field);
+        this.previewSig = sig;
+        this.overlay.add(this.previewTrack);
+      }
+    } else {
+      this.clearPreviewTrack();
+    }
+    this.emit();
+  }
+
+  /** Sample the traced stretch of the line's curve, offset to the parallel-rail side, draped on
+   *  the ground — the ghost of the second rail about to be laid. */
+  private doubleGhostPoints(trace: { line: GLine; u0: number; u1: number }): THREE.Vector3[] {
+    const { line } = trace;
+    const u0 = Math.min(trace.u0, trace.u1);
+    const u1 = Math.max(trace.u0, trace.u1);
+    const segLen = (u1 - u0) * line.track.length;
+    if (segLen < 8) return [];
+    const n = Math.max(2, Math.floor(segLen / 14));
+    const pts: THREE.Vector3[] = [];
+    const p = new THREE.Vector3();
+    const t = new THREE.Vector3();
+    const perp = new THREE.Vector3();
+    const floor = this.field.params.seaLevel + 0.6;
+    for (let i = 0; i <= n; i++) {
+      const u = u0 + (u1 - u0) * (i / n);
+      line.track.curve.getPointAt(u, p);
+      line.track.curve.getTangentAt(u, t);
+      perp.crossVectors(t, UP).normalize();
+      const x = p.x + perp.x * DOUBLE_OFFSET;
+      const z = p.z + perp.z * DOUBLE_OFFSET;
+      const y = Math.max(this.field.height(x, z), floor) + 0.7;
+      pts.push(new THREE.Vector3(x, y, z));
+    }
+    return pts;
+  }
 
   private snapNode(): RouteNode {
     if (this.snapEnd) return { pos: this.snapEnd.pos.clone(), station: null };
@@ -352,6 +480,20 @@ export class TrackBuilder {
   }
 
   private emit(): void {
+    if (this.mode === 'double') {
+      const tr = this.doubleTrace;
+      const cost = tr ? this.network.doubleCost(tr.line, tr.u0, tr.u1) : 0;
+      this.onStatus?.({
+        active: this.active,
+        fromName: null,
+        cost,
+        affordable: cost <= this.network.money,
+        canFinish: false,
+        hint: !this.active ? '' : this.doubleHint(),
+        mode: 'double',
+      });
+      return;
+    }
     const route = this.routePoints();
     const cost = this.nodes.length && route.length >= 2 ? this.network.lineCost(route, this.getLoco()) : 0;
     const stops = this.nodes.filter((n) => n.station).length;
@@ -362,7 +504,15 @@ export class TrackBuilder {
       affordable: cost <= this.network.money,
       canFinish: this.nodes.length >= 2,
       hint: !this.active ? '' : this.routingHint(stops),
+      mode: 'single',
     });
+  }
+
+  private doubleHint(): string {
+    if (!this.doubleTrace) {
+      return '<b>Double-track</b> — press on <b>your own track</b> and drag along it; a second rail lays beside the stretch you trace. (Trace an already-double stretch again for a 3rd/4th rail.)';
+    }
+    return 'Release to lay the second rail along this stretch — <b>right-click</b> cancels.';
   }
 
   private routingHint(stops: number): string {

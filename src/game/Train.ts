@@ -111,9 +111,18 @@ export class Train {
   private parked = false;
   private holdAtStop = false;
   private waitTimer = 0;
+  /** Lateral offset onto a parallel (double) rail while passing through a doubled stretch — set
+   *  by the network each tick. 0 = on the running centreline. */
+  private railOffset = 0;
 
   get isParked(): boolean {
     return this.parked;
+  }
+
+  /** Network sets this each tick: ride a parallel rail (offset) through a doubled stretch so an
+   *  opposing train can pass on the running line. */
+  setRailOffset(off: number): void {
+    this.railOffset = off;
   }
   /** Seconds this train has been waiting to depart its current stop (fairness tiebreak). */
   get waitedFor(): number {
@@ -454,11 +463,13 @@ export class Train {
     this._head.copy(this._tan).multiplyScalar(dir);
     this._quat.setFromUnitVectors(FORWARD, this._head);
     obj.position.copy(this._pos);
-    // Single track: trains ride the centreline. One holding at a stop for an opposing train
-    // pulls aside (a passing spot) so the other can run through.
-    if (this.parked) {
+    // Single track: trains ride the centreline. One holding at a stop for an opposing train pulls
+    // aside (a passing spot); through a DOUBLE-track stretch a passing train rides the parallel
+    // rail (railOffset) so opposing services run side by side instead of contending.
+    const side = this.parked ? PARK_SIDE : this.railOffset;
+    if (side !== 0) {
       this._perp.crossVectors(this._tan, UP).normalize();
-      obj.position.addScaledVector(this._perp, PARK_SIDE);
+      obj.position.addScaledVector(this._perp, side);
     }
     obj.position.y += yOff;
     obj.quaternion.copy(this._quat);

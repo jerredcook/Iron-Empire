@@ -4,6 +4,9 @@ import { terrainSet } from '../engine/Assets';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const GAUGE = 2.6; // rail centre-to-centre within one track
+/** Centre-to-centre spacing of a parallel (double) track from the main running line. Shared with
+ *  Train.DOUBLE_OFFSET so a train riding the second rail lines up with the rendered rail. */
+export const DOUBLE_OFFSET = 7;
 /** Lateral tolerance used by the cross-line signaller to decide two trains share a rail. */
 export const TRACK_SIDE = 2.4;
 const RAIL_R = 0.16;
@@ -33,6 +36,8 @@ export class Track {
   readonly group = new THREE.Group();
   readonly curve: THREE.CatmullRomCurve3;
   readonly length: number;
+  /** Rendered parallel-rail geometry for the doubled stretches, rebuilt by setDoubled(). */
+  private doubleGroup: THREE.Group | null = null;
 
   /**
    * `visual=false` builds only the geometry/curve (no rails/ballast) — used by a
@@ -40,7 +45,15 @@ export class Track {
    * (movement-only) takes the given points as the exact curve, skipping the
    * densify+grade pass, so a through-service sits precisely on the rails it traces.
    */
-  constructor(private field: Heightfield, waypoints: THREE.Vector3[], visual = true, raw = false, private tint?: number, private bridges: BridgeSpan[] = []) {
+  constructor(
+    private field: Heightfield,
+    waypoints: THREE.Vector3[],
+    visual = true,
+    raw = false,
+    private tint?: number,
+    private bridges: BridgeSpan[] = [],
+    private doubled: { u0: number; u1: number; lanes: number }[] = []
+  ) {
     if (raw) {
       this.curve = new THREE.CatmullRomCurve3(waypoints.map((p) => p.clone()), false, 'catmullrom', 0.5);
       this.curve.arcLengthDivisions = waypoints.length * 6;
@@ -86,6 +99,7 @@ export class Track {
     this.group.add(this.buildBallast());
     this.group.add(this.buildTies());
     for (const r of this.buildRails()) this.group.add(r);
+    this.buildDoubleRails();
     this.buildTrestles();
     this.buildTunnels();
     this.group.name = 'track';
@@ -302,6 +316,86 @@ export class Track {
       out.push(mesh);
     }
     return out;
+  }
+
+  /** Replace this track's doubled stretches and re-render their parallel rails in place — so a
+   *  line can be upgraded to double-track without rebuilding the running line (its trains keep
+   *  their track reference). */
+  setDoubled(spans: { u0: number; u1: number; lanes: number }[]): void {
+    this.doubled = spans;
+    this.buildDoubleRails();
+  }
+
+  /** Render parallel (double) rails over each doubled stretch: for `lanes` total tracks, lay
+   *  `lanes-1` extra rail-pairs (ties + steel) beside the running line, offset to one side. The
+   *  passing trains ride these via the matching DOUBLE_OFFSET in Train. Rebuildable: clears any
+   *  previously-rendered parallel rails first. */
+  private buildDoubleRails(): void {
+    if (this.doubleGroup) {
+      this.group.remove(this.doubleGroup);
+      this.doubleGroup.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose();
+        if (m.material) for (const mat of Array.isArray(m.material) ? m.material : [m.material]) mat.dispose();
+      });
+      this.doubleGroup = null;
+    }
+    if (!this.doubled.length) return;
+    const steel = new THREE.Color(0xb8bdc4);
+    if (this.tint !== undefined) steel.lerp(new THREE.Color(this.tint), 0.5);
+    const railMat = new THREE.MeshStandardMaterial({ color: steel, metalness: 0.92, roughness: 0.32 });
+    const w = terrainSet('weathered_planks', 8);
+    const tieMat = new THREE.MeshStandardMaterial({ map: w.map, normalMap: w.normalMap, roughness: 0.92 });
+    const grp = new THREE.Group();
+    const pos = new THREE.Vector3();
+    const tan = new THREE.Vector3();
+    const perp = new THREE.Vector3();
+    const dummy = new THREE.Object3D();
+    for (const span of this.doubled) {
+      const u0 = THREE.MathUtils.clamp(Math.min(span.u0, span.u1), 0, 1);
+      const u1 = THREE.MathUtils.clamp(Math.max(span.u0, span.u1), 0, 1);
+      if (u1 - u0 < 0.002) continue;
+      const segLen = (u1 - u0) * this.length;
+      const n = Math.max(8, Math.floor(segLen / 2));
+      const lanes = THREE.MathUtils.clamp(Math.round(span.lanes), 2, 4);
+      for (let lane = 1; lane < lanes; lane++) {
+        const laneOff = lane * DOUBLE_OFFSET;
+        const tieCount = Math.max(3, Math.floor(segLen / TIE_SPACING));
+        const ties = new THREE.InstancedMesh(new THREE.BoxGeometry(GAUGE + 1.6, 0.18, 0.5), tieMat, tieCount);
+        for (let i = 0; i < tieCount; i++) {
+          const u = u0 + (u1 - u0) * ((i + 0.5) / tieCount);
+          this.curve.getPointAt(u, pos);
+          this.curve.getTangentAt(u, tan);
+          perp.crossVectors(tan, UP).normalize();
+          dummy.position.set(pos.x + perp.x * laneOff, pos.y - 0.3, pos.z + perp.z * laneOff);
+          dummy.rotation.set(0, Math.atan2(tan.x, tan.z), 0);
+          dummy.updateMatrix();
+          ties.setMatrixAt(i, dummy.matrix);
+        }
+        ties.instanceMatrix.needsUpdate = true;
+        ties.castShadow = true;
+        ties.receiveShadow = true;
+        grp.add(ties);
+        for (const railOff of [laneOff - GAUGE * 0.5, laneOff + GAUGE * 0.5]) {
+          const line: THREE.Vector3[] = [];
+          for (let i = 0; i <= n; i++) {
+            const u = u0 + (u1 - u0) * (i / n);
+            this.curve.getPointAt(u, pos);
+            this.curve.getTangentAt(u, tan);
+            perp.crossVectors(tan, UP).normalize();
+            line.push(new THREE.Vector3(pos.x + perp.x * railOff, pos.y - 0.08, pos.z + perp.z * railOff));
+          }
+          const c = new THREE.CatmullRomCurve3(line, false, 'catmullrom', 0.5);
+          const mesh = new THREE.Mesh(new THREE.TubeGeometry(c, n, RAIL_R, 8, false), railMat);
+          mesh.castShadow = true;
+          grp.add(mesh);
+        }
+      }
+    }
+    if (grp.children.length) {
+      this.doubleGroup = grp;
+      this.group.add(grp);
+    }
   }
 
   /** Timber trestle bents wherever the deck stands well above the ground/water. */

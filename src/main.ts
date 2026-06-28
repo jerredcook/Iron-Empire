@@ -131,7 +131,8 @@ async function boot(cfg: BootCfg): Promise<void> {
       picker.onSelect?.({ kind: 'train', line, train });
       followTrain = train;
     },
-    (c) => network.acceptContract(c)
+    (c) => network.acceptContract(c),
+    (m) => builder.setMode(m)
   );
   builder.onStatus = (s) => {
     hud.setBuildStatus(s);
@@ -169,6 +170,14 @@ async function boot(cfg: BootCfg): Promise<void> {
   };
   // Extending an existing line from its free end (continuing the stub) — the track flows out of
   // the old end with a curve, and the new city becomes a stop on that same line.
+  // Double-track: a traced stretch of the player's own line gets a parallel rail so trains pass.
+  builder.onDouble = (line, u0, u1) => {
+    if (!network.addDouble(network.player, line, u0, u1)) {
+      hud.news(network.lastBuildIssue ?? 'Could not lay a second track there.', false);
+      return;
+    }
+    hud.news('Second track laid — trains can pass each other along this stretch.', true);
+  };
   builder.onExtend = (line, end, waypoints, finalStop) => {
     if (!network.extendLine(line, end, waypoints, finalStop, true)) {
       hud.news(network.lastBuildIssue ?? 'Not enough cash for that track.', false);
@@ -411,6 +420,27 @@ async function boot(cfg: BootCfg): Promise<void> {
     const f = cross ?? A0.pos;
     rig.controls.target.copy(f);
     rig.camera.position.set(f.x + 26, f.y + 20, f.z + 26);
+  }
+
+  // Dev visual-check (?doubleshot): lay a line, double its middle stretch, and frame it close — to
+  // confirm the parallel (second) rail renders beside the running line.
+  if (location.search.includes('doubleshot') && startHome) {
+    network.player.money = 8_000_000;
+    network.goal = networthGoal(Number.MAX_SAFE_INTEGER, 99999); // don't auto-win mid-sim
+    const home = startHome;
+    const near = network.stations
+      .filter((s) => s !== home)
+      .sort((a, b) => a.pos.distanceToSquared(home.pos) - b.pos.distanceToSquared(home.pos))[0];
+    if (near) {
+      if (!near.hasStation) network.buildStationAt(near);
+      network.buildLine([home.pos.clone(), near.pos.clone()], [home, near], undefined, undefined, true);
+      const line = network.player.lines[network.player.lines.length - 1];
+      network.addDouble(network.player, line, 0.32, 0.72);
+      const mid = new THREE.Vector3();
+      line.track.curve.getPointAt(0.52, mid);
+      rig.controls.target.copy(mid);
+      rig.camera.position.set(mid.x + 22, mid.y + 16, mid.z + 22);
+    }
   }
 
   // Dev visual-check (?previewshot): force the build-mode ghost over the stub end → a city and
@@ -756,7 +786,7 @@ async function boot(cfg: BootCfg): Promise<void> {
   document.getElementById('loading')?.classList.add('hidden');
 
   // First-time players get the how-to-play card once (skipped for headless test + screenshot runs).
-  if (!/autostart|playstart|extendshot|previewshot|yardshot|bridgeshot/.test(location.search)) {
+  if (!/autostart|playstart|extendshot|previewshot|yardshot|bridgeshot|doubleshot/.test(location.search)) {
     try {
       if (!localStorage.getItem('ie.helpSeen')) {
         hud.showHelp();
@@ -1833,6 +1863,48 @@ function runUiTest(
     };
   }
 
+  // OO) Double-track: tracing a stretch of your own line lays a parallel rail (a passing track);
+  //     tracing an already-double stretch again raises it to a 3rd/4th lane (no "triple" control).
+  {
+    network.status = 'playing';
+    network.player.money = 12_000_000;
+    // Double an EXISTING player line (by now the player serves most cities); build a fresh one
+    // only if none is long enough.
+    let line = network.player.lines.find((l) => !l.through && l.track.length > 120 && !l.doubled.length);
+    if (!line) {
+      const ss = network.stations;
+      let a = ss[0];
+      let b = ss[1];
+      let bestD = 0;
+      for (let i = 0; i < ss.length; i++)
+        for (let j = i + 1; j < ss.length; j++) {
+          const d = ss[i].pos.distanceToSquared(ss[j].pos);
+          if (d > bestD && d < 600 * 600) { bestD = d; a = ss[i]; b = ss[j]; }
+        }
+      if (!a.hasStation) network.buildStationAt(a);
+      if (!b.hasStation) network.buildStationAt(b);
+      network.buildLine([a.pos.clone(), b.pos.clone()], [a, b]);
+      line = network.player.lines[network.player.lines.length - 1];
+    }
+    if (line) {
+      const cost = network.doubleCost(line, 0.3, 0.7);
+      const laid = network.addDouble(network.player, line, 0.3, 0.7);
+      const lanes2 = line.doubled[0]?.lanes ?? 0;
+      const laidAgain = network.addDouble(network.player, line, 0.3, 0.7); // same stretch → +1 lane
+      const lanes3 = line.doubled[0]?.lanes ?? 0;
+      const mid = new THREE.Vector3();
+      line.track.curve.getPointAt(0.5, mid);
+      const traced = network.nearestOnLine(network.player, mid, 30);
+      result.doubleTrack = {
+        costPositive: cost > 0,
+        laid: laid && line.doubled.length === 1,
+        lanesStartTwo: lanes2 === 2,
+        repeatRaisesLane: laidAgain && lanes3 === 3,
+        tracesOwnTrack: !!traced && traced.line === line,
+      };
+    }
+  }
+
   // MM) Track is colour-coded by owner: a player line's rails carry the player's livery (a
   //     green-ish steel), not bare grey steel — so your track reads as yours at a glance.
   {
@@ -2115,7 +2187,7 @@ const FALLBACK_GOAL: Goal = networthGoal(2_500_000, 1890);
 async function start(): Promise<void> {
   // Headless verification: ?autostart skips the menu and boots a default game. ?playstart (and
   // ?extendshot) take the REAL play path (random home station + stub, no seeded running line).
-  if (/autostart|playstart|extendshot|previewshot|yardshot|bridgeshot/.test(location.search)) {
+  if (/autostart|playstart|extendshot|previewshot|yardshot|bridgeshot|doubleshot/.test(location.search)) {
     const s = SCENARIOS[0];
     await boot({
       seed: s.seed,
@@ -2127,7 +2199,7 @@ async function start(): Promise<void> {
       player: { name: 'Iron Empire', color: 0x8fffa8 },
       ais: [{ name: 'Atlas & Pacific', color: 0xff8a4d }],
       load: false,
-      seedStarter: !/playstart|extendshot|previewshot|yardshot|bridgeshot/.test(location.search), // → real-play random home
+      seedStarter: !/playstart|extendshot|previewshot|yardshot|bridgeshot|doubleshot/.test(location.search), // → real-play random home
     });
     return;
   }

@@ -100,6 +100,11 @@ async function main() {
       ui?.crossing?.bridgesWhenRoom && ui?.crossing?.deckClearsTrack && ui?.crossing?.refusesWhenTight && ui?.crossing?.reasonGiven,
       ui?.crossing
     );
+    check(
+      'ui: double-track mode lays a parallel rail along your own line, and tracing it again adds a lane (up to 4)',
+      ui?.doubleTrack?.costPositive && ui?.doubleTrack?.laid && ui?.doubleTrack?.lanesStartTwo && ui?.doubleTrack?.repeatRaisesLane && ui?.doubleTrack?.tracesOwnTrack,
+      ui?.doubleTrack
+    );
     check('ui: track is colour-coded by owner (player rails carry the player livery)', ui?.trackColor?.found && ui?.trackColor?.tinted && ui?.trackColor?.towardPlayer, ui?.trackColor);
     check('ui: a player delivery floats a "+$N" earnings figure', ui?.moneyPop?.shown && ui?.moneyPop?.hasAmount, ui?.moneyPop);
     check('ui: sell train removes it from the line', ui?.sellTrain?.sold, ui?.sellTrain);

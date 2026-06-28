@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Heightfield } from '../world/Heightfield';
-import { Track, TRACK_SIDE, BridgeSpan } from './Track';
+import { Track, TRACK_SIDE, BridgeSpan, DOUBLE_OFFSET } from './Track';
 import { Train, CAR_CAP } from './Train';
 import { CargoKind, CARGO, ALL_CARGO, haulRevenue, marketMult, carCapacity } from './Cargo';
 import { Archetype, CitySite, Recipe, ARCHETYPES, STAGES, STAGE_DEMANDS } from './Economy';
@@ -207,6 +207,10 @@ export interface GLine {
   through: boolean;
   /** Sim-clock time a washout clears (0 = open). While clock < this, trains are halted. */
   blockedUntil: number;
+  /** Parallel-track sections: arc-fraction ranges (u0<u1 along the track) carrying extra rails —
+   *  a passing double-track. `lanes` = total parallel tracks there (2..4). Opposing trains run on
+   *  separate rails through these stretches instead of single-track blocking. */
+  doubled: { u0: number; u1: number; lanes: number }[];
 }
 
 /** A time-limited haul contract: deliver `quantity` of `cargo` to `station` by
@@ -516,6 +520,7 @@ export class Network {
         // [x, y, z] — y is only needed for through-services (raw tracks); regular
         // lines recompute it from the terrain on load.
         wp: l.waypoints.map((p) => [Math.round(p.x), +p.y.toFixed(1), Math.round(p.z)]),
+        doubled: l.doubled.map((d) => ({ u0: +d.u0.toFixed(4), u1: +d.u1.toFixed(4), lanes: d.lanes })),
         trains: l.trains.map((t) => ({
           loco: t.locoClass.id,
           dist: +t.railDist.toFixed(1),
@@ -625,6 +630,12 @@ export class Network {
         cars: t.cars.map((c) => (typeof c === 'string' ? c : (c as { kind: CargoKind }).kind)) as CargoKind[],
       }));
       const line = this.layLine(owner, stops, wp, trains, through);
+      // Restore any doubled (parallel-track) stretches and render their rails.
+      const dd = ld.doubled as { u0: number; u1: number; lanes: number }[] | undefined;
+      if (dd && dd.length) {
+        line.doubled = dd.map((d) => ({ u0: d.u0, u1: d.u1, lanes: d.lanes }));
+        line.track.setDoubled(line.doubled);
+      }
       // Restore each train's position + cargo (cars saved as objects in current format).
       line.trains.forEach((tr, i) => {
         const td = tds[i];
@@ -1265,10 +1276,24 @@ export class Network {
     }
     if (segCost > owner.money) return false;
     owner.money -= segCost;
+    // Keep doubled stretches physically put across the rebuild: capture their world endpoints off
+    // the OLD track, then remap to arc-fractions on the new one.
+    const oldTrack = line.track;
+    const worldDoubles = line.doubled.map((d) => {
+      const a = new THREE.Vector3();
+      const b = new THREE.Vector3();
+      oldTrack.curve.getPointAt(THREE.MathUtils.clamp(Math.min(d.u0, d.u1), 0, 1), a);
+      oldTrack.curve.getPointAt(THREE.MathUtils.clamp(Math.max(d.u0, d.u1), 0, 1), b);
+      return { a, b, lanes: d.lanes };
+    });
     this.scene.remove(line.track.group);
     line.track.dispose();
     line.track = new Track(this.field, wp, true, false, owner.color, bridges);
     this.scene.add(line.track.group);
+    if (worldDoubles.length) {
+      line.doubled = worldDoubles.map((w) => ({ u0: line.track.nearestU(w.a), u1: line.track.nearestU(w.b), lanes: w.lanes }));
+      line.track.setDoubled(line.doubled);
+    }
     line.waypoints = wp;
     if (newStop && !line.stops.includes(newStop)) {
       if (end === 'tail') line.stops.push(newStop);
@@ -1288,6 +1313,109 @@ export class Network {
     }
     if (owner === this.player) this.onBuilt?.();
     return true;
+  }
+
+  /** The nearest point on one of `owner`'s own running lines to world point p (within maxDist) —
+   *  used to trace a double-track alongside existing track. */
+  nearestOnLine(owner: Company, p: THREE.Vector3, maxDist: number): { line: GLine; u: number; pos: THREE.Vector3 } | null {
+    let best: { line: GLine; u: number; pos: THREE.Vector3 } | null = null;
+    let bd = maxDist;
+    for (const l of owner.lines) {
+      if (l.through || l.track.length <= 0) continue;
+      const u = THREE.MathUtils.clamp(l.track.nearestU(p), 0, 1);
+      const pos = new THREE.Vector3();
+      l.track.curve.getPointAt(u, pos);
+      const d = Math.hypot(pos.x - p.x, pos.z - p.z);
+      if (d < bd) { bd = d; best = { line: l, u, pos }; }
+    }
+    return best;
+  }
+
+  /** Cost to lay a parallel rail along `line` between arc-fractions uA..uB (by the stretch's run). */
+  doubleCost(line: GLine, uA: number, uB: number): number {
+    if (line.track.length <= 0) return 0;
+    const u0 = THREE.MathUtils.clamp(Math.min(uA, uB), 0, 1);
+    const u1 = THREE.MathUtils.clamp(Math.max(uA, uB), 0, 1);
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    line.track.curve.getPointAt(u0, a);
+    line.track.curve.getPointAt(u1, b);
+    return Math.round(this.routeCost([a, b]));
+  }
+
+  /** Lay a parallel (double) rail along `line` between arc-fractions uA..uB. Charges by the
+   *  stretch's length; tracing over an already-doubled stretch raises it a lane (3rd, 4th, capped
+   *  at 4 — there's no "triple" control, you just double again). Sets lastBuildIssue on refusal. */
+  addDouble(owner: Company, line: GLine, uA: number, uB: number): boolean {
+    this.lastBuildIssue = null;
+    if (line.through || line.owner !== owner) {
+      this.lastBuildIssue = 'That track is not yours to double.';
+      return false;
+    }
+    const u0 = THREE.MathUtils.clamp(Math.min(uA, uB), 0, 1);
+    const u1 = THREE.MathUtils.clamp(Math.max(uA, uB), 0, 1);
+    if ((u1 - u0) * line.track.length < 24) {
+      this.lastBuildIssue = 'Trace a longer stretch along your track to lay a second rail.';
+      return false;
+    }
+    const cost = this.doubleCost(line, u0, u1);
+    if (cost > owner.money) {
+      this.lastBuildIssue = `A second track there costs $${cost.toLocaleString()} — more than you have.`;
+      return false;
+    }
+    // Merge with any overlapping doubled stretch (union the span, +1 lane up to 4); else add new.
+    let merged = false;
+    for (const d of line.doubled) {
+      const lo = Math.min(d.u0, d.u1);
+      const hi = Math.max(d.u0, d.u1);
+      if (u0 <= hi + 0.02 && u1 >= lo - 0.02) {
+        if (d.lanes >= 4) {
+          this.lastBuildIssue = 'That stretch already carries the maximum of 4 parallel tracks.';
+          return false;
+        }
+        d.u0 = Math.min(lo, u0);
+        d.u1 = Math.max(hi, u1);
+        d.lanes = Math.min(4, d.lanes + 1);
+        merged = true;
+        break;
+      }
+    }
+    if (!merged) line.doubled.push({ u0, u1, lanes: 2 });
+    owner.money -= cost;
+    line.track.setDoubled(line.doubled);
+    if (owner === this.player) this.onBuilt?.();
+    return true;
+  }
+
+  /** Does a doubled stretch fully cover the arc segment [lo,hi]? If so, opposing trains pass on
+   *  separate rails and the single-track dispatcher lets them both run. */
+  private segFullyDoubled(line: GLine, lo: number, hi: number): boolean {
+    if (!line.doubled.length || line.track.length <= 0) return false;
+    const L = line.track.length;
+    const a = Math.min(lo, hi);
+    const b = Math.max(lo, hi);
+    return line.doubled.some((d) => {
+      const dlo = Math.min(d.u0, d.u1) * L;
+      const dhi = Math.max(d.u0, d.u1) * L;
+      return d.lanes >= 2 && dlo <= a + 4 && dhi >= b - 4;
+    });
+  }
+
+  /** Each tick, offset every train onto a parallel rail while it's in a doubled stretch heading
+   *  the minority direction, so opposing services run side by side. */
+  private applyDoubleOffsets(): void {
+    for (const l of this.lines) {
+      const L = l.track.length;
+      if (!l.doubled.length || L <= 0) {
+        for (const t of l.trains) t.setRailOffset(0);
+        continue;
+      }
+      for (const t of l.trains) {
+        const u = THREE.MathUtils.clamp(t.railDist / L, 0, 1);
+        const inDouble = l.doubled.some((d) => d.lanes >= 2 && u >= Math.min(d.u0, d.u1) && u <= Math.max(d.u0, d.u1));
+        t.setRailOffset(inDouble && t.heading < 0 ? DOUBLE_OFFSET : 0);
+      }
+    }
   }
 
   /** Spawn a company's home: a maxed-out station at a city plus a short stub of track to grow
@@ -1502,7 +1630,7 @@ export class Network {
     this.scene.add(track.group);
     const stopFracs = stops.map((s) => track.nearestU(s.pos));
     const value = through ? 0 : this.routeCost(waypoints);
-    const line: GLine = { stops, track, stopFracs, trains: [], owner, value, waypoints, through, earned: 0, trips: 0, bornClock: this.clock, blockedUntil: 0 };
+    const line: GLine = { stops, track, stopFracs, trains: [], owner, value, waypoints, through, earned: 0, trips: 0, bornClock: this.clock, blockedUntil: 0, doubled: [] };
     this.lines.push(line);
     owner.lines.push(line);
     if (!through) {
@@ -1977,6 +2105,8 @@ export class Network {
     // ahead on the same physical rail (world space), so services that share rails at
     // junctions don't telescope.
     this.signal();
+    // Side trains onto their parallel rail through doubled stretches (cosmetic + reads as passing).
+    this.applyDoubleOffsets();
     for (const l of this.lines) {
       // A washed-out line halts its trains where they stand until it rebuilds (clock
       // passes blockedUntil) or the owner pays for an emergency repair.
@@ -2137,6 +2267,7 @@ export class Network {
         const t = ts[i];
         const seg = t.nextSegment();
         if (!seg) continue; // out on the line (committed) or nowhere to go
+        if (this.segFullyDoubled(l, seg.lo, seg.hi)) continue; // double-track: opposing trains pass, no hold
         const dest = t.targetArc(); // the stop t is about to head for
         for (let j = 0; j < ts.length && !held[i]; j++) {
           if (j === i) continue;
