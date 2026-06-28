@@ -354,6 +354,27 @@ async function boot(cfg: BootCfg): Promise<void> {
     }
   }
 
+  // Dev visual-check (?previewshot): force the build-mode ghost over the stub end → a city and
+  // frame it close, to eyeball that the preview reads as real track (ballast + rails), not lines.
+  if (location.search.includes('previewshot') && startHome) {
+    const line = network.player.lines[0];
+    const tip = network.lineEnds(network.player).find((e) => e.line === line && e.pos.distanceTo(startHome!.pos) > 8);
+    let dest: (typeof network.stations)[number] | null = null;
+    let bd = Infinity;
+    if (tip) for (const s of network.stations) {
+      if (s === startHome) continue;
+      const d = s.pos.distanceTo(tip.pos);
+      if (d < bd && d > 70) { bd = d; dest = s; }
+    }
+    if (tip && dest) {
+      builder.start();
+      builder.debugShowPreview([tip.pos.clone(), dest.pos.clone()]);
+      const m = tip.pos.clone().lerp(dest.pos, 0.18);
+      rig.controls.target.copy(m);
+      rig.camera.position.set(m.x + 26, m.y + 22, m.z + 26);
+    }
+  }
+
   // Dev visual-check (?trackshot, never in normal play): build a line across the steepest city
   // pair, then frame the spot where the bed departs most from the land (the biggest cut or fill)
   // close + side-on — a repeatable way to eyeball terrain grading in a headless screenshot.
@@ -676,7 +697,7 @@ async function boot(cfg: BootCfg): Promise<void> {
   document.getElementById('loading')?.classList.add('hidden');
 
   // First-time players get the how-to-play card once (skipped for headless test + screenshot runs).
-  if (!location.search.includes('autostart') && !location.search.includes('playstart') && !location.search.includes('extendshot')) {
+  if (!/autostart|playstart|extendshot|previewshot/.test(location.search)) {
     try {
       if (!localStorage.getItem('ie.helpSeen')) {
         hud.showHelp();
@@ -2011,7 +2032,7 @@ const FALLBACK_GOAL: Goal = networthGoal(2_500_000, 1890);
 async function start(): Promise<void> {
   // Headless verification: ?autostart skips the menu and boots a default game. ?playstart (and
   // ?extendshot) take the REAL play path (random home station + stub, no seeded running line).
-  if (location.search.includes('autostart') || location.search.includes('playstart') || location.search.includes('extendshot')) {
+  if (location.search.includes('autostart') || location.search.includes('playstart') || location.search.includes('extendshot') || location.search.includes('previewshot')) {
     const s = SCENARIOS[0];
     await boot({
       seed: s.seed,
@@ -2023,7 +2044,7 @@ async function start(): Promise<void> {
       player: { name: 'Iron Empire', color: 0x8fffa8 },
       ais: [{ name: 'Atlas & Pacific', color: 0xff8a4d }],
       load: false,
-      seedStarter: !location.search.includes('playstart') && !location.search.includes('extendshot'), // → real-play random home
+      seedStarter: !/playstart|extendshot|previewshot/.test(location.search), // → real-play random home
     });
     return;
   }

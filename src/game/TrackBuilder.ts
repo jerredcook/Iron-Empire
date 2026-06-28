@@ -113,6 +113,19 @@ export class TrackBuilder {
     return this.active;
   }
 
+  /** Dev only: force the ghost preview over a fixed set of points, for headless screenshots. */
+  debugShowPreview(points: THREE.Vector3[]): void {
+    if (points.length < 2) return;
+    this.active = true;
+    this.nodes = points.slice(0, -1).map((p) => ({ pos: p.clone(), station: null }));
+    this.cursor.copy(points[points.length - 1]);
+    this.cursorValid = true;
+    this.snapTarget = null;
+    this.snapEnd = null;
+    this.previewSig = '';
+    this.rebuildPreviewTrack(0xcfe3ff);
+  }
+
   start(): void {
     this.active = true;
     this.emit();
@@ -393,9 +406,32 @@ function buildGhostTrack(points: THREE.Vector3[], tint: number, field: Heightfie
   const curve = new THREE.CatmullRomCurve3(draped, false, 'catmullrom', 0.5);
   const length = Math.max(1, curve.getLength());
 
+  // Gravel ballast bed — a continuous ribbon so the preview reads as REAL track being laid,
+  // not two thin lines.
+  const ballN = Math.min(160, Math.max(6, Math.floor(length / 4)));
+  const bedW = TIE_W * 0.6;
+  const bverts: number[] = [];
+  const bp = new THREE.Vector3();
+  const bt = new THREE.Vector3();
+  const bperp = new THREE.Vector3();
+  for (let i = 0; i <= ballN; i++) {
+    curve.getPointAt(i / ballN, bp);
+    curve.getTangentAt(i / ballN, bt);
+    bperp.crossVectors(bt, UP).normalize();
+    const y = bp.y - 0.24;
+    bverts.push(bp.x - bperp.x * bedW, y, bp.z - bperp.z * bedW);
+    bverts.push(bp.x + bperp.x * bedW, y, bp.z + bperp.z * bedW);
+  }
+  const bidx: number[] = [];
+  for (let i = 0; i < ballN; i++) { const a = i * 2; bidx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  const bgeo = new THREE.BufferGeometry();
+  bgeo.setAttribute('position', new THREE.Float32BufferAttribute(bverts, 3));
+  bgeo.setIndex(bidx);
+  g.add(new THREE.Mesh(bgeo, new THREE.MeshBasicMaterial({ color: 0x837a6d, transparent: true, opacity: 0.62, depthWrite: false, side: THREE.DoubleSide })));
+
   // Ties.
   const tieCount = Math.min(240, Math.max(4, Math.floor(length / 2.4)));
-  const tieMat = new THREE.MeshBasicMaterial({ color: 0x7a5536, transparent: true, opacity: 0.5, depthWrite: false });
+  const tieMat = new THREE.MeshBasicMaterial({ color: 0x5c4630, transparent: true, opacity: 0.78, depthWrite: false });
   const ties = new THREE.InstancedMesh(new THREE.BoxGeometry(TIE_W, 0.22, 0.55), tieMat, tieCount);
   const dummy = new THREE.Object3D();
   const pos = new THREE.Vector3();
@@ -412,8 +448,8 @@ function buildGhostTrack(points: THREE.Vector3[], tint: number, field: Heightfie
   ties.instanceMatrix.needsUpdate = true;
   g.add(ties);
 
-  // Two rails as tinted tubes.
-  const railMat = new THREE.MeshBasicMaterial({ color: tint, transparent: true, opacity: 0.92, depthWrite: false });
+  // Two rails as tinted tubes (a touch thicker + nearly solid so they read as steel).
+  const railMat = new THREE.MeshBasicMaterial({ color: tint, transparent: true, opacity: 0.98, depthWrite: false });
   const railN = Math.min(180, Math.max(8, Math.floor(length / 3)));
   for (const off of [-GAUGE / 2, GAUGE / 2]) {
     const line: THREE.Vector3[] = [];
@@ -427,7 +463,7 @@ function buildGhostTrack(points: THREE.Vector3[], tint: number, field: Heightfie
       line.push(new THREE.Vector3(p.x + perp.x * off, p.y, p.z + perp.z * off));
     }
     const rc = new THREE.CatmullRomCurve3(line, false, 'catmullrom', 0.5);
-    g.add(new THREE.Mesh(new THREE.TubeGeometry(rc, railN, 0.26, 5, false), railMat));
+    g.add(new THREE.Mesh(new THREE.TubeGeometry(rc, railN, 0.32, 6, false), railMat));
   }
   return g;
 }
