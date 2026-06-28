@@ -20,6 +20,8 @@ const INDUSTRY_ROYALTY = 9; // $/unit the industry's owner earns on shipped outp
 const STATION_BONUS = 0.18; // extra haul revenue per depot upgrade level
 const STATION_COST = 70_000; // price to build a depot at a city
 const DOUBLE_TRACK_GAP = 9; // lateral spacing when a line is laid alongside one it duplicates
+const PLATFORM_GAP = 7.5; // spacing between a station's parallel platform tracks
+const PLATFORM_LEN = 24; // how long the parallel platform run is before the berth
 const TOWN_CLEAR = 15; // keep town houses this far off the rails (they relocate clear)
 const DEPOT_CLEAR = 19; // and this far from a depot building, so the station isn't crowded
 
@@ -1161,6 +1163,43 @@ export class Network {
     return out;
   }
 
+  /** Where a NEW line should berth at `city`: the first line gets the city centre; each extra
+   *  line of the same owner gets a PARALLEL PLATFORM track alongside (a brief parallel run into
+   *  an offset berth), so up to 4 trains stand at the one station together. Returns the final
+   *  waypoint(s) of the approach, ordered toward the berth. */
+  private platformBerth(owner: Company, city: GStation): THREE.Vector3[] {
+    const here = owner.lines.filter((l) => !l.through && l.stops.length >= 1 && l.stops.includes(city));
+    const slot = Math.min(here.length, 3); // 0 = centre track; 1..3 = platforms beside it
+    if (slot === 0) return [city.pos.clone()];
+    const first = here[0];
+    const u = Math.max(0, Math.min(1, first.stopFracs[first.stops.indexOf(city)]));
+    const tan = new THREE.Vector3();
+    first.track.curve.getTangentAt(u, tan);
+    tan.y = 0;
+    if (tan.lengthSq() < 1e-4) tan.set(1, 0, 0);
+    tan.normalize();
+    const perp = new THREE.Vector3(-tan.z, 0, tan.x);
+    const berth = city.pos.clone().addScaledVector(perp, slot * PLATFORM_GAP);
+    const lead = berth.clone().addScaledVector(tan, PLATFORM_LEN); // a parallel run into the berth
+    return [lead, berth];
+  }
+
+  /** Replace the route's endpoints with platform berths where the owner already serves that
+   *  city, so a hub station fans into parallel platform tracks. */
+  private withPlatformBerths(owner: Company, stops: GStation[], route: THREE.Vector3[]): THREE.Vector3[] {
+    let r = route.map((p) => p.clone());
+    const a = stops[0];
+    const b = stops[stops.length - 1];
+    if (a && r.length >= 2 && owner.lines.some((l) => !l.through && l.stops.includes(a))) {
+      const berth = this.platformBerth(owner, a); // [lead, berth]
+      r = [...berth.slice().reverse(), ...r.slice(1)]; // berth, lead, …
+    }
+    if (b && b !== a && r.length >= 2 && owner.lines.some((l) => !l.through && l.stops.includes(b))) {
+      r = [...r.slice(0, -1), ...this.platformBerth(owner, b)]; // …, lead, berth
+    }
+    return r;
+  }
+
   /** Extend an existing line from one of its ends: append the new ground waypoints (and an
    *  optional new city stop), charge the added track, and re-lay the rails — the smoothed curve
    *  flows naturally out of the old end. Returns false if unaffordable. */
@@ -1168,7 +1207,11 @@ export class Network {
     if (line.through || addWaypoints.length < 1) return false;
     const owner = line.owner;
     const anchor = end === 'tail' ? line.waypoints[line.waypoints.length - 1] : line.waypoints[0];
-    const added = addWaypoints.map((p) => p.clone());
+    let added = addWaypoints.map((p) => p.clone());
+    // If we're reaching a city this railroad already serves, berth on a parallel platform track.
+    if (newStop && added.length && owner.lines.some((l) => !l.through && l.stops.includes(newStop))) {
+      added = [...added.slice(0, -1), ...this.platformBerth(owner, newStop)];
+    }
     const segCost = this.routeCost([anchor.clone(), ...added]);
     if (segCost > owner.money) return false;
     owner.money -= segCost;
@@ -1308,7 +1351,8 @@ export class Network {
     // clean parallel double-track, instead of overlapping (and blocking) it.
     // A duplicate corridor is silently shouldered aside so two lines never overlap-and-jam — but
     // it's not advertised: the point of a new line is to reach a NEW place, not parallel an old one.
-    const route = this.parallelOffset(owner, stops, waypoints);
+    // Endpoints at a city this owner already serves berth on a parallel platform track.
+    const route = this.withPlatformBerths(owner, stops, this.parallelOffset(owner, stops, waypoints));
     // A train only runs (and is only paid for) when this owner has its OWN depot at 2+ stops.
     const runnable = stops.length >= 2 && !!loco && stops.filter((s) => s.depots.has(owner)).length >= 2;
     const cost = this.routeCost(route) + (runnable ? loco!.cost : 0);

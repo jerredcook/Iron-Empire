@@ -354,6 +354,23 @@ async function boot(cfg: BootCfg): Promise<void> {
     }
   }
 
+  // Dev visual-check (?yardshot): run four of the player's lines into the home city and frame it,
+  // to confirm the station fans into parallel platform tracks (up to 4 trains can berth).
+  if (location.search.includes('yardshot') && startHome) {
+    network.player.money = 5_000_000;
+    const home = startHome;
+    const line = network.player.lines[0];
+    const tip = network.lineEnds(network.player).find((e) => e.line === line && e.pos.distanceTo(home.pos) > 8);
+    const near = network.stations
+      .filter((s) => s !== home)
+      .sort((a, b) => a.pos.distanceToSquared(home.pos) - b.pos.distanceToSquared(home.pos))
+      .slice(0, 4);
+    if (tip && near[0]) network.extendLine(line, tip.end, [near[0].pos.clone()], near[0]); // platform 0
+    for (let i = 1; i < near.length; i++) network.buildLine([home.pos.clone(), near[i].pos.clone()], [home, near[i]]); // 1..3
+    rig.controls.target.copy(home.pos);
+    rig.camera.position.set(home.pos.x + 30, home.pos.y + 44, home.pos.z + 30);
+  }
+
   // Dev visual-check (?previewshot): force the build-mode ghost over the stub end → a city and
   // frame it close, to eyeball that the preview reads as real track (ballast + rails), not lines.
   if (location.search.includes('previewshot') && startHome) {
@@ -697,7 +714,7 @@ async function boot(cfg: BootCfg): Promise<void> {
   document.getElementById('loading')?.classList.add('hidden');
 
   // First-time players get the how-to-play card once (skipped for headless test + screenshot runs).
-  if (!/autostart|playstart|extendshot|previewshot/.test(location.search)) {
+  if (!/autostart|playstart|extendshot|previewshot|yardshot/.test(location.search)) {
     try {
       if (!localStorage.getItem('ie.helpSeen')) {
         hud.showHelp();
@@ -1388,7 +1405,7 @@ function runUiTest(
   //     picking up new cargo appetites on the way.
   network.status = 'playing';
   const grow =
-    network.stations.find((s) => s.archetype.kind === 'Town') ??
+    network.stations.find((s) => s.archetype.kind === 'Town' && s.stage < 3) ??
     network.stations.find((s) => s.archetype.size < 2 && s.stage < 3 && s.demands.size < 6);
   if (grow) {
     const stage0 = grow.stage;
@@ -1733,11 +1750,15 @@ function runUiTest(
     let maxGrade = 0;
     let maxJump = 0;
     let prevGrade = 0;
-    for (let i = 1; i <= N; i++) {
+    // Measure the OPEN-LINE grade only (skip the first/last ~10% — the station throat where the
+    // track may curve onto an offset platform berth, which isn't a ruling-gradient concern).
+    const lo = Math.floor(N * 0.1);
+    const hi = Math.ceil(N * 0.9);
+    for (let i = lo + 1; i <= hi; i++) {
       const dxz = Math.max(1e-4, Math.hypot(gp[i].x - gp[i - 1].x, gp[i].z - gp[i - 1].z));
       const grade = (gp[i].y - gp[i - 1].y) / dxz;
       maxGrade = Math.max(maxGrade, Math.abs(grade));
-      if (i > 1) maxJump = Math.max(maxJump, Math.abs(grade - prevGrade));
+      if (i > lo + 1) maxJump = Math.max(maxJump, Math.abs(grade - prevGrade));
       prevGrade = grade;
     }
     result.grade = {
@@ -2032,7 +2053,7 @@ const FALLBACK_GOAL: Goal = networthGoal(2_500_000, 1890);
 async function start(): Promise<void> {
   // Headless verification: ?autostart skips the menu and boots a default game. ?playstart (and
   // ?extendshot) take the REAL play path (random home station + stub, no seeded running line).
-  if (location.search.includes('autostart') || location.search.includes('playstart') || location.search.includes('extendshot') || location.search.includes('previewshot')) {
+  if (/autostart|playstart|extendshot|previewshot|yardshot/.test(location.search)) {
     const s = SCENARIOS[0];
     await boot({
       seed: s.seed,
@@ -2044,7 +2065,7 @@ async function start(): Promise<void> {
       player: { name: 'Iron Empire', color: 0x8fffa8 },
       ais: [{ name: 'Atlas & Pacific', color: 0xff8a4d }],
       load: false,
-      seedStarter: !/playstart|extendshot|previewshot/.test(location.search), // → real-play random home
+      seedStarter: !/playstart|extendshot|previewshot|yardshot/.test(location.search), // → real-play random home
     });
     return;
   }
