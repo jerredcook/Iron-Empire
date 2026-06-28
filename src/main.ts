@@ -348,8 +348,9 @@ async function boot(cfg: BootCfg): Promise<void> {
     }
     if (tip && dest) {
       network.extendLine(line, tip.end, [dest.pos.clone()], dest);
-      rig.controls.target.copy(tip.pos);
-      rig.camera.position.set(tip.pos.x + 38, tip.pos.y + 52, tip.pos.z + 38);
+      const h = startHome!.pos;
+      rig.controls.target.copy(h);
+      rig.camera.position.set(h.x + 34, h.y + 48, h.z + 34); // frame the HOME station + town + track
     }
   }
 
@@ -1968,7 +1969,8 @@ function runAiTest(network: Network): void {
   let result: Record<string, unknown> = { hasAI: false };
   if (ai) {
     ai.money = 5_000_000;
-    const before = network.lines.filter((l) => l.owner.isAI).length;
+    // Cities served by AI track — grows whether the rival adds a new line OR extends one.
+    const before = network.lines.filter((l) => l.owner.isAI).reduce((a, l) => a + l.stops.length, 0);
     for (let i = 0; i < 7000; i++) {
       network.status = 'playing';
       network.update(1 / 30);
@@ -1986,7 +1988,7 @@ function runAiTest(network: Network): void {
     const defunctAIs = network.companies.filter((c) => c.isAI && c.defunct).length;
     result = {
       hasAI: true,
-      expands: aiLines.length > before,
+      expands: aiLines.reduce((a, l) => a + l.stops.length, 0) > before,
       reinforces: maxTrains >= 2,
       upgrades: maxLevel >= 1 || anyWarehouse,
       invests: totalHoldings > 0 || defunctAIs > 0,

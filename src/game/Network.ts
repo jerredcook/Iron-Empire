@@ -21,6 +21,7 @@ const STATION_BONUS = 0.18; // extra haul revenue per depot upgrade level
 const STATION_COST = 70_000; // price to build a depot at a city
 const DOUBLE_TRACK_GAP = 9; // lateral spacing when a line is laid alongside one it duplicates
 const TOWN_CLEAR = 15; // keep town houses this far off the rails (they relocate clear)
+const DEPOT_CLEAR = 19; // and this far from a depot building, so the station isn't crowded
 
 /** Distance from point p to segment a→b in the XZ plane. */
 function pointSegDist(p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3): number {
@@ -730,7 +731,15 @@ export class Network {
       });
     }
     const base = this.seed + st.id * 131;
-    const avoid = (lx: number, lz: number): boolean => this.field.nearCorridor(st.pos.x + lx, st.pos.z + lz, TOWN_CLEAR);
+    const avoid = (lx: number, lz: number): boolean => {
+      const wx = st.pos.x + lx, wz = st.pos.z + lz;
+      if (this.field.nearCorridor(wx, wz, TOWN_CLEAR)) return true;
+      // Give each depot building elbow room — houses make way for the station, not the reverse.
+      for (const d of st.depots.values()) {
+        if (Math.hypot(d.mesh.position.x - wx, d.mesh.position.z - wz) < DEPOT_CLEAR) return true;
+      }
+      return false;
+    };
     st.townGroup.add(buildTown(base, st.archetype.houses, 13, 47, avoid));
     for (let t = 0; t < st.tier; t++) {
       st.townGroup.add(buildTown(base + (t + 1) * 7919, 5 + t, 50 + t * 16, 64 + t * 16, avoid));
@@ -827,6 +836,7 @@ export class Network {
     st.depots.set(owner, depot);
     if (owner === this.player) st.hasStation = true;
     this.alignDepot(st, owner); // sit it beside its line's rails, or face the nearest city
+    this.rebuildTown(st); // relocate houses that now crowd the depot
     this.assignCatchment();
   }
 
@@ -2159,13 +2169,16 @@ export class Network {
   /** Build the cheapest unbuilt trading corridor, scaling the network cap with net worth
    *  and floating a bond to cover a shortfall when the company is creditworthy. */
   private aiExpand(c: Company): boolean {
-    const lineCap = Math.min(10, 3 + Math.floor(Math.max(0, c.netWorth) / 1_500_000));
-    if (c.lines.length >= lineCap) return false;
+    // Cap the network by CITIES SERVED, not line count — extending grows the trunk without
+    // adding lines, so a line cap would let it expand forever and never invest its profits.
+    const cap = Math.min(13, 4 + Math.floor(Math.max(0, c.netWorth) / 1_200_000));
+    const served = c.lines.reduce((a, l) => a + (l.through ? 0 : l.stops.length), 0);
+    if (served >= cap) return false;
     const loco = defaultLoco(this.year);
     // Build OUT from its own network, just like the player — once it has any track, a new line
     // must touch a city it already serves (its first line bootstraps the network from anywhere).
     const rooted = c.lines.length > 0;
-    let best: { a: GStation; b: GStation; cost: number } | null = null;
+    let best: { a: GStation; b: GStation; cost: number; score: number } | null = null;
     for (let i = 0; i < this.stations.length; i++) {
       for (let j = i + 1; j < this.stations.length; j++) {
         const a = this.stations[i];
@@ -2178,7 +2191,10 @@ export class Network {
         // depot is no use to it.
         const depots = (a.depots.has(c) ? 0 : STATION_COST) + (b.depots.has(c) ? 0 : STATION_COST);
         const cost = this.lineCost([a.pos, b.pos], loco) + depots;
-        if (!best || cost < best.cost) best = { a, b, cost };
+        // Prefer GROWING the trunk — an extension off a free end curves out continuously —
+        // over a branch that would T at a shared city.
+        const score = cost - (rooted && (this.aiEndAt(c, a) || this.aiEndAt(c, b)) ? 50_000 : 0);
+        if (!best || score < best.score) best = { a, b, cost, score };
       }
     }
     if (!best) return false;
@@ -2194,7 +2210,24 @@ export class Network {
         this.placeDepot(st, c);
       }
     }
+    // Prefer EXTENDING a line that already ends at one of these cities — continuous track that
+    // curves out of the old end — over a fresh line that would T at the shared city. Its existing
+    // train just shuttles the longer route.
+    const endA = this.aiEndAt(c, best.a);
+    const endB = this.aiEndAt(c, best.b);
+    if (endA) return this.extendLine(endA.line, endA.end, [best.b.pos], best.b);
+    if (endB) return this.extendLine(endB.line, endB.end, [best.a.pos], best.a);
     return this.buildLineFor(c, [best.a.pos, best.b.pos], [best.a, best.b], loco);
+  }
+
+  /** A line of this company that terminates AT this city (so it can be extended onward), or null. */
+  private aiEndAt(c: Company, city: GStation): { line: GLine; end: 'head' | 'tail' } | null {
+    for (const l of c.lines) {
+      if (l.through || l.stops.length < 1) continue;
+      if (l.stops[l.stops.length - 1] === city) return { line: l, end: 'tail' };
+      if (l.stops[0] === city) return { line: l, end: 'head' };
+    }
+    return null;
   }
 
   /** Park spare cash in the cheapest rival's stock — accumulating toward a takeover of
