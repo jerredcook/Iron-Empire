@@ -301,6 +301,13 @@ async function main() {
     check('economy: rival stays solvent', (ec?.rivalNetWorth ?? -1e9) > -100_000, ec);
     check('economy: player state is sane', typeof ec?.money === 'number' && !!ec?.status, ec);
     check('economy: markets actually saturate over a long run', (ec?.peakSat ?? 0) > 0, ec);
+    check(
+      'economy: every supply chain world-gens its links (coal mine, timber mill, factory, food/furniture/paper/auto plants, oil + fishery)',
+      ['Mining Camp', 'Iron Mine', 'Steelworks', 'Timber Mill', 'Factory', 'Grain Mill', 'Furniture Works', 'Paper Mill', 'Auto Plant', 'Oil Field', 'Fishery'].every(
+        (k) => (ec?.industries?.[k] ?? 0) >= 1
+      ),
+      ec?.industries
+    );
     check('ownership: each railroad builds its OWN depots — rivals never share a station', (ec?.aiDepots ?? 0) > 0 && (ec?.multiDepot ?? 0) > 0, ec);
 
     console.log('• Speed-control test…');

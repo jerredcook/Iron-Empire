@@ -286,28 +286,35 @@ export function placeCities(field: Heightfield, seed: number, count: number): Ci
     picks.push({ x, z, key });
   }
 
-  // Guarantee every chain can close — raws have a producer, each finished good a plant — by
-  // forcing any missing link onto the best-fitting site not already claimed this pass.
+  // Guarantee every chain can close — at least 3 cities to sell to, a producer for every raw,
+  // and a plant for every finished good. LOCK an existing instance of each (so a later forced
+  // link can't clobber the sole one — the bug that left maps with no timber mill), and only
+  // force a still-missing link onto the best-fitting unlocked site.
   const forced = new Set<number>();
+  const lockOrAdd = (key: keyof typeof ARCHETYPES, min = 1): void => {
+    let n = 0;
+    for (let i = 0; i < picks.length && n < min; i++) {
+      if (!forced.has(i) && picks[i].key === key) { forced.add(i); n++; }
+    }
+    while (n < min) {
+      let bi = -1, bs = -Infinity;
+      for (let i = 0; i < picks.length; i++) {
+        if (forced.has(i)) continue;
+        const sc = catchment(key, field, picks[i].x, picks[i].z);
+        if (sc > bs) { bs = sc; bi = i; }
+      }
+      if (bi < 0) break;
+      picks[bi].key = key;
+      forced.add(bi);
+      n++;
+    }
+  };
+  lockOrAdd('city', 3); // consumers first, so the chains can't eat them
   for (const need of [
     'mine', 'mill', 'factory', 'ironmine', 'steelmill',
     'farm', 'oilwell', 'fishery', 'foodplant', 'furnitureworks', 'papermill', 'autoplant',
   ] as const) {
-    if (picks.some((p) => p.key === need)) continue;
-    let bi = -1;
-    let bs = -Infinity;
-    for (let i = 0; i < picks.length; i++) {
-      if (forced.has(i)) continue;
-      const s = catchment(need, field, picks[i].x, picks[i].z);
-      if (s > bs) {
-        bs = s;
-        bi = i;
-      }
-    }
-    if (bi >= 0) {
-      picks[bi].key = need;
-      forced.add(bi);
-    }
+    lockOrAdd(need);
   }
 
   const sites: CitySite[] = [];

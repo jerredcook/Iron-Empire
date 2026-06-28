@@ -453,6 +453,8 @@ async function boot(cfg: BootCfg): Promise<void> {
       // and the rival's total self-built depots (it never free-rides on the player's).
       multiDepot: network.stations.filter((s) => s.depots.size > 1).length,
       aiDepots: network.stations.reduce((a, s) => a + [...s.depots.keys()].filter((o) => o.isAI).length, 0),
+      // Industry histogram — every supply chain must world-generate its links.
+      industries: (() => { const h: Record<string, number> = {}; for (const s of network.stations) h[s.archetype.kind] = (h[s.archetype.kind] ?? 0) + 1; return h; })(),
     });
   };
 
