@@ -153,7 +153,12 @@ async function boot(cfg: BootCfg): Promise<void> {
     }
     // Lay TRACK ONLY — never auto-start a train. The player adds trains deliberately from the
     // line's panel ("🚂 Start a train"), so a line never sprouts a train it didn't ask for.
-    network.buildLine(waypoints, stops); // onTrackBuilt grades the terrain + clears the corridor
+    // enforce=true: a crossing of existing track is bridged over if there's room to slope up, else
+    // the build is refused (no charge) with the reason.
+    if (!network.buildLine(waypoints, stops, undefined, undefined, true)) {
+      hud.news(network.lastBuildIssue ?? 'Not enough cash for that track.', false);
+      return;
+    }
     const bare = stops.filter((s) => !s.hasStation);
     if (bare.length) {
       const names = bare.map((s) => s.name).join(' & ');
@@ -165,8 +170,8 @@ async function boot(cfg: BootCfg): Promise<void> {
   // Extending an existing line from its free end (continuing the stub) — the track flows out of
   // the old end with a curve, and the new city becomes a stop on that same line.
   builder.onExtend = (line, end, waypoints, finalStop) => {
-    if (!network.extendLine(line, end, waypoints, finalStop)) {
-      hud.news("Not enough cash for that track.", false);
+    if (!network.extendLine(line, end, waypoints, finalStop, true)) {
+      hud.news(network.lastBuildIssue ?? 'Not enough cash for that track.', false);
       return;
     }
     if (finalStop && !finalStop.hasStation) {
@@ -369,6 +374,43 @@ async function boot(cfg: BootCfg): Promise<void> {
     for (let i = 1; i < near.length; i++) network.buildLine([home.pos.clone(), near[i].pos.clone()], [home, near[i]]); // 1..3
     rig.controls.target.copy(home.pos);
     rig.camera.position.set(home.pos.x + 30, home.pos.y + 44, home.pos.z + 30);
+  }
+
+  // Dev visual-check (?bridgeshot): lay one long line, then a second that crosses it in open
+  // country, and frame the crossing — to confirm the second auto-bridges OVER the first (a deck
+  // on trestles), rather than crossing at grade.
+  if (location.search.includes('bridgeshot') && startHome) {
+    network.player.money = 12_000_000;
+    network.goal = networthGoal(Number.MAX_SAFE_INTEGER, 99999); // don't auto-win mid-sim
+    const ss = network.stations;
+    let A0 = ss[0];
+    let A1 = ss[1];
+    let bestD = 0;
+    for (let i = 0; i < ss.length; i++)
+      for (let j = i + 1; j < ss.length; j++) {
+        const d = ss[i].pos.distanceToSquared(ss[j].pos);
+        if (d > bestD) { bestD = d; A0 = ss[i]; A1 = ss[j]; }
+      }
+    network.buildLine([A0.pos.clone(), A1.pos.clone()], [A0, A1], undefined, undefined, true); // line A
+    // Choose the crossing on the DRIEST land (highest ground) for the clearest land-bridge shot.
+    let best: { i: number; j: number; pos: THREE.Vector3; g: number } | null = null;
+    for (let i = 0; i < ss.length; i++)
+      for (let j = i + 1; j < ss.length; j++) {
+        if (ss[i] === A0 || ss[i] === A1 || ss[j] === A0 || ss[j] === A1) continue;
+        const plan = network.bridgePlan(network.player, [ss[i].pos.clone(), ss[j].pos.clone()]);
+        if (plan.error || !plan.bridges.length) continue;
+        const p = plan.bridges[0].pos;
+        const g = network.groundAt(p.x, p.z);
+        if (!best || g > best.g) best = { i, j, pos: p.clone(), g };
+      }
+    let cross: THREE.Vector3 | null = null;
+    if (best) {
+      network.buildLine([ss[best.i].pos.clone(), ss[best.j].pos.clone()], [ss[best.i], ss[best.j]], undefined, undefined, true); // line B → bridges over A
+      cross = best.pos;
+    }
+    const f = cross ?? A0.pos;
+    rig.controls.target.copy(f);
+    rig.camera.position.set(f.x + 26, f.y + 20, f.z + 26);
   }
 
   // Dev visual-check (?previewshot): force the build-mode ghost over the stub end → a city and
@@ -714,7 +756,7 @@ async function boot(cfg: BootCfg): Promise<void> {
   document.getElementById('loading')?.classList.add('hidden');
 
   // First-time players get the how-to-play card once (skipped for headless test + screenshot runs).
-  if (!/autostart|playstart|extendshot|previewshot|yardshot/.test(location.search)) {
+  if (!/autostart|playstart|extendshot|previewshot|yardshot|bridgeshot/.test(location.search)) {
     try {
       if (!localStorage.getItem('ie.helpSeen')) {
         hud.showHelp();
@@ -1769,6 +1811,26 @@ function runUiTest(
       // a cliff — even the most elevation-varied corridor runs an even ruling gradient.
       smooth: maxJump <= 0.02 && maxGrade <= 0.25,
     };
+
+    // NN) Grade separation: a track that would cross an existing line auto-bridges OVER it when
+    //     there's room to slope up to clearance, and is REFUSED (with a reason) when the crossing
+    //     is too close to ramp over. Reuse the line just built (`ga`→`gb`) as the existing track.
+    const built = network.player.lines[network.player.lines.length - 1];
+    const w = built.waypoints;
+    const mid = w[0].clone().lerp(w[w.length - 1], 0.5);
+    const dir = w[w.length - 1].clone().sub(w[0]).setY(0).normalize();
+    const perp = new THREE.Vector3(-dir.z, 0, dir.x);
+    // A long perpendicular run crosses at the midpoint with 150u of slope each side (≥ ramp) → bridge.
+    const wide = network.bridgePlan(network.player, [mid.clone().addScaledVector(perp, 150), mid.clone().addScaledVector(perp, -150)]);
+    // A short run crosses at the same point but only 50u each side — no room to slope → refusal.
+    const tight = network.bridgePlan(network.player, [mid.clone().addScaledVector(perp, 50), mid.clone().addScaledVector(perp, -50)]);
+    const overBridge = wide.bridges.find((b) => Math.hypot(b.pos.x - mid.x, b.pos.z - mid.z) < 30);
+    result.crossing = {
+      bridgesWhenRoom: !wide.error && !!overBridge,
+      deckClearsTrack: !!overBridge && overBridge.deckY - network.groundAt(mid.x, mid.z) >= 4,
+      refusesWhenTight: !!tight.error,
+      reasonGiven: !!tight.error && /cross|bridge|station/i.test(tight.error),
+    };
   }
 
   // MM) Track is colour-coded by owner: a player line's rails carry the player's livery (a
@@ -2053,7 +2115,7 @@ const FALLBACK_GOAL: Goal = networthGoal(2_500_000, 1890);
 async function start(): Promise<void> {
   // Headless verification: ?autostart skips the menu and boots a default game. ?playstart (and
   // ?extendshot) take the REAL play path (random home station + stub, no seeded running line).
-  if (/autostart|playstart|extendshot|previewshot|yardshot/.test(location.search)) {
+  if (/autostart|playstart|extendshot|previewshot|yardshot|bridgeshot/.test(location.search)) {
     const s = SCENARIOS[0];
     await boot({
       seed: s.seed,
@@ -2065,7 +2127,7 @@ async function start(): Promise<void> {
       player: { name: 'Iron Empire', color: 0x8fffa8 },
       ais: [{ name: 'Atlas & Pacific', color: 0xff8a4d }],
       load: false,
-      seedStarter: !/playstart|extendshot|previewshot|yardshot/.test(location.search), // → real-play random home
+      seedStarter: !/playstart|extendshot|previewshot|yardshot|bridgeshot/.test(location.search), // → real-play random home
     });
     return;
   }

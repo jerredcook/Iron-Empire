@@ -11,6 +11,16 @@ const RAIL_HEAD = 0.85; // deck height above ground
 const TIE_SPACING = 2.2;
 const BED_DROP = 1.0; // ground sits this far below the rail head — just under the ballast
 const BED_HALF = 4.5; // half-width of the level roadbed shelf the ground is graded to
+// A grade-separation ramp half-length: where this line must ride OVER another track, the deck
+// climbs to clearance across this distance on each side (must match Network.BRIDGE_APPROACH so
+// the build only commits where there's room for the slope).
+const BRIDGE_RAMP = 110;
+
+/** A point where this line must bridge OVER existing track: the deck is lifted to `deckY` here. */
+export interface BridgeSpan {
+  pos: THREE.Vector3;
+  deckY: number;
+}
 
 /**
  * A rail line draped over the landscape with an engineered profile: elevations are
@@ -30,7 +40,7 @@ export class Track {
    * (movement-only) takes the given points as the exact curve, skipping the
    * densify+grade pass, so a through-service sits precisely on the rails it traces.
    */
-  constructor(private field: Heightfield, waypoints: THREE.Vector3[], visual = true, raw = false, private tint?: number) {
+  constructor(private field: Heightfield, waypoints: THREE.Vector3[], visual = true, raw = false, private tint?: number, private bridges: BridgeSpan[] = []) {
     if (raw) {
       this.curve = new THREE.CatmullRomCurve3(waypoints.map((p) => p.clone()), false, 'catmullrom', 0.5);
       this.curve.arcLengthDivisions = waypoints.length * 6;
@@ -53,6 +63,11 @@ export class Track {
       }
     }
     this.smoothGrade(pts);
+    // Remember the ground-hugging profile BEFORE any bridge lift — the LAND is graded to this, so
+    // where the deck rides up over another track the ground stays low and the deck spans it on
+    // trestles (a real bridge), instead of the whole hump becoming a solid embankment.
+    const baseY = pts.map((p) => p.y);
+    this.raiseBridges(pts);
 
     this.curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
     this.curve.arcLengthDivisions = pts.length * 6;
@@ -66,7 +81,7 @@ export class Track {
     // Cut and fill the land to the engineered bed BEFORE building the structure, so the ballast,
     // trestles and tunnels read the graded ground: embankments replace stilts over dips, cuttings
     // replace track buried in a rise.
-    field.addCorridor(pts.map((p) => ({ x: p.x, z: p.z, y: p.y - BED_DROP })), BED_HALF);
+    field.addCorridor(pts.map((p, i) => ({ x: p.x, z: p.z, y: baseY[i] - BED_DROP })), BED_HALF);
 
     this.group.add(this.buildBallast());
     this.group.add(this.buildTies());
@@ -106,6 +121,23 @@ export class Track {
         for (const mat of Array.isArray(m.material) ? m.material : [m.material]) mat.dispose();
       }
     });
+  }
+
+  /** Lift the deck up and over each grade-separation crossing: a smooth hump that reaches the
+   *  required clearance right at the crossing and eases back to the ground profile over BRIDGE_RAMP
+   *  on each side. Applied AFTER the grade pass so the bridge approaches read as a deliberate
+   *  climb, not the rolling terrain. */
+  private raiseBridges(pts: THREE.Vector3[]): void {
+    for (const br of this.bridges) {
+      for (const p of pts) {
+        const dist = Math.hypot(p.x - br.pos.x, p.z - br.pos.z);
+        if (dist >= BRIDGE_RAMP) continue;
+        const t = 1 - dist / BRIDGE_RAMP; // 1 at the crossing, 0 at the ramp ends
+        const ease = t * t * (3 - 2 * t); // smoothstep — gentle slope, no kink
+        const lift = (br.deckY - p.y) * ease;
+        if (lift > 0) p.y += lift;
+      }
+    }
   }
 
   /** Engineer the vertical profile like a real railroad: a near-constant grade between the

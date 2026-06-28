@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Heightfield } from '../world/Heightfield';
-import { Track, TRACK_SIDE } from './Track';
+import { Track, TRACK_SIDE, BridgeSpan } from './Track';
 import { Train, CAR_CAP } from './Train';
 import { CargoKind, CARGO, ALL_CARGO, haulRevenue, marketMult, carCapacity } from './Cargo';
 import { Archetype, CitySite, Recipe, ARCHETYPES, STAGES, STAGE_DEMANDS } from './Economy';
@@ -21,6 +21,29 @@ const STATION_BONUS = 0.18; // extra haul revenue per depot upgrade level
 const STATION_COST = 70_000; // price to build a depot at a city
 const DOUBLE_TRACK_GAP = 9; // lateral spacing when a line is laid alongside one it duplicates
 const PLATFORM_GAP = 7.5; // spacing between a station's parallel platform tracks
+const BRIDGE_CLEAR = 6; // a deck rides this far above the track it bridges over
+const BRIDGE_APPROACH = 110; // must match Track.BRIDGE_RAMP — room each side to slope up to the deck
+const CROSS_NEAR_STATION = 34; // a crossing this close to a station is yard convergence, not a conflict
+
+/** XZ intersection of segment a→b with c→d (interior only, not shared endpoints). Returns the
+ *  crossing point plus the height of EACH segment there, or null if they don't cross. */
+function segCrossXZ(
+  a: THREE.Vector3,
+  b: THREE.Vector3,
+  c: THREE.Vector3,
+  d: THREE.Vector3
+): { x: number; z: number; ny: number; ey: number } | null {
+  const rx = b.x - a.x;
+  const rz = b.z - a.z;
+  const sx = d.x - c.x;
+  const sz = d.z - c.z;
+  const denom = rx * sz - rz * sx;
+  if (Math.abs(denom) < 1e-9) return null; // parallel / collinear
+  const t = ((c.x - a.x) * sz - (c.z - a.z) * sx) / denom;
+  const u = ((c.x - a.x) * rz - (c.z - a.z) * rx) / denom;
+  if (t <= 0.01 || t >= 0.99 || u <= 0.01 || u >= 0.99) return null; // touching at a shared end ≠ a crossing
+  return { x: a.x + t * rx, z: a.z + t * rz, ny: a.y + t * (b.y - a.y), ey: c.y + u * (d.y - c.y) };
+}
 const PLATFORM_LEN = 24; // how long the parallel platform run is before the berth
 const TOWN_CLEAR = 15; // keep town houses this far off the rails (they relocate clear)
 const DEPOT_CLEAR = 19; // and this far from a depot building, so the station isn't crowded
@@ -332,6 +355,13 @@ export class Network {
   private clock = 0;
   /** City-pair keys the player has already been paid a first-connection bonus for. */
   private firstConnected = new Set<string>();
+  /** Why the last enforced build was refused (crossing too tight to bridge), for the HUD. */
+  lastBuildIssue: string | null = null;
+
+  /** Terrain height at a world XZ — for UI/harnesses that need the ground without the heightfield. */
+  groundAt(x: number, z: number): number {
+    return this.field.height(x, z);
+  }
   /** Haul contracts — offered on the board, then accepted and worked by the player. */
   readonly contracts: Contract[] = [];
   private contractTimer = CONTRACT_FIRST_DELAY;
@@ -1209,8 +1239,9 @@ export class Network {
   /** Extend an existing line from one of its ends: append the new ground waypoints (and an
    *  optional new city stop), charge the added track, and re-lay the rails — the smoothed curve
    *  flows naturally out of the old end. Returns false if unaffordable. */
-  extendLine(line: GLine, end: 'head' | 'tail', addWaypoints: THREE.Vector3[], newStop: GStation | null): boolean {
+  extendLine(line: GLine, end: 'head' | 'tail', addWaypoints: THREE.Vector3[], newStop: GStation | null, enforce = false): boolean {
     if (line.through || addWaypoints.length < 1) return false;
+    this.lastBuildIssue = null;
     const owner = line.owner;
     const anchor = end === 'tail' ? line.waypoints[line.waypoints.length - 1] : line.waypoints[0];
     let added = addWaypoints.map((p) => p.clone());
@@ -1221,12 +1252,22 @@ export class Network {
       added = [...added.slice(0, -1), ...this.platformBerth(owner, newStop, fromPos)];
     }
     const segCost = this.routeCost([anchor.clone(), ...added]);
+    const wp = end === 'tail' ? [...line.waypoints, ...added] : [...[...added].reverse(), ...line.waypoints];
+    // Grade-separate (or refuse) any crossing of OTHER lines before charging.
+    let bridges: BridgeSpan[] = [];
+    if (enforce) {
+      const plan = this.bridgePlan(owner, wp, line);
+      if (plan.error) {
+        this.lastBuildIssue = plan.error;
+        return false;
+      }
+      bridges = plan.bridges;
+    }
     if (segCost > owner.money) return false;
     owner.money -= segCost;
-    const wp = end === 'tail' ? [...line.waypoints, ...added] : [...added.reverse(), ...line.waypoints];
     this.scene.remove(line.track.group);
     line.track.dispose();
-    line.track = new Track(this.field, wp, true, false, owner.color);
+    line.track = new Track(this.field, wp, true, false, owner.color, bridges);
     this.scene.add(line.track.group);
     line.waypoints = wp;
     if (newStop && !line.stops.includes(newStop)) {
@@ -1322,8 +1363,8 @@ export class Network {
    * staffed by the chosen locomotive. Deducts cost, lays the Track, and puts a train
    * on it. Returns false (building nothing) if the player can't afford it.
    */
-  buildLine(waypoints: THREE.Vector3[], stops: GStation[], loco?: LocoClass, cars?: CargoKind[]): boolean {
-    return this.buildLineFor(this.player, waypoints, stops, loco, cars);
+  buildLine(waypoints: THREE.Vector3[], stops: GStation[], loco?: LocoClass, cars?: CargoKind[], enforce = false): boolean {
+    return this.buildLineFor(this.player, waypoints, stops, loco, cars, enforce);
   }
 
   /** If this owner already runs a line over the same set of cities, shift the new route sideways
@@ -1353,14 +1394,62 @@ export class Network {
    * train). With 2+ stops and a locomotive, a train is put on it. Returns false (and
    * builds nothing) if unaffordable.
    */
-  buildLineFor(owner: Company, waypoints: THREE.Vector3[], stops: GStation[], loco?: LocoClass, cars?: CargoKind[]): boolean {
+  /** Plan grade separations for a route `owner` is about to build. Wherever it would cross an
+   *  existing line at grade, raise it onto a bridge — but ONLY if there's room on both sides to
+   *  slope up to clearance. If a crossing falls too close to a station to ramp over, refuse the
+   *  whole build and return why. `exclude` skips a line from the check (its own track, when
+   *  extending). */
+  bridgePlan(owner: Company, route: THREE.Vector3[], exclude?: GLine): { bridges: BridgeSpan[]; error: string | null } {
+    const bridges: BridgeSpan[] = [];
+    const arc: number[] = [0];
+    for (let i = 1; i < route.length; i++) {
+      arc[i] = arc[i - 1] + Math.hypot(route[i].x - route[i - 1].x, route[i].z - route[i - 1].z);
+    }
+    const total = arc[arc.length - 1];
+    for (const l of this.lines) {
+      if (l === exclude || l.through || l.waypoints.length < 2) continue;
+      for (let i = 0; i + 1 < route.length; i++) {
+        for (let j = 0; j + 1 < l.waypoints.length; j++) {
+          const hit = segCrossXZ(route[i], route[i + 1], l.waypoints[j], l.waypoints[j + 1]);
+          if (!hit) continue;
+          // Two lines may share the apron right at a station (the platform yard) — not a crossing.
+          if (this.stations.some((s) => Math.hypot(s.pos.x - hit.x, s.pos.z - hit.z) < CROSS_NEAR_STATION)) continue;
+          // Already grade-separated (one rides well above the other)? Then there's no conflict.
+          if (Math.abs(hit.ny - hit.ey) > BRIDGE_CLEAR * 0.7) continue;
+          const at = arc[i] + Math.hypot(route[i].x - hit.x, route[i].z - hit.z);
+          if (at < BRIDGE_APPROACH || total - at < BRIDGE_APPROACH) {
+            const whose = l.owner === owner ? 'your own track' : `${l.owner.name}'s track`;
+            return {
+              bridges: [],
+              error: `Can't lay that — it would cross ${whose} too close to a station to bridge over it (no room to slope up). Route around it, or start further out.`,
+            };
+          }
+          bridges.push({ pos: new THREE.Vector3(hit.x, hit.ey, hit.z), deckY: hit.ey + BRIDGE_CLEAR });
+        }
+      }
+    }
+    return { bridges, error: null };
+  }
+
+  buildLineFor(owner: Company, waypoints: THREE.Vector3[], stops: GStation[], loco?: LocoClass, cars?: CargoKind[], enforce = false): boolean {
     if (waypoints.length < 2) return false;
+    this.lastBuildIssue = null;
     // Lay a line that duplicates a corridor this railroad already runs ALONGSIDE the first as a
     // clean parallel double-track, instead of overlapping (and blocking) it.
     // A duplicate corridor is silently shouldered aside so two lines never overlap-and-jam — but
     // it's not advertised: the point of a new line is to reach a NEW place, not parallel an old one.
     // Endpoints at a city this owner already serves berth on a parallel platform track.
     const route = this.withPlatformBerths(owner, stops, this.parallelOffset(owner, stops, waypoints));
+    // Grade-separate (or refuse) any crossing of existing track before spending a cent.
+    let bridges: BridgeSpan[] = [];
+    if (enforce) {
+      const plan = this.bridgePlan(owner, route);
+      if (plan.error) {
+        this.lastBuildIssue = plan.error;
+        return false;
+      }
+      bridges = plan.bridges;
+    }
     // A train only runs (and is only paid for) when this owner has its OWN depot at 2+ stops.
     const runnable = stops.length >= 2 && !!loco && stops.filter((s) => s.depots.has(owner)).length >= 2;
     const cost = this.routeCost(route) + (runnable ? loco!.cost : 0);
@@ -1384,7 +1473,7 @@ export class Network {
       }
     }
     const trains = runnable ? [{ loco: loco!, cars: cars ?? this.defaultConsist(stops, loco!) }] : [];
-    this.layLine(owner, stops, route, trains);
+    this.layLine(owner, stops, route, trains, false, bridges);
     // Snap this owner's depots onto this line's rails the first time it serves them.
     for (const st of stops) {
       const d = st.depots.get(owner);
@@ -1406,9 +1495,10 @@ export class Network {
     stops: GStation[],
     waypoints: THREE.Vector3[],
     trains: { loco: LocoClass; cars: CargoKind[] }[],
-    through = false
+    through = false,
+    bridges: BridgeSpan[] = []
   ): GLine {
-    const track = new Track(this.field, waypoints, !through, through, owner.color);
+    const track = new Track(this.field, waypoints, !through, through, owner.color, bridges);
     this.scene.add(track.group);
     const stopFracs = stops.map((s) => track.nearestU(s.pos));
     const value = through ? 0 : this.routeCost(waypoints);
@@ -2266,9 +2356,9 @@ export class Network {
     // train just shuttles the longer route.
     const endA = this.aiEndAt(c, best.a);
     const endB = this.aiEndAt(c, best.b);
-    if (endA) return this.extendLine(endA.line, endA.end, [best.b.pos], best.b);
-    if (endB) return this.extendLine(endB.line, endB.end, [best.a.pos], best.a);
-    return this.buildLineFor(c, [best.a.pos, best.b.pos], [best.a, best.b], loco);
+    if (endA) return this.extendLine(endA.line, endA.end, [best.b.pos], best.b, true);
+    if (endB) return this.extendLine(endB.line, endB.end, [best.a.pos], best.a, true);
+    return this.buildLineFor(c, [best.a.pos, best.b.pos], [best.a, best.b], loco, undefined, true);
   }
 
   /** A line of this company that terminates AT this city (so it can be extended onward), or null. */
