@@ -1163,11 +1163,11 @@ export class Network {
     return out;
   }
 
-  /** Where a NEW line should berth at `city`: the first line gets the city centre; each extra
-   *  line of the same owner gets a PARALLEL PLATFORM track alongside (a brief parallel run into
-   *  an offset berth), so up to 4 trains stand at the one station together. Returns the final
-   *  waypoint(s) of the approach, ordered toward the berth. */
-  private platformBerth(owner: Company, city: GStation): THREE.Vector3[] {
+  /** Where a NEW line should berth at `city`, approaching from `fromPos`: the first line gets the
+   *  centre track; each extra line of the same owner gets a PARALLEL PLATFORM alongside — offset
+   *  to the SIDE the line approaches from, with a brief parallel run in, so it never has to cross
+   *  the existing track to reach its berth. Returns the final waypoint(s), ordered toward berth. */
+  private platformBerth(owner: Company, city: GStation, fromPos: THREE.Vector3): THREE.Vector3[] {
     const here = owner.lines.filter((l) => !l.through && l.stops.length >= 1 && l.stops.includes(city));
     const slot = Math.min(here.length, 3); // 0 = centre track; 1..3 = platforms beside it
     if (slot === 0) return [city.pos.clone()];
@@ -1179,23 +1179,29 @@ export class Network {
     if (tan.lengthSq() < 1e-4) tan.set(1, 0, 0);
     tan.normalize();
     const perp = new THREE.Vector3(-tan.z, 0, tan.x);
-    const berth = city.pos.clone().addScaledVector(perp, slot * PLATFORM_GAP);
-    const lead = berth.clone().addScaledVector(tan, PLATFORM_LEN); // a parallel run into the berth
+    // Offset toward the approach side so the new track stays clear of the existing one.
+    const toFrom = fromPos.clone().sub(city.pos);
+    toFrom.y = 0;
+    const side = toFrom.dot(perp) >= 0 ? 1 : -1;
+    const berth = city.pos.clone().addScaledVector(perp, side * slot * PLATFORM_GAP);
+    // Brief parallel run into the berth, laid on the approach side (toward fromPos).
+    const leadSign = fromPos.clone().sub(berth).dot(tan) >= 0 ? 1 : -1;
+    const lead = berth.clone().addScaledVector(tan, leadSign * PLATFORM_LEN);
     return [lead, berth];
   }
 
   /** Replace the route's endpoints with platform berths where the owner already serves that
-   *  city, so a hub station fans into parallel platform tracks. */
+   *  city, so a hub station fans into parallel platform tracks (each on its own approach side). */
   private withPlatformBerths(owner: Company, stops: GStation[], route: THREE.Vector3[]): THREE.Vector3[] {
     let r = route.map((p) => p.clone());
     const a = stops[0];
     const b = stops[stops.length - 1];
     if (a && r.length >= 2 && owner.lines.some((l) => !l.through && l.stops.includes(a))) {
-      const berth = this.platformBerth(owner, a); // [lead, berth]
+      const berth = this.platformBerth(owner, a, r[1]); // approaches from the next point
       r = [...berth.slice().reverse(), ...r.slice(1)]; // berth, lead, …
     }
     if (b && b !== a && r.length >= 2 && owner.lines.some((l) => !l.through && l.stops.includes(b))) {
-      r = [...r.slice(0, -1), ...this.platformBerth(owner, b)]; // …, lead, berth
+      r = [...r.slice(0, -1), ...this.platformBerth(owner, b, r[r.length - 2])]; // …, lead, berth
     }
     return r;
   }
@@ -1208,9 +1214,11 @@ export class Network {
     const owner = line.owner;
     const anchor = end === 'tail' ? line.waypoints[line.waypoints.length - 1] : line.waypoints[0];
     let added = addWaypoints.map((p) => p.clone());
-    // If we're reaching a city this railroad already serves, berth on a parallel platform track.
+    // If we're reaching a city this railroad already serves, berth on a parallel platform track,
+    // offset toward the side we're approaching from (so it doesn't cross the existing track).
     if (newStop && added.length && owner.lines.some((l) => !l.through && l.stops.includes(newStop))) {
-      added = [...added.slice(0, -1), ...this.platformBerth(owner, newStop)];
+      const fromPos = added.length >= 2 ? added[added.length - 2] : anchor;
+      added = [...added.slice(0, -1), ...this.platformBerth(owner, newStop, fromPos)];
     }
     const segCost = this.routeCost([anchor.clone(), ...added]);
     if (segCost > owner.money) return false;
@@ -2222,23 +2230,22 @@ export class Network {
     // Build OUT from its own network, just like the player — once it has any track, a new line
     // must touch a city it already serves (its first line bootstraps the network from anywhere).
     const rooted = c.lines.length > 0;
-    let best: { a: GStation; b: GStation; cost: number; score: number } | null = null;
+    let best: { a: GStation; b: GStation; cost: number } | null = null;
     for (let i = 0; i < this.stations.length; i++) {
       for (let j = i + 1; j < this.stations.length; j++) {
         const a = this.stations[i];
         const b = this.stations[j];
         if (c.connects(a, b)) continue;
         if (!this.offersOf(a).some((k) => b.demands.has(k)) && !this.offersOf(b).some((k) => a.demands.has(k))) continue;
-        if (rooted && !this.inNetwork(c, a) && !this.inNetwork(c, b)) continue; // stay connected
+        // Once it has track, only EXTEND from a free END of a line — never branch a new line off
+        // a city it passes through (that's the right-angle T). Its network grows as a curving trunk.
+        if (rooted && !this.aiEndAt(c, a) && !this.aiEndAt(c, b)) continue;
         if (this.lineCountAt(c, a) >= this.maxLinesPerStation || this.lineCountAt(c, b) >= this.maxLinesPerStation) continue;
         // It must build its OWN depot at any endpoint it doesn't already serve — a rival's
         // depot is no use to it.
         const depots = (a.depots.has(c) ? 0 : STATION_COST) + (b.depots.has(c) ? 0 : STATION_COST);
         const cost = this.lineCost([a.pos, b.pos], loco) + depots;
-        // Prefer GROWING the trunk — an extension off a free end curves out continuously —
-        // over a branch that would T at a shared city.
-        const score = cost - (rooted && (this.aiEndAt(c, a) || this.aiEndAt(c, b)) ? 50_000 : 0);
-        if (!best || score < best.score) best = { a, b, cost, score };
+        if (!best || cost < best.cost) best = { a, b, cost };
       }
     }
     if (!best) return false;
