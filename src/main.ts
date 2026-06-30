@@ -1923,6 +1923,26 @@ function runUiTest(
     }
   }
 
+  // PP) A station is a HUB: pressing it starts a NEW line (a new platform, up to 4 to different
+  //     destinations), not an extension of the line already berthed there. Only a genuine
+  //     open-country tip (the starter stub) is an extendable end.
+  {
+    network.status = 'playing';
+    network.player.money = 4_000_000;
+    const hub = network.stations.find((s) => !network.inNetwork(network.player, s)) ?? network.stations[3];
+    const tip = hub.pos.clone().add(new THREE.Vector3(72, 0, 0));
+    tip.y = network.groundAt(tip.x, tip.z);
+    network.buildLine([hub.pos.clone(), tip], [hub]); // a 1-stop open-ended stub
+    const stub = network.player.lines[network.player.lines.length - 1];
+    const ends = network.extendableEnds(network.player).filter((e) => e.line === stub);
+    const tipExtends = ends.some((e) => Math.hypot(e.pos.x - tip.x, e.pos.z - tip.z) < 10);
+    const stationEndExcluded = !ends.some((e) => Math.hypot(e.pos.x - hub.pos.x, e.pos.z - hub.pos.z) < 36);
+    result.stationHub = {
+      onlyTipExtends: ends.length === 1 && tipExtends,
+      stationEndIsPlatform: stationEndExcluded,
+    };
+  }
+
   // MM) Track is colour-coded by owner: a player line's rails carry the player's livery (a
   //     green-ish steel), not bare grey steel — so your track reads as yours at a glance.
   {

@@ -24,6 +24,7 @@ const PLATFORM_GAP = 7.5; // spacing between a station's parallel platform track
 const BRIDGE_CLEAR = 6; // a deck rides this far above the track it bridges over
 const BRIDGE_APPROACH = 110; // must match Track.BRIDGE_RAMP — room each side to slope up to the deck
 const CROSS_NEAR_STATION = 34; // a crossing this close to a station is yard convergence, not a conflict
+const STATION_END = 36; // a line-end within this of its own station stop is a platform, not a free tip
 
 /** XZ intersection of segment a→b with c→d (interior only, not shared endpoints). Returns the
  *  crossing point plus the height of EACH segment there, or null if they don't cross. */
@@ -1203,6 +1204,16 @@ export class Network {
       out.push({ line: l, end: 'tail', pos: w[w.length - 1].clone(), dir: w[w.length - 1].clone().sub(w[w.length - 2]).setY(0).normalize() });
     }
     return out;
+  }
+
+  /** Line-ends a NEW track can connect to and continue (the player's track-laying snaps to these).
+   *  An end sitting at one of its line's STATION stops is a platform — you start a new line there
+   *  (a new platform, up to 4 per station) rather than extend the line that already berths there —
+   *  so only genuine open-country tips (e.g. the starter stub) are returned. */
+  extendableEnds(company: Company): { line: GLine; end: 'head' | 'tail'; pos: THREE.Vector3; dir: THREE.Vector3 }[] {
+    return this.lineEnds(company).filter(
+      (e) => !e.line.stops.some((s) => Math.hypot(s.pos.x - e.pos.x, s.pos.z - e.pos.z) < STATION_END)
+    );
   }
 
   /** Where a NEW line should berth at `city`, approaching from `fromPos`: the first line gets the

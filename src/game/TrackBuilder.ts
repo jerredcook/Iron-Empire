@@ -409,11 +409,14 @@ export class TrackBuilder {
     if (this.snapTarget) this.cursor.copy(this.snapTarget.pos);
   }
 
-  /** The free line-end of yours nearest the cursor, within `maxDist` — or null. */
+  /** The free line-end of yours nearest the cursor, within `maxDist` — or null. An end that sits
+   *  at one of its line's STATION stops is a platform, not a free tip: we skip it so pressing a
+   *  station starts a NEW line there (a new platform, up to 4 per station) instead of extending the
+   *  line that already berths there. Only genuine open-country tips (e.g. the starter stub) extend. */
   private nearestLineEnd(p: THREE.Vector3, maxDist: number): typeof this.snapEnd {
     let best: typeof this.snapEnd = null;
     let bd = maxDist;
-    for (const e of this.network.lineEnds(this.network.player)) {
+    for (const e of this.network.extendableEnds(this.network.player)) {
       const d = Math.hypot(e.pos.x - p.x, e.pos.z - p.z);
       if (d < bd) { bd = d; best = e; }
     }

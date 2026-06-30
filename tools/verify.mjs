@@ -105,6 +105,11 @@ async function main() {
       ui?.doubleTrack?.costPositive && ui?.doubleTrack?.laid && ui?.doubleTrack?.lanesStartTwo && ui?.doubleTrack?.repeatRaisesLane && ui?.doubleTrack?.tracesOwnTrack && ui?.doubleTrack?.extendsAfterDouble,
       ui?.doubleTrack
     );
+    check(
+      'ui: a station is a hub — pressing it starts a NEW line (a platform), only an open-country tip extends',
+      ui?.stationHub?.onlyTipExtends && ui?.stationHub?.stationEndIsPlatform,
+      ui?.stationHub
+    );
     check('ui: track is colour-coded by owner (player rails carry the player livery)', ui?.trackColor?.found && ui?.trackColor?.tinted && ui?.trackColor?.towardPlayer, ui?.trackColor);
     check('ui: a player delivery floats a "+$N" earnings figure', ui?.moneyPop?.shown && ui?.moneyPop?.hasAmount, ui?.moneyPop);
     check('ui: sell train removes it from the line', ui?.sellTrain?.sold, ui?.sellTrain);
