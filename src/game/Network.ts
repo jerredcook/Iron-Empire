@@ -925,10 +925,16 @@ export class Network {
     }
     if (dir.lengthSq() < 1e-6) dir.set(1, 0, 0);
     dir.normalize();
+    // The station GROWS with the number of platforms (this railroad's lines berthing here): a
+    // bigger station building, set a touch further off the rails so it clears the fan of platform
+    // tracks — so a 4-line hub reads as a grand station, not the same shed a single stub gets.
+    const platforms = Math.min(4, this.lines.filter((l) => l.owner === owner && !l.through && l.stops.includes(st)).length || 1);
+    const grow = 1 + (platforms - 1) * 0.3;
+    depot.mesh.scale.set(grow, 1 + (platforms - 1) * 0.14, grow);
     // Sit the depot just off one side of the track so its platform's track edge (+X local)
     // runs right alongside the rails (its long axis +Z parallel to them) — a station ON the
     // line, not a building nearby.
-    const SIDE = 6.5 + slot * 9;
+    const SIDE = 6.5 + slot * 9 + (platforms - 1) * 3.5;
     const px = at.x - dir.z * SIDE;
     const pz = at.z + dir.x * SIDE;
     depot.mesh.position.set(px, this.field.height(px, pz), pz);
@@ -1615,10 +1621,14 @@ export class Network {
     }
     const trains = runnable ? [{ loco: loco!, cars: cars ?? this.defaultConsist(stops, loco!) }] : [];
     this.layLine(owner, stops, route, trains, false, bridges);
-    // Snap this owner's depots onto this line's rails the first time it serves them.
+    // Snap this owner's depots onto this line's rails, and re-grow the station to its new platform
+    // count (each new line berthing here makes the station bigger). Clear any houses it now covers.
     for (const st of stops) {
       const d = st.depots.get(owner);
-      if (d && !d.aligned) this.alignDepot(st, owner);
+      if (d) {
+        this.alignDepot(st, owner);
+        if (owner === this.player) this.rebuildTown(st);
+      }
     }
     if (bonus > 0) {
       owner.money += bonus;
