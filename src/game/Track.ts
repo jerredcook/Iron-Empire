@@ -346,6 +346,8 @@ export class Track {
     const railMat = new THREE.MeshStandardMaterial({ color: steel, metalness: 0.92, roughness: 0.32 });
     const w = terrainSet('weathered_planks', 8);
     const tieMat = new THREE.MeshStandardMaterial({ map: w.map, normalMap: w.normalMap, roughness: 0.92 });
+    const gravel = terrainSet('gravel_ground_01', 8);
+    const gravelMat = new THREE.MeshStandardMaterial({ map: gravel.map, normalMap: gravel.normalMap, roughnessMap: gravel.roughnessMap, roughness: 1 });
     const grp = new THREE.Group();
     const pos = new THREE.Vector3();
     const tan = new THREE.Vector3();
@@ -361,6 +363,53 @@ export class Track {
       const sign = span.side < 0 ? -1 : 1; // which side of the running line the parallels sit on
       for (let lane = 1; lane < lanes; lane++) {
         const laneOff = lane * DOUBLE_OFFSET * sign;
+        // Gravel ballast bed under this lane (mirrors the running line's, offset to the lane and
+        // skipped wherever the deck stands clear of the ground — open trestle, not embankment).
+        {
+          const topW = GAUGE * 0.85 + 0.5;
+          const botW = GAUGE * 1.25 + 0.9;
+          const depth = 0.55;
+          const bn = Math.max(6, Math.floor(segLen / 3));
+          const bverts: number[] = [];
+          const buvs: number[] = [];
+          const onLand: boolean[] = [];
+          for (let i = 0; i <= bn; i++) {
+            const u = u0 + (u1 - u0) * (i / bn);
+            this.curve.getPointAt(u, pos);
+            this.curve.getTangentAt(u, tan);
+            perp.crossVectors(tan, UP).normalize();
+            const cx = pos.x + perp.x * laneOff;
+            const cz = pos.z + perp.z * laneOff;
+            const ground = this.field.height(cx, cz);
+            onLand.push(ground >= this.field.params.seaLevel - 0.2 && pos.y - RAIL_HEAD - ground < 1.6);
+            const yTop = pos.y - 0.42;
+            const yBot = yTop - depth;
+            const v = (u * this.length) / 9;
+            const px = [-botW, -topW, topW, botW];
+            const py = [yBot, yTop, yTop, yBot];
+            for (let k = 0; k < 4; k++) {
+              bverts.push(cx + perp.x * px[k], py[k], cz + perp.z * px[k]);
+              buvs.push(k / 3, v);
+            }
+          }
+          const bidx: number[] = [];
+          for (let i = 0; i < bn; i++) {
+            if (!onLand[i] || !onLand[i + 1]) continue;
+            const a = i * 4;
+            for (let k = 0; k < 3; k++) bidx.push(a + k, a + k + 1, a + k + 4, a + k + 1, a + k + 5, a + k + 4);
+          }
+          if (bidx.length) {
+            const bgeo = new THREE.BufferGeometry();
+            bgeo.setAttribute('position', new THREE.Float32BufferAttribute(bverts, 3));
+            bgeo.setAttribute('uv', new THREE.Float32BufferAttribute(buvs, 2));
+            bgeo.setIndex(bidx);
+            bgeo.computeVertexNormals();
+            const bmesh = new THREE.Mesh(bgeo, gravelMat);
+            bmesh.receiveShadow = true;
+            bmesh.castShadow = true;
+            grp.add(bmesh);
+          }
+        }
         const tieCount = Math.max(3, Math.floor(segLen / TIE_SPACING));
         const ties = new THREE.InstancedMesh(new THREE.BoxGeometry(GAUGE + 1.6, 0.18, 0.5), tieMat, tieCount);
         for (let i = 0; i < tieCount; i++) {

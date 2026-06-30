@@ -440,7 +440,7 @@ async function boot(cfg: BootCfg): Promise<void> {
       const mid = new THREE.Vector3();
       line.track.curve.getPointAt(0.52, mid);
       rig.controls.target.copy(mid);
-      rig.camera.position.set(mid.x + 22, mid.y + 16, mid.z + 22);
+      rig.camera.position.set(mid.x + 13, mid.y + 26, mid.z + 13); // steep, to look past trees onto the bed
     }
   }
 
