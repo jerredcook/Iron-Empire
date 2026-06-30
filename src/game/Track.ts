@@ -52,7 +52,7 @@ export class Track {
     raw = false,
     private tint?: number,
     private bridges: BridgeSpan[] = [],
-    private doubled: { u0: number; u1: number; lanes: number }[] = []
+    private doubled: { u0: number; u1: number; lanes: number; side: number }[] = []
   ) {
     if (raw) {
       this.curve = new THREE.CatmullRomCurve3(waypoints.map((p) => p.clone()), false, 'catmullrom', 0.5);
@@ -321,7 +321,7 @@ export class Track {
   /** Replace this track's doubled stretches and re-render their parallel rails in place — so a
    *  line can be upgraded to double-track without rebuilding the running line (its trains keep
    *  their track reference). */
-  setDoubled(spans: { u0: number; u1: number; lanes: number }[]): void {
+  setDoubled(spans: { u0: number; u1: number; lanes: number; side: number }[]): void {
     this.doubled = spans;
     this.buildDoubleRails();
   }
@@ -358,8 +358,9 @@ export class Track {
       const segLen = (u1 - u0) * this.length;
       const n = Math.max(8, Math.floor(segLen / 2));
       const lanes = THREE.MathUtils.clamp(Math.round(span.lanes), 2, 4);
+      const sign = span.side < 0 ? -1 : 1; // which side of the running line the parallels sit on
       for (let lane = 1; lane < lanes; lane++) {
-        const laneOff = lane * DOUBLE_OFFSET;
+        const laneOff = lane * DOUBLE_OFFSET * sign;
         const tieCount = Math.max(3, Math.floor(segLen / TIE_SPACING));
         const ties = new THREE.InstancedMesh(new THREE.BoxGeometry(GAUGE + 1.6, 0.18, 0.5), tieMat, tieCount);
         for (let i = 0; i < tieCount; i++) {

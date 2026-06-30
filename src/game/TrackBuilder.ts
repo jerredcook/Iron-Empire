@@ -45,13 +45,16 @@ export class TrackBuilder {
   onCommit?: (nodes: RouteNode[]) => void;
   /** Fired when the route EXTENDS one of the player's existing lines from a free end. */
   onExtend?: (line: GLine, end: 'head' | 'tail', waypoints: THREE.Vector3[], finalStop: GStation | null) => void;
-  /** Fired when a stretch of one of the player's lines is traced to lay a parallel (double) rail. */
-  onDouble?: (line: GLine, u0: number, u1: number) => void;
+  /** Fired when a stretch of one of the player's lines is traced to lay a parallel (double) rail.
+   *  `side` (+1/-1) is which side of the line the new rail goes — the side you dragged on. */
+  onDouble?: (line: GLine, u0: number, u1: number, side: number) => void;
 
   /** 'single' lays new track; 'double' traces along your own track to lay a parallel rail beside it. */
   private mode: 'single' | 'double' = 'single';
-  /** The stretch of your track being traced for a double rail (arc-fractions along that line). */
-  private doubleTrace: { line: GLine; u0: number; u1: number } | null = null;
+  /** The stretch of your track being traced for a double rail (arc-fractions along that line). `side`
+   *  is the side you're dragging on; `maxOff` tracks the most decisive lateral offset so a wobble
+   *  across the rail doesn't flip the side. */
+  private doubleTrace: { line: GLine; u0: number; u1: number; side: number; maxOff: number } | null = null;
   private dragging = false;
   private active = false;
   private pulseT = 0;
@@ -260,7 +263,8 @@ export class TrackBuilder {
     this.dragging = true;
     this.raycastGround(e);
     const near = this.cursorValid ? this.network.nearestOnLine(this.network.player, this.cursor, DOUBLE_SNAP) : null;
-    this.doubleTrace = near ? { line: near.line, u0: near.u, u1: near.u } : null;
+    this.doubleTrace = near ? { line: near.line, u0: near.u, u1: near.u, side: 1, maxOff: 0 } : null;
+    if (this.doubleTrace) this.updateTraceSide(near!.u);
     this.refreshDoubleVisuals();
   }
 
@@ -268,6 +272,7 @@ export class TrackBuilder {
     this.raycastGround(e);
     if (this.dragging && this.doubleTrace && this.cursorValid) {
       this.doubleTrace.u1 = THREE.MathUtils.clamp(this.doubleTrace.line.track.nearestU(this.cursor), 0, 1);
+      this.updateTraceSide(this.doubleTrace.u1);
     }
     this.refreshDoubleVisuals();
   }
@@ -277,12 +282,33 @@ export class TrackBuilder {
     if (e.button !== 0) return;
     this.dragging = false;
     const tr = this.doubleTrace;
-    if (tr && Math.abs(tr.u1 - tr.u0) * tr.line.track.length >= 24) {
-      this.onDouble?.(tr.line, Math.min(tr.u0, tr.u1), Math.max(tr.u0, tr.u1));
-    }
+    const committed = !!tr && Math.abs(tr.u1 - tr.u0) * tr.line.track.length >= 24;
+    if (committed && tr) this.onDouble?.(tr.line, Math.min(tr.u0, tr.u1), Math.max(tr.u0, tr.u1), tr.side);
     this.doubleTrace = null;
     this.clearPreviewTrack();
-    this.emit();
+    // After laying a rail, drop back to Single so you can immediately keep building/extending track
+    // (re-select Double for a 3rd/4th rail on the same stretch). Avoids getting stuck in Double mode.
+    if (committed) this.setMode('single');
+    else this.emit();
+  }
+
+  /** Lock the trace's side to whichever side of the track the cursor is most decisively on, so a
+   *  wobble back over the rail mid-drag doesn't flip it. */
+  private updateTraceSide(u: number): void {
+    const tr = this.doubleTrace;
+    if (!tr) return;
+    const tp = new THREE.Vector3();
+    const tan = new THREE.Vector3();
+    tr.line.track.curve.getPointAt(THREE.MathUtils.clamp(u, 0, 1), tp);
+    tr.line.track.curve.getTangentAt(THREE.MathUtils.clamp(u, 0, 1), tan);
+    const perpx = -tan.z;
+    const perpz = tan.x;
+    const len = Math.hypot(perpx, perpz) || 1;
+    const off = ((this.cursor.x - tp.x) * perpx + (this.cursor.z - tp.z) * perpz) / len;
+    if (Math.abs(off) > Math.abs(tr.maxOff)) {
+      tr.maxOff = off;
+      tr.side = off >= 0 ? 1 : -1;
+    }
   }
 
   /** Project the pointer onto the terrain only (no city/line snap) — for double-mode tracing. */
@@ -302,7 +328,7 @@ export class TrackBuilder {
     this.connectMarker.visible = false;
     const pts = this.doubleTrace ? this.doubleGhostPoints(this.doubleTrace) : [];
     if (pts.length >= 2) {
-      const sig = `d|${Math.round(this.doubleTrace!.u0 * 200)}|${Math.round(this.doubleTrace!.u1 * 200)}`;
+      const sig = `d|${Math.round(this.doubleTrace!.u0 * 200)}|${Math.round(this.doubleTrace!.u1 * 200)}|${this.doubleTrace!.side}`;
       if (sig !== this.previewSig || !this.previewTrack) {
         this.previewSig = sig;
         this.clearPreviewTrack();
@@ -318,12 +344,13 @@ export class TrackBuilder {
 
   /** Sample the traced stretch of the line's curve, offset to the parallel-rail side, draped on
    *  the ground — the ghost of the second rail about to be laid. */
-  private doubleGhostPoints(trace: { line: GLine; u0: number; u1: number }): THREE.Vector3[] {
+  private doubleGhostPoints(trace: { line: GLine; u0: number; u1: number; side: number }): THREE.Vector3[] {
     const { line } = trace;
     const u0 = Math.min(trace.u0, trace.u1);
     const u1 = Math.max(trace.u0, trace.u1);
     const segLen = (u1 - u0) * line.track.length;
     if (segLen < 8) return [];
+    const off = DOUBLE_OFFSET * (trace.side < 0 ? -1 : 1); // the side you're dragging on
     const n = Math.max(2, Math.floor(segLen / 14));
     const pts: THREE.Vector3[] = [];
     const p = new THREE.Vector3();
@@ -335,8 +362,8 @@ export class TrackBuilder {
       line.track.curve.getPointAt(u, p);
       line.track.curve.getTangentAt(u, t);
       perp.crossVectors(t, UP).normalize();
-      const x = p.x + perp.x * DOUBLE_OFFSET;
-      const z = p.z + perp.z * DOUBLE_OFFSET;
+      const x = p.x + perp.x * off;
+      const z = p.z + perp.z * off;
       const y = Math.max(this.field.height(x, z), floor) + 0.7;
       pts.push(new THREE.Vector3(x, y, z));
     }

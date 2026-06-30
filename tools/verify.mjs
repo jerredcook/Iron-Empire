@@ -101,8 +101,8 @@ async function main() {
       ui?.crossing
     );
     check(
-      'ui: double-track mode lays a parallel rail along your own line, and tracing it again adds a lane (up to 4)',
-      ui?.doubleTrack?.costPositive && ui?.doubleTrack?.laid && ui?.doubleTrack?.lanesStartTwo && ui?.doubleTrack?.repeatRaisesLane && ui?.doubleTrack?.tracesOwnTrack,
+      'ui: double-track mode lays a parallel rail along your own line, tracing it again adds a lane, and the line still extends',
+      ui?.doubleTrack?.costPositive && ui?.doubleTrack?.laid && ui?.doubleTrack?.lanesStartTwo && ui?.doubleTrack?.repeatRaisesLane && ui?.doubleTrack?.tracesOwnTrack && ui?.doubleTrack?.extendsAfterDouble,
       ui?.doubleTrack
     );
     check('ui: track is colour-coded by owner (player rails carry the player livery)', ui?.trackColor?.found && ui?.trackColor?.tinted && ui?.trackColor?.towardPlayer, ui?.trackColor);

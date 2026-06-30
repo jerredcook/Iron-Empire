@@ -171,8 +171,8 @@ async function boot(cfg: BootCfg): Promise<void> {
   // Extending an existing line from its free end (continuing the stub) — the track flows out of
   // the old end with a curve, and the new city becomes a stop on that same line.
   // Double-track: a traced stretch of the player's own line gets a parallel rail so trains pass.
-  builder.onDouble = (line, u0, u1) => {
-    if (!network.addDouble(network.player, line, u0, u1)) {
+  builder.onDouble = (line, u0, u1, side) => {
+    if (!network.addDouble(network.player, line, u0, u1, side)) {
       hud.news(network.lastBuildIssue ?? 'Could not lay a second track there.', false);
       return;
     }
@@ -435,7 +435,8 @@ async function boot(cfg: BootCfg): Promise<void> {
       if (!near.hasStation) network.buildStationAt(near);
       network.buildLine([home.pos.clone(), near.pos.clone()], [home, near], undefined, undefined, true);
       const line = network.player.lines[network.player.lines.length - 1];
-      network.addDouble(network.player, line, 0.32, 0.72);
+      const dside = location.search.includes('neg') ? -1 : 1; // ?doubleshot&neg → trace the other side
+      network.addDouble(network.player, line, 0.32, 0.72, dside);
       const mid = new THREE.Vector3();
       line.track.curve.getPointAt(0.52, mid);
       rig.controls.target.copy(mid);
@@ -1895,12 +1896,29 @@ function runUiTest(
       const mid = new THREE.Vector3();
       line.track.curve.getPointAt(0.5, mid);
       const traced = network.nearestOnLine(network.player, mid, 30);
+      // A doubled line must still EXTEND from its free end (the user's "can't add track" report) —
+      // and keep its double across the rebuild.
+      let extendsAfterDouble = true;
+      const tip = network.lineEnds(network.player).find((e) => e.line === line);
+      const dest = tip
+        ? network.stations
+            .filter((s) => !line!.stops.includes(s))
+            .map((s) => ({ s, d: s.pos.distanceTo(tip.pos) }))
+            .filter((o) => o.d > 60 && o.d < 360)
+            .sort((x, y) => x.d - y.d)[0]
+        : null;
+      if (tip && dest) {
+        const before = line.track.length;
+        extendsAfterDouble =
+          network.extendLine(line, tip.end, [dest.s.pos.clone()], dest.s) && line.track.length > before + 10 && line.doubled.length >= 1;
+      }
       result.doubleTrack = {
         costPositive: cost > 0,
         laid: laid && line.doubled.length === 1,
         lanesStartTwo: lanes2 === 2,
         repeatRaisesLane: laidAgain && lanes3 === 3,
         tracesOwnTrack: !!traced && traced.line === line,
+        extendsAfterDouble,
       };
     }
   }
