@@ -20,8 +20,6 @@ export class HUD {
   private banner: HTMLDivElement;
   private bannerText!: HTMLDivElement;
   private finishBtn!: HTMLButtonElement;
-  private modeSingleBtn!: HTMLButtonElement;
-  private modeDoubleBtn!: HTMLButtonElement;
   private ledger: HTMLDivElement;
   private roster!: HTMLDivElement;
   private rosterKey = '';
@@ -69,8 +67,7 @@ export class HUD {
     onToggleSound: () => boolean,
     onSpeed: (scale: number) => void,
     private onSelectTrain: (line: GLine, train: Train) => void,
-    private onAcceptContract: (c: Contract) => void,
-    onSetMode: (m: 'single' | 'double') => void = () => {}
+    private onAcceptContract: (c: Contract) => void
   ) {
     this.selectedLoco = defaultLoco(network.year);
     this.root = el('div', {
@@ -309,18 +306,12 @@ export class HUD {
       textAlign: 'center',
     });
     this.bannerText = el('div', { lineHeight: '1.45' }) as HTMLDivElement;
-    // Single / Double laying mode toggle: single lays new track; double traces your own track to
-    // lay a parallel rail beside it (run it again for a 3rd/4th).
-    const modeRow = el('div', { display: 'flex', gap: '6px', pointerEvents: 'auto' });
-    this.modeSingleBtn = bannerButton('▬ Single', '#cfe3ff', () => onSetMode('single'));
-    this.modeDoubleBtn = bannerButton('🛤 Double', '#9fd0ff', () => onSetMode('double'));
-    modeRow.append(this.modeSingleBtn, this.modeDoubleBtn);
     const bannerBtns = el('div', { display: 'flex', gap: '8px', pointerEvents: 'auto' });
     this.finishBtn = bannerButton('✓ Finish line', '#8fffa8', onFinishRoute);
     this.finishBtn.setAttribute('data-finishroute', '');
     const cancelRouteBtn = bannerButton('✕ Cancel', '#ff9a86', onBuildToggle);
     bannerBtns.append(this.finishBtn, cancelRouteBtn);
-    this.banner.append(this.bannerText, modeRow, bannerBtns);
+    this.banner.append(this.bannerText, bannerBtns);
     this.root.append(this.banner);
 
     // News toast — economic events appear clear below the build banner (so the two never overlap).
@@ -782,14 +773,6 @@ export class HUD {
     const cost = s.cost > 0 ? `  —  $${s.cost.toLocaleString()}${s.affordable ? '' : ' (too expensive)'}` : '';
     this.bannerText.innerHTML = `${s.hint}${cost}`;
     this.banner.style.borderColor = s.cost > 0 && !s.affordable ? 'rgba(255,119,102,0.7)' : 'rgba(143,255,168,0.4)';
-    // Reflect the laying mode on the toggle (active = full opacity + lit border).
-    const litSingle = s.mode === 'single';
-    this.modeSingleBtn.style.opacity = litSingle ? '1' : '0.45';
-    this.modeSingleBtn.style.borderColor = litSingle ? '#cfe3ff' : 'rgba(255,255,255,0.25)';
-    this.modeDoubleBtn.style.opacity = litSingle ? '0.45' : '1';
-    this.modeDoubleBtn.style.borderColor = litSingle ? 'rgba(255,255,255,0.25)' : '#9fd0ff';
-    // Double mode commits on release (no Finish button); single mode lights Finish when ready.
-    this.finishBtn.style.display = s.mode === 'double' ? 'none' : '';
     const ready = s.canFinish && s.affordable;
     this.finishBtn.disabled = !ready;
     this.finishBtn.style.opacity = ready ? '1' : '0.4';

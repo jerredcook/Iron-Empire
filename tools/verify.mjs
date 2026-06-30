@@ -101,11 +101,6 @@ async function main() {
       ui?.crossing
     );
     check(
-      'ui: double-track mode lays a parallel rail along your own line, tracing it again adds a lane, and the line still extends',
-      ui?.doubleTrack?.costPositive && ui?.doubleTrack?.laid && ui?.doubleTrack?.lanesStartTwo && ui?.doubleTrack?.repeatRaisesLane && ui?.doubleTrack?.tracesOwnTrack && ui?.doubleTrack?.extendsAfterDouble,
-      ui?.doubleTrack
-    );
-    check(
       'ui: a station is a hub — pressing it starts a NEW line (a platform), only an open-country tip extends',
       ui?.stationHub?.onlyTipExtends && ui?.stationHub?.stationEndIsPlatform,
       ui?.stationHub
