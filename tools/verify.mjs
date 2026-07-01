@@ -108,7 +108,7 @@ async function main() {
     check('ui: track is colour-coded by owner (player rails carry the player livery)', ui?.trackColor?.found && ui?.trackColor?.tinted && ui?.trackColor?.towardPlayer, ui?.trackColor);
     check('ui: a player delivery floats a "+$N" earnings figure', ui?.moneyPop?.shown && ui?.moneyPop?.hasAmount, ui?.moneyPop);
     check('ui: sell train removes it from the line', ui?.sellTrain?.sold, ui?.sellTrain);
-    check('ui: demolish line removes it', ui?.demolishLine?.removed, ui?.demolishLine);
+    check('ui: delete removes IDLE track, but a line running a train is protected', ui?.demolishLine?.deletesIdle && ui?.demolishLine?.protectsTrainLine, ui?.demolishLine);
     check('ui: free track lays rail with no stations (no train)', ui?.freeTrack?.trackLaidWithoutStops && ui?.freeTrack?.noStops && ui?.freeTrack?.noTrain, ui?.freeTrack);
     check('ui: build station at a city adds a depot', ui?.buildStation?.nowHasDepot, ui?.buildStation);
     check(

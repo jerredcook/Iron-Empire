@@ -312,7 +312,12 @@ export class Inspector {
       }
     }
     if (!line.owner.isAI) {
-      html += `<div data-demolish style="margin-top:10px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,119,102,0.5);color:#ff7766;font-size:12px">✕ Demolish line</div>`;
+      if (line.trains.length === 0) {
+        const refund = Math.round(line.value * 0.4);
+        html += `<div data-demolish style="margin-top:10px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,119,102,0.5);color:#ff7766;font-size:12px">✕ Delete track${refund > 0 ? `  (+$${Math.round(refund / 1000)}k)` : ''}</div>`;
+      } else {
+        html += `<div style="margin-top:10px;text-align:center;padding:6px;border-radius:6px;background:rgba(255,200,120,0.1);border:1px solid rgba(255,200,120,0.35);color:#ffd089;font-size:11.5px">🚂 A train runs here — sell it first to delete this track.</div>`;
+      }
     }
     return html;
   }
@@ -359,8 +364,9 @@ export class Inspector {
     html += `<div style="display:flex;gap:5px;margin-top:8px">`;
     html += action('data-follow', '🎥 Follow', '#8fffa8');
     if (!line.owner.isAI) {
+      // No delete-track here: a line with a train is protected. Sell the train, then delete the
+      // idle track from the line panel.
       html += action('data-sell', 'Sell train', '#ffe28a');
-      html += action('data-demolish', '✕ Demolish line', '#ff7766');
     }
     html += `</div>`;
 

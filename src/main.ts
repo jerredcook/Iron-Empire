@@ -12,7 +12,7 @@ import { TrackBuilder } from './game/TrackBuilder';
 import { HUD } from './game/HUD';
 import { Inspector } from './game/Inspector';
 import { Picker } from './game/Picker';
-import { SelectionMarker } from './game/SelectionMarker';
+import { SelectionMarker, LineHighlight } from './game/SelectionMarker';
 import { Minimap } from './game/Minimap';
 import { LocoClass, defaultLoco, LOCOS } from './game/Locomotives';
 import { AudioBus } from './game/Audio';
@@ -185,11 +185,13 @@ async function boot(cfg: BootCfg): Promise<void> {
   // Inspection: minimap + click-to-select + detail panel, all reading live state.
   const minimap = new Minimap(field, network);
   const selectionMarker = new SelectionMarker(scene);
+  const lineHighlight = new LineHighlight(scene);
   let followTrain: Train | null = null;
   const clearSelection = (): void => {
     inspector.select(null);
     minimap.setSelection(null);
     selectionMarker.hide();
+    lineHighlight.hide();
   };
   const inspector = new Inspector(
     network,
@@ -208,7 +210,12 @@ async function boot(cfg: BootCfg): Promise<void> {
       clearSelection();
     },
     (line) => {
-      if (line.trains.includes(followTrain as Train)) followTrain = null;
+      // Only delete track that's idle. A line with a train running on it is protected — sell the
+      // train first (you can still select it to see it highlighted).
+      if (line.trains.length > 0) {
+        hud.news('That track has a train running on it — sell the train first, then you can delete the track.', false);
+        return;
+      }
       network.demolishLine(line);
       clearSelection();
     },
@@ -260,9 +267,13 @@ async function boot(cfg: BootCfg): Promise<void> {
     followTrain = null; // selecting anything new stops following
     inspector.select(sel);
     minimap.setSelection(sel);
-    // Mark the selected city in the world; clear it for line/train/empty selections.
+    // Mark the selected city in the world; highlight the whole track for a line/train selection so
+    // you can see exactly which one you've picked.
     if (sel?.kind === 'station') selectionMarker.show(sel.station.pos);
     else selectionMarker.hide();
+    if (sel?.kind === 'line') lineHighlight.show(sel.line.track.curve, sel.line.track.length);
+    else if (sel?.kind === 'train') lineHighlight.show(sel.line.track.curve, sel.line.track.length);
+    else lineHighlight.hide();
   };
   window.addEventListener('keydown', (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
@@ -429,6 +440,11 @@ async function boot(cfg: BootCfg): Promise<void> {
     for (const d of dests) {
       if (!d.hasStation) network.buildStationAt(d);
       network.buildLine([home.pos.clone(), d.pos.clone()], [home, d], selectedLoco, undefined, true); // real line + train
+    }
+    // Highlight one line to confirm the selection highlight renders (?hubshot&hl).
+    if (location.search.includes('hl')) {
+      const hl = network.player.lines.find((l) => !l.through && l.stops.includes(home));
+      if (hl) lineHighlight.show(hl.track.curve, hl.track.length);
     }
     rig.controls.target.copy(home.pos);
     rig.camera.position.set(home.pos.x + 24, home.pos.y + 34, home.pos.z + 24);
@@ -677,6 +693,7 @@ async function boot(cfg: BootCfg): Promise<void> {
     scatter.update(dt);
     smokestacks.update(dt); // ambient — keeps the chimneys alive even while paused
     selectionMarker.update(dt); // pulse/bob on real time, even while paused
+    lineHighlight.update(dt);
     builder.update(dt); // throb the snap ring while laying track
     network.update(sim);
     auctioneer.update(sim);
@@ -922,14 +939,36 @@ function runUiTest(
     result.sellTrain = { before: beforeT, after: sellLine.trains.length, sold: sellLine.trains.length === beforeT - 1 };
   }
 
-  // G) Demolish a line via the inspector button.
-  const demoLine = network.lines.find((l) => !l.owner.isAI && l.trains.length > 0);
-  if (demoLine) {
-    const beforeL = network.lines.length;
-    inspector.select({ kind: 'train', line: demoLine, train: demoLine.trains[0] });
-    inspector.update(1);
-    (document.querySelector('[data-demolish]') as HTMLElement | null)?.click();
-    result.demolishLine = { before: beforeL, after: network.lines.length, removed: !network.lines.includes(demoLine) };
+  // G) Delete an IDLE line via the inspector; a line WITH a train running is protected (you must
+  //    sell the train first) — but still selectable so you can see it highlighted.
+  {
+    // An empty (train-less) player line — build one if none exists yet.
+    let emptyLine = network.player.lines.find((l) => !l.through && l.trains.length === 0);
+    if (!emptyLine) {
+      const c = network.stations.find((s) => !network.inNetwork(network.player, s));
+      const d = c && network.stations.find((s) => s !== c && s.pos.distanceTo(c.pos) > 80 && s.pos.distanceTo(c.pos) < 320);
+      if (c && d) {
+        network.buildLine([c.pos.clone(), d.pos.clone()], [c, d]); // no loco → idle
+        emptyLine = network.player.lines[network.player.lines.length - 1];
+      }
+    }
+    let deletesIdle = false;
+    if (emptyLine) {
+      inspector.select({ kind: 'line', line: emptyLine });
+      inspector.update(1);
+      const shown = !!document.querySelector('[data-demolish]');
+      (document.querySelector('[data-demolish]') as HTMLElement | null)?.click();
+      deletesIdle = shown && !network.lines.includes(emptyLine);
+    }
+    // A line with a train: the line panel shows NO delete button, so it can't be deleted.
+    const trainLine = network.lines.find((l) => !l.owner.isAI && l.trains.length > 0);
+    let protectsTrainLine = true;
+    if (trainLine) {
+      inspector.select({ kind: 'line', line: trainLine });
+      inspector.update(1);
+      protectsTrainLine = !document.querySelector('[data-demolish]') && network.lines.includes(trainLine);
+    }
+    result.demolishLine = { deletesIdle, protectsTrainLine };
   }
 
   // H0) Build a station at a city that has none, via the inspector button.
@@ -1093,13 +1132,13 @@ function runUiTest(
     refunded: network.player.money > moneyBeforeDS,
   };
 
-  // N) Select a line by its track (the Picker's 'line' selection) and demolish it from
+  // N) Select an IDLE line by its track (the Picker's 'line' selection) and delete it from
   //    the line panel — the path a player takes when clicking rails to delete them.
   const ls1 = freeCities[2];
   const ls2 = freeCities[3];
   network.buildStationAt(ls1);
   network.buildStationAt(ls2);
-  network.buildLine([ls1.pos, ls2.pos], [ls1, ls2], loco);
+  network.buildLine([ls1.pos, ls2.pos], [ls1, ls2]); // no loco → idle track, deletable
   const lsLine = network.lines[network.lines.length - 1];
   const linesBeforeLS = network.lines.length;
   inspector.select({ kind: 'line', line: lsLine });

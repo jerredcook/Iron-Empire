@@ -68,3 +68,48 @@ export class SelectionMarker {
     (this.pin.material as THREE.Material).dispose();
   }
 }
+
+/**
+ * A world-space highlight for the currently selected LINE: a bright pulsing ribbon running the
+ * length of its track, drawn over everything (depthTest off) so you can see exactly which track
+ * you've selected before deleting/inspecting it.
+ */
+export class LineHighlight {
+  private mesh: THREE.Mesh | null = null;
+  private mat: THREE.MeshBasicMaterial;
+  private t = 0;
+
+  constructor(private scene: THREE.Scene, color = 0x7fe9ff) {
+    this.mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.7, depthTest: false });
+  }
+
+  /** Highlight a track by its curve + arc-length. */
+  show(curve: THREE.CatmullRomCurve3, length: number): void {
+    this.hide();
+    const n = Math.max(20, Math.min(260, Math.floor(length / 4)));
+    const pts: THREE.Vector3[] = [];
+    const p = new THREE.Vector3();
+    for (let i = 0; i <= n; i++) {
+      curve.getPointAt(i / n, p);
+      pts.push(new THREE.Vector3(p.x, p.y + 0.8, p.z)); // ride just above the rails
+    }
+    const c = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+    this.mesh = new THREE.Mesh(new THREE.TubeGeometry(c, n, 1.5, 8, false), this.mat);
+    this.mesh.renderOrder = 1002;
+    this.scene.add(this.mesh);
+    this.t = 0;
+  }
+
+  hide(): void {
+    if (!this.mesh) return;
+    this.scene.remove(this.mesh);
+    this.mesh.geometry.dispose();
+    this.mesh = null;
+  }
+
+  update(dt: number): void {
+    if (!this.mesh) return;
+    this.t += dt;
+    this.mat.opacity = 0.4 + 0.4 * (0.5 + 0.5 * Math.sin(this.t * 3));
+  }
+}

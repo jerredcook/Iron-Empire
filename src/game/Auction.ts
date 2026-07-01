@@ -40,10 +40,9 @@ export class Auctioneer {
     let price = Math.round((appraised * 0.4) / 1000) * 1000;
     let leader: 'none' | 'player' | 'rival' = 'none';
 
-    // Show what's on the block: fly the camera to the lot and keep the panel off to the side
-    // (not a dead-centre modal) so the player can actually see the industry while bidding.
-    this.onView?.(st.pos);
-
+    // Do NOT yank the camera to the lot — that interrupts whatever the player is doing (laying
+    // track especially). The panel sits off to the side, and its 📍 title is clickable to fly
+    // there IF the player chooses.
     const panel = document.createElement('div');
     Object.assign(panel.style, {
       position: 'fixed',

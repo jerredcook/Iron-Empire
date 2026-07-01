@@ -314,10 +314,19 @@ export class TrackBuilder {
 
   /** Rebuild the ghost rail line when the route's shape (or snap state) changes enough. */
   private rebuildPreviewTrack(tint: number): void {
-    const route = this.routePoints();
+    let route = this.routePoints();
     if (route.length < 2) {
       this.clearPreviewTrack();
       return;
+    }
+    // Preview the EXACT committed route — including the platform berth where a new line meets a
+    // station you already serve — so the ghost is what you get, not a straight line that then
+    // jumps aside on commit. (Extending a line doesn't berth.)
+    if (!this.extendFrom) {
+      const stops = this.nodes.filter((n) => n.station).map((n) => n.station!);
+      if (this.snapTarget && this.snapTarget !== stops[stops.length - 1]) stops.push(this.snapTarget);
+      if (stops.length) route = this.network.plannedRoute(this.network.player, stops, route);
+      if (route.length < 2) { this.clearPreviewTrack(); return; }
     }
     const tail = route[route.length - 1];
     const snap = this.snapTarget ? (this.snapTarget.hasStation ? 'd' : 'b') : 'n';

@@ -1265,6 +1265,13 @@ export class Network {
     return r;
   }
 
+  /** The EXACT ground route a new line will occupy — shouldered aside from a duplicated corridor
+   *  and berthed onto a parallel platform where it meets a station this owner already serves. The
+   *  track builder previews this so the ghost matches what commits (no "it jumped on me"). */
+  plannedRoute(owner: Company, stops: GStation[], waypoints: THREE.Vector3[]): THREE.Vector3[] {
+    return this.withPlatformBerths(owner, stops, this.parallelOffset(owner, stops, waypoints));
+  }
+
   /** Extend an existing line from one of its ends: append the new ground waypoints (and an
    *  optional new city stop), charge the added track, and re-lay the rails — the smoothed curve
    *  flows naturally out of the old end. Returns false if unaffordable. */
@@ -1586,7 +1593,7 @@ export class Network {
     // A duplicate corridor is silently shouldered aside so two lines never overlap-and-jam — but
     // it's not advertised: the point of a new line is to reach a NEW place, not parallel an old one.
     // Endpoints at a city this owner already serves berth on a parallel platform track.
-    const route = this.withPlatformBerths(owner, stops, this.parallelOffset(owner, stops, waypoints));
+    const route = this.plannedRoute(owner, stops, waypoints);
     // Grade-separate (or refuse) any crossing of existing track before spending a cent.
     let bridges: BridgeSpan[] = [];
     if (enforce) {
