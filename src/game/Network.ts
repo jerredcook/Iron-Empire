@@ -1222,6 +1222,66 @@ export class Network {
     );
   }
 
+  /** Other lines of `line`'s owner it can be JOINED to: those that share an endpoint station with
+   *  it, so welding them makes one continuous through-route. */
+  connectableLines(line: GLine): { other: GLine; at: GStation }[] {
+    if (line.through || line.stops.length < 1) return [];
+    const myEnds = [line.stops[0], line.stops[line.stops.length - 1]].filter((s): s is GStation => !!s);
+    const out: { other: GLine; at: GStation }[] = [];
+    for (const b of line.owner.lines) {
+      if (b === line || b.through || b.stops.length < 1) continue;
+      const bEnds = [b.stops[0], b.stops[b.stops.length - 1]];
+      const at = myEnds.find((s) => bEnds.includes(s));
+      if (at && !out.some((o) => o.other === b)) out.push({ other: b, at });
+    }
+    return out;
+  }
+
+  /** Weld two of a company's lines into ONE continuous line through the station they share, so a
+   *  train runs straight through — both rails join in a smooth curve (a real junction, not a T,
+   *  not just touching). Each line's trains carry over onto the merged route. Returns false if the
+   *  two don't share an endpoint station. */
+  connectLines(a: GLine, b: GLine): boolean {
+    if (this.status !== 'playing' || a === b || a.through || b.through || a.owner !== b.owner) return false;
+    const shared = [a.stops[0], a.stops[a.stops.length - 1]].find(
+      (s) => s && (s === b.stops[0] || s === b.stops[b.stops.length - 1])
+    );
+    if (!shared) return false;
+    const owner = a.owner;
+    // Orient A to END at the junction and B to START at it, so the merged route reads
+    // A's-far-end → junction → B's-far-end.
+    const aAtTail = a.stops[a.stops.length - 1] === shared;
+    const aWp = aAtTail ? a.waypoints.map((p) => p.clone()) : a.waypoints.map((p) => p.clone()).reverse();
+    const aStops = aAtTail ? a.stops.slice() : a.stops.slice().reverse();
+    const bAtHead = b.stops[0] === shared;
+    const bWp = bAtHead ? b.waypoints.map((p) => p.clone()) : b.waypoints.map((p) => p.clone()).reverse();
+    const bStops = bAtHead ? b.stops.slice() : b.stops.slice().reverse();
+    // Clean junction: drop each side's terminating berth and pass straight through the station centre.
+    const wp = [...aWp.slice(0, -1), shared.pos.clone(), ...bWp.slice(1)];
+    const stops = [...aStops, ...bStops.slice(1)];
+    const trainSpecs = [...a.trains, ...b.trains].map((t) => ({ loco: t.locoClass, cars: t.consist.map((c) => c.kind) }));
+    const value = a.value + b.value;
+    // Remove the two originals (no refund — it's a merge, not a scrap).
+    for (const l of [a, b]) {
+      for (const t of [...l.trains]) t.dispose(this.scene);
+      l.trains.length = 0;
+      this.scene.remove(l.track.group);
+      l.track.dispose();
+      const gi = this.lines.indexOf(l);
+      if (gi >= 0) this.lines.splice(gi, 1);
+      const oi = owner.lines.indexOf(l);
+      if (oi >= 0) owner.lines.splice(oi, 1);
+    }
+    const merged = this.layLine(owner, stops, wp, trainSpecs);
+    merged.value = value;
+    for (const st of stops) {
+      const d = st.depots.get(owner);
+      if (d) this.alignDepot(st, owner);
+    }
+    if (owner === this.player) this.onBuilt?.();
+    return true;
+  }
+
   /** Where a NEW line should berth at `city`, approaching from `fromPos`: the first line gets the
    *  centre track; each extra line of the same owner gets a PARALLEL PLATFORM alongside — offset
    *  to the SIDE the line approaches from, with a brief parallel run in, so it never has to cross

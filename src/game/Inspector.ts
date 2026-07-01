@@ -37,7 +37,8 @@ export class Inspector {
     private onRepairTrain: (line: GLine, train: Train) => void,
     private onAddStationBuilding: (st: GStation, type: StationBuilding) => void,
     private onUpgradeLoco: (line: GLine, train: Train) => void,
-    private onRepairLine: (line: GLine) => void
+    private onRepairLine: (line: GLine) => void,
+    private onConnectLines: (a: GLine, b: GLine) => void = () => {}
   ) {
     this.panel = document.createElement('div');
     Object.assign(this.panel.style, {
@@ -103,6 +104,10 @@ export class Inspector {
       if (demo) demo.onclick = () => this.onDemolishLine(line);
       const fix = this.panel.querySelector('[data-repairline]') as HTMLElement | null;
       if (fix) fix.onclick = () => this.onRepairLine(line);
+      this.panel.querySelectorAll('[data-connect]').forEach((el) => {
+        const other = this.network.lines[+(el.getAttribute('data-connect') ?? -1)];
+        if (other) (el as HTMLElement).onclick = () => this.onConnectLines(line, other);
+      });
     }
     const ds = this.panel.querySelector('[data-demolishstation]') as HTMLElement | null;
     if (ds && this.sel.kind === 'station') {
@@ -312,6 +317,13 @@ export class Inspector {
       }
     }
     if (!line.owner.isAI) {
+      // Join this line to another of yours that meets it at a station — the two weld into one
+      // continuous through-route (a real junction: both rails join, a train runs straight through).
+      for (const { other, at } of this.network.connectableLines(line)) {
+        const far = other.stops[0] === at ? other.stops[other.stops.length - 1] : other.stops[0];
+        const idx = this.network.lines.indexOf(other);
+        html += `<div data-connect="${idx}" style="margin-top:8px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(95,224,255,0.55);color:#5fe0ff;font-size:12px">🔗 Connect through ${at.name}${far ? ` → ${far.name}` : ''}</div>`;
+      }
       if (line.trains.length === 0) {
         const refund = Math.round(line.value * 0.4);
         html += `<div data-demolish style="margin-top:10px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(255,119,102,0.5);color:#ff7766;font-size:12px">✕ Delete track${refund > 0 ? `  (+$${Math.round(refund / 1000)}k)` : ''}</div>`;

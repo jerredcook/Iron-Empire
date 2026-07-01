@@ -232,7 +232,13 @@ async function boot(cfg: BootCfg): Promise<void> {
       if (upgraded && followTrain === train) followTrain = null; // the old train object is gone
       clearSelection();
     },
-    (line) => network.repairLine(line)
+    (line) => network.repairLine(line),
+    (a, b) => {
+      if (network.connectLines(a, b)) {
+        hud.news('Tracks connected — a train now runs straight through the junction.', true);
+        clearSelection();
+      }
+    }
   );
   const auctioneer = new Auctioneer(network);
   const smokestacks = new Smokestacks(scene, network);
@@ -448,6 +454,28 @@ async function boot(cfg: BootCfg): Promise<void> {
     }
     rig.controls.target.copy(home.pos);
     rig.camera.position.set(home.pos.x + 24, home.pos.y + 34, home.pos.z + 24);
+  }
+
+  // Dev visual-check (?connectshot): two lines meeting at the home station, then CONNECTED into one
+  // continuous through-route — frame the junction to confirm the rails weld into a smooth curve.
+  if (location.search.includes('connectshot') && startHome) {
+    network.player.money = 12_000_000;
+    network.goal = networthGoal(Number.MAX_SAFE_INTEGER, 99999); // don't auto-win mid-sim
+    const home = startHome;
+    const near = network.stations
+      .filter((s) => s !== home)
+      .sort((a, b) => a.pos.distanceToSquared(home.pos) - b.pos.distanceToSquared(home.pos))
+      .slice(0, 2);
+    if (near.length === 2) {
+      near.forEach((c) => { if (!c.hasStation) network.buildStationAt(c); });
+      network.buildLine([near[0].pos.clone(), home.pos.clone()], [near[0], home], selectedLoco, undefined, true);
+      const lineA = network.player.lines[network.player.lines.length - 1];
+      network.buildLine([home.pos.clone(), near[1].pos.clone()], [home, near[1]], selectedLoco, undefined, true);
+      const lineB = network.player.lines[network.player.lines.length - 1];
+      network.connectLines(lineA, lineB);
+      rig.controls.target.copy(home.pos);
+      rig.camera.position.set(home.pos.x + 20, home.pos.y + 30, home.pos.z + 20);
+    }
   }
 
   // Dev visual-check (?previewshot): force the build-mode ghost over the stub end → a city and
@@ -794,7 +822,7 @@ async function boot(cfg: BootCfg): Promise<void> {
   document.getElementById('loading')?.classList.add('hidden');
 
   // First-time players get the how-to-play card once (skipped for headless test + screenshot runs).
-  if (!/autostart|playstart|extendshot|previewshot|yardshot|bridgeshot|hubshot/.test(location.search)) {
+  if (!/autostart|playstart|extendshot|previewshot|yardshot|bridgeshot|hubshot|connectshot/.test(location.search)) {
     try {
       if (!localStorage.getItem('ie.helpSeen')) {
         hud.showHelp();
@@ -1913,6 +1941,36 @@ function runUiTest(
     };
   }
 
+  // QQ) Connect two lines that meet at a station into ONE continuous through-route: a train runs
+  //     straight through the junction, and the two originals become one line.
+  {
+    network.status = 'playing';
+    network.player.money = 10_000_000;
+    const base = network.stations[5] ?? network.stations[0];
+    const near2 = network.stations
+      .filter((s) => s !== base)
+      .sort((x, y) => x.pos.distanceToSquared(base.pos) - y.pos.distanceToSquared(base.pos))
+      .slice(0, 2);
+    const ca = near2[0];
+    const cb = near2[1];
+    if (ca && cb) {
+      [base, ca, cb].forEach((c) => { if (!c.hasStation) network.buildStationAt(c); });
+      network.buildLine([ca.pos.clone(), base.pos.clone()], [ca, base], loco);
+      const lineA = network.player.lines[network.player.lines.length - 1];
+      network.buildLine([base.pos.clone(), cb.pos.clone()], [base, cb], loco);
+      const lineB = network.player.lines[network.player.lines.length - 1];
+      const offered = network.connectableLines(lineA).some((o) => o.other === lineB);
+      const ok = network.connectLines(lineA, lineB);
+      const merged = network.player.lines.find((l) => l.stops.includes(ca) && l.stops.includes(base) && l.stops.includes(cb));
+      result.connect = {
+        offered,
+        merged: ok && !!merged && !network.lines.includes(lineA) && !network.lines.includes(lineB),
+        throughStops: !!merged && merged.stops.length >= 3,
+        keepsTrain: !!merged && merged.trains.length >= 1,
+      };
+    }
+  }
+
   // MM) Track is colour-coded by owner: a player line's rails carry the player's livery (a
   //     green-ish steel), not bare grey steel — so your track reads as yours at a glance.
   {
@@ -2195,7 +2253,7 @@ const FALLBACK_GOAL: Goal = networthGoal(2_500_000, 1890);
 async function start(): Promise<void> {
   // Headless verification: ?autostart skips the menu and boots a default game. ?playstart (and
   // ?extendshot) take the REAL play path (random home station + stub, no seeded running line).
-  if (/autostart|playstart|extendshot|previewshot|yardshot|bridgeshot|hubshot/.test(location.search)) {
+  if (/autostart|playstart|extendshot|previewshot|yardshot|bridgeshot|hubshot|connectshot/.test(location.search)) {
     const s = SCENARIOS[0];
     await boot({
       seed: s.seed,
@@ -2207,7 +2265,7 @@ async function start(): Promise<void> {
       player: { name: 'Iron Empire', color: 0x8fffa8 },
       ais: [{ name: 'Atlas & Pacific', color: 0xff8a4d }],
       load: false,
-      seedStarter: !/playstart|extendshot|previewshot|yardshot|bridgeshot|hubshot/.test(location.search), // → real-play random home
+      seedStarter: !/playstart|extendshot|previewshot|yardshot|bridgeshot|hubshot|connectshot/.test(location.search), // → real-play random home
     });
     return;
   }

@@ -105,6 +105,11 @@ async function main() {
       ui?.stationHub?.onlyTipExtends && ui?.stationHub?.stationEndIsPlatform,
       ui?.stationHub
     );
+    check(
+      'ui: two lines meeting at a station can be CONNECTED into one continuous through-route (train carries over)',
+      ui?.connect?.offered && ui?.connect?.merged && ui?.connect?.throughStops && ui?.connect?.keepsTrain,
+      ui?.connect
+    );
     check('ui: track is colour-coded by owner (player rails carry the player livery)', ui?.trackColor?.found && ui?.trackColor?.tinted && ui?.trackColor?.towardPlayer, ui?.trackColor);
     check('ui: a player delivery floats a "+$N" earnings figure', ui?.moneyPop?.shown && ui?.moneyPop?.hasAmount, ui?.moneyPop);
     check('ui: sell train removes it from the line', ui?.sellTrain?.sold, ui?.sellTrain);
