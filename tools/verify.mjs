@@ -110,6 +110,11 @@ async function main() {
       ui?.connect?.offered && ui?.connect?.merged && ui?.connect?.throughStops && ui?.connect?.keepsTrain,
       ui?.connect
     );
+    check(
+      'ui: a new track can BRANCH off the middle of an existing line (starts at the junction, reaches a new destination)',
+      ui?.branch?.built && ui?.branch?.startsAtJunction && ui?.branch?.reachesDest,
+      ui?.branch
+    );
     check('ui: track is colour-coded by owner (player rails carry the player livery)', ui?.trackColor?.found && ui?.trackColor?.tinted && ui?.trackColor?.towardPlayer, ui?.trackColor);
     check('ui: a player delivery floats a "+$N" earnings figure', ui?.moneyPop?.shown && ui?.moneyPop?.hasAmount, ui?.moneyPop);
     check('ui: sell train removes it from the line', ui?.sellTrain?.sold, ui?.sellTrain);

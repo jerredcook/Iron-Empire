@@ -1581,6 +1581,13 @@ export class Network {
     return this.buildLineFor(this.player, waypoints, stops, loco, cars, enforce);
   }
 
+  /** Lay a new track that BRANCHES off an existing line: `waypoints` start at the junction on the
+   *  main line (already connected there), so it builds raw — no shouldering/berthing — and joins
+   *  its main line exactly. Grade-separates any crossing of OTHER track. */
+  buildBranch(waypoints: THREE.Vector3[], stops: GStation[]): boolean {
+    return this.buildLineFor(this.player, waypoints, stops, undefined, undefined, true, true);
+  }
+
   /** If this owner already runs a line over the same set of cities, shift the new route sideways
    *  by one (or more) track-widths so it lays as a clean parallel double-track rather than
    *  overlapping the first — two independent tracks that never block each other. */
@@ -1645,15 +1652,16 @@ export class Network {
     return { bridges, error: null };
   }
 
-  buildLineFor(owner: Company, waypoints: THREE.Vector3[], stops: GStation[], loco?: LocoClass, cars?: CargoKind[], enforce = false): boolean {
+  buildLineFor(owner: Company, waypoints: THREE.Vector3[], stops: GStation[], loco?: LocoClass, cars?: CargoKind[], enforce = false, raw = false): boolean {
     if (waypoints.length < 2) return false;
     this.lastBuildIssue = null;
     // Lay a line that duplicates a corridor this railroad already runs ALONGSIDE the first as a
     // clean parallel double-track, instead of overlapping (and blocking) it.
     // A duplicate corridor is silently shouldered aside so two lines never overlap-and-jam — but
     // it's not advertised: the point of a new line is to reach a NEW place, not parallel an old one.
-    // Endpoints at a city this owner already serves berth on a parallel platform track.
-    const route = this.plannedRoute(owner, stops, waypoints);
+    // Endpoints at a city this owner already serves berth on a parallel platform track. `raw` skips
+    // all that (a branch must join its main line EXACTLY at the junction, not get shouldered aside).
+    const route = raw ? waypoints.map((p) => p.clone()) : this.plannedRoute(owner, stops, waypoints);
     // Grade-separate (or refuse) any crossing of existing track before spending a cent.
     let bridges: BridgeSpan[] = [];
     if (enforce) {

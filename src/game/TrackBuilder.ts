@@ -5,6 +5,9 @@ import { Heightfield } from '../world/Heightfield';
 
 const SNAP = 60; // ground-distance within which the cursor latches to a city
 const END_SNAP = 30; // tighter latch onto a free end of your own track to extend it
+const BRANCH_SNAP = 10; // click this close to your own track (away from stations) to branch off it
+const BRANCH_CLEAR = 34; // don't branch this close to a station — start a new line from the station instead
+const BRANCH_LEAD = 18; // the new branch leaves the main tangent over this run (a smooth turnout, not a T)
 const CLICK_SLOP = 9; // px of pointer travel still counted as a click, not a drag
 const DECK = 0.7; // preview rail deck height above the draped ground
 const GAUGE = 2.6; // preview rail centre-to-centre
@@ -41,6 +44,8 @@ export class TrackBuilder {
   onCommit?: (nodes: RouteNode[]) => void;
   /** Fired when the route EXTENDS one of the player's existing lines from a free end. */
   onExtend?: (line: GLine, end: 'head' | 'tail', waypoints: THREE.Vector3[], finalStop: GStation | null) => void;
+  /** Fired when a new track BRANCHES off an existing line at an arbitrary point along it. */
+  onBranch?: (waypoints: THREE.Vector3[], finalStop: GStation | null) => void;
 
   private active = false;
   private pulseT = 0;
@@ -53,6 +58,9 @@ export class TrackBuilder {
   private snapEnd: { line: GLine; end: 'head' | 'tail'; pos: THREE.Vector3; dir: THREE.Vector3 } | null = null;
   /** Locked once the route starts from a line end — this run extends that line. */
   private extendFrom: { line: GLine; end: 'head' | 'tail' } | null = null;
+  /** Set when the route starts by branching off the middle of a line: the junction point + the
+   *  main line's tangent there (so the branch leaves it as a smooth turnout, not a T). */
+  private branchFrom: { line: GLine; pos: THREE.Vector3; dir: THREE.Vector3 } | null = null;
 
   private ray = new THREE.Raycaster();
   private ndc = new THREE.Vector2();
@@ -135,6 +143,7 @@ export class TrackBuilder {
     this.active = false;
     this.nodes = [];
     this.extendFrom = null;
+    this.branchFrom = null;
     this.snapEnd = null;
     this.ghost.visible = false;
     this.snapRing.visible = false;
@@ -243,8 +252,27 @@ export class TrackBuilder {
     this.snapEnd = this.nodes.length === 0 ? this.nearestLineEnd(this.cursor, END_SNAP) : null;
     if (this.snapEnd) {
       this.snapTarget = null;
+      this.branchFrom = null;
       this.cursor.copy(this.snapEnd.pos);
       return;
+    }
+    // Starting a run by clicking ON your own track (out in the open, not at a station): BRANCH off
+    // it here. The junction point + the main line's tangent are recorded so the new track leaves as
+    // a smooth turnout. (Near a station you start a new line from the station instead.)
+    if (this.nodes.length === 0) {
+      const on = this.network.nearestOnLine(this.network.player, this.cursor, BRANCH_SNAP);
+      if (on && !this.network.nearestCity(on.pos, BRANCH_CLEAR)) {
+        const dir = new THREE.Vector3();
+        on.line.track.curve.getTangentAt(THREE.MathUtils.clamp(on.u, 0, 1), dir);
+        dir.y = 0;
+        if (dir.lengthSq() < 1e-6) dir.set(1, 0, 0);
+        dir.normalize();
+        this.branchFrom = { line: on.line, pos: on.pos.clone(), dir };
+        this.snapTarget = null;
+        this.cursor.copy(on.pos);
+        return;
+      }
+      this.branchFrom = null;
     }
     // Snap to ANY city in range, depot or not — you connect the track first, then build the
     // depot. (Using only stationed cities meant a bare destination never latched, so the line
@@ -282,11 +310,21 @@ export class TrackBuilder {
       const wp = this.nodes.slice(1).map((n) => n.pos.clone());
       const finalStop = [...this.nodes].reverse().find((n) => n.station)?.station ?? null;
       this.onExtend?.(this.extendFrom.line, this.extendFrom.end, wp, finalStop);
+    } else if (this.branchFrom) {
+      // nodes[0] is the junction on the main line; lay [junction, turnout-lead, …dragged].
+      const bp = this.branchFrom.pos;
+      const rest = this.nodes.slice(1).map((n) => n.pos.clone());
+      const dest = rest[rest.length - 1];
+      const sign = dest.clone().sub(bp).setY(0).dot(this.branchFrom.dir) >= 0 ? 1 : -1;
+      const lead = bp.clone().addScaledVector(this.branchFrom.dir, sign * BRANCH_LEAD);
+      const finalStop = [...this.nodes].reverse().find((n) => n.station)?.station ?? null;
+      this.onBranch?.([bp.clone(), lead, ...rest], finalStop);
     } else {
       this.onCommit?.(this.nodes.map((n) => ({ pos: n.pos.clone(), station: n.station })));
     }
     this.nodes = [];
     this.extendFrom = null;
+    this.branchFrom = null;
     this.refreshVisuals();
     this.emit();
   }
@@ -296,17 +334,18 @@ export class TrackBuilder {
     this.ghost.visible = this.cursorValid;
     if (this.cursorValid) this.ghost.position.set(this.cursor.x, this.cursor.y + 3, this.cursor.z);
 
-    // Green = snapping to a city that already has a depot (ready to run); amber = snapping to
-    // a city that still needs one (the track will connect, but build a Station to run trains).
-    const tint = this.snapEnd ? 0x5fe0ff : this.snapTarget ? (this.snapTarget.hasStation ? 0x7dffb0 : 0xffcf73) : 0xcfe3ff;
+    // Cyan = connecting to your own track (a free end to extend, or a mid-track branch point);
+    // green = a city with a depot; amber = a city still needing one.
+    const tint = this.snapEnd || this.branchFrom ? 0x5fe0ff : this.snapTarget ? (this.snapTarget.hasStation ? 0x7dffb0 : 0xffcf73) : 0xcfe3ff;
     this.snapRing.visible = !!this.snapTarget;
     if (this.snapTarget) {
       this.snapRing.position.set(this.snapTarget.pos.x, this.snapTarget.pos.y + 2, this.snapTarget.pos.z);
       (this.snapRing.material as THREE.MeshBasicMaterial).color.setHex(tint);
     }
-    // Cyan diamond on the line end you'd connect to + extend.
-    this.connectMarker.visible = !!this.snapEnd;
-    if (this.snapEnd) this.connectMarker.position.set(this.snapEnd.pos.x, this.snapEnd.pos.y + 5, this.snapEnd.pos.z);
+    // Cyan diamond on the point you'd connect to: a line end (extend) or a mid-track junction (branch).
+    const connectAt = this.snapEnd?.pos ?? this.branchFrom?.pos ?? null;
+    this.connectMarker.visible = !!connectAt;
+    if (connectAt) this.connectMarker.position.set(connectAt.x, connectAt.y + 5, connectAt.z);
 
     this.rebuildPreviewTrack(tint);
     (this.ghost.material as THREE.MeshBasicMaterial).color.setHex(this.snapTarget ? tint : 0xffffff);
@@ -321,8 +360,8 @@ export class TrackBuilder {
     }
     // Preview the EXACT committed route — including the platform berth where a new line meets a
     // station you already serve — so the ghost is what you get, not a straight line that then
-    // jumps aside on commit. (Extending a line doesn't berth.)
-    if (!this.extendFrom) {
+    // jumps aside on commit. (Extending or branching off existing track doesn't berth.)
+    if (!this.extendFrom && !this.branchFrom) {
       const stops = this.nodes.filter((n) => n.station).map((n) => n.station!);
       if (this.snapTarget && this.snapTarget !== stops[stops.length - 1]) stops.push(this.snapTarget);
       if (stops.length) route = this.network.plannedRoute(this.network.player, stops, route);
@@ -359,6 +398,12 @@ export class TrackBuilder {
     if (this.extendFrom && pts.length >= 1) {
       const e = this.network.lineEnds(this.network.player).find((x) => x.line === this.extendFrom!.line && x.end === this.extendFrom!.end);
       if (e) pts.unshift(e.pos.clone().addScaledVector(e.dir, -24)); // a step back INTO the old track
+    } else if (this.branchFrom && pts.length >= 2) {
+      // Leave the junction along the main line's tangent (toward the drag) for a run, so the branch
+      // peels off as a smooth turnout instead of kinking off at an angle.
+      const bp = this.branchFrom.pos;
+      const sign = pts[pts.length - 1].clone().sub(bp).setY(0).dot(this.branchFrom.dir) >= 0 ? 1 : -1;
+      pts.splice(1, 0, bp.clone().addScaledVector(this.branchFrom.dir, sign * BRANCH_LEAD));
     }
     return pts;
   }
@@ -378,6 +423,7 @@ export class TrackBuilder {
   }
 
   private routingHint(stops: number): string {
+    if (this.branchFrom) return '🔗 <b>Branch off your track here</b> — drag out and the new track peels off as a smooth turnout, then <b>✓ Finish</b>.';
     if (this.snapEnd) return '🔗 <b>Connected to your line</b> — drag out to a city and the track curves from here.';
     if (this.snapTarget) {
       if (this.nodes.length === 0 && this.snapTarget.hasStation) {
@@ -388,7 +434,7 @@ export class TrackBuilder {
         : `<b>${this.snapTarget.name}</b> needs a <b>Station</b> first (click the city → Build Station).`;
     }
     if (this.extendFrom) return `Extending your line — drag to a city, then <b>✓ Finish</b> · right-click undoes.`;
-    if (this.nodes.length === 0) return 'Press a <b>station</b> to start a new line from it (its own platform), or the <b>cyan tip</b> of your stub to extend — then drag out to a destination.';
+    if (this.nodes.length === 0) return 'Press a <b>station</b> to start a new line, a <b>cyan tip</b> to extend, or <b>click on your track</b> to branch off it — then drag out to a destination.';
     return `Route: ${stops} stop${stops === 1 ? '' : 's'} — drag on to the next city, or <b>✓ Finish</b> · right-click undoes · <b>✕ Cancel</b> discards.`;
   }
 }
