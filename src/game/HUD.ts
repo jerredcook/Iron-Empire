@@ -307,7 +307,8 @@ export class HUD {
     });
     this.bannerText = el('div', { lineHeight: '1.45' }) as HTMLDivElement;
     const bannerBtns = el('div', { display: 'flex', gap: '8px', pointerEvents: 'auto' });
-    this.finishBtn = bannerButton('✓ Finish line', '#8fffa8', onFinishRoute);
+    // Per-click laying: every click already laid + paid for its track, so this just ENDS the run.
+    this.finishBtn = bannerButton('✓ Done', '#8fffa8', onFinishRoute);
     this.finishBtn.setAttribute('data-finishroute', '');
     const cancelRouteBtn = bannerButton('✕ Cancel', '#ff9a86', onBuildToggle);
     bannerBtns.append(this.finishBtn, cancelRouteBtn);
@@ -773,7 +774,9 @@ export class HUD {
     const cost = s.cost > 0 ? `  —  $${s.cost.toLocaleString()}${s.affordable ? '' : ' (too expensive)'}` : '';
     this.bannerText.innerHTML = `${s.hint}${cost}`;
     this.banner.style.borderColor = s.cost > 0 && !s.affordable ? 'rgba(255,119,102,0.7)' : 'rgba(143,255,168,0.4)';
-    const ready = s.canFinish && s.affordable;
+    // ✓ Done lights up once anything has been laid this run — affordability only gates the NEXT
+    // stretch (shown in the cost readout), never ending the run.
+    const ready = s.canFinish;
     this.finishBtn.disabled = !ready;
     this.finishBtn.style.opacity = ready ? '1' : '0.4';
     this.finishBtn.style.cursor = ready ? 'pointer' : 'not-allowed';

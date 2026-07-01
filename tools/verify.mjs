@@ -92,7 +92,12 @@ async function main() {
     check('ui: building lays track only (no auto-train), then a started train types its consist', ui?.buildLine?.lineBuilt && ui?.buildLine?.trackOnly && ui?.buildLine?.hasPassengerCar, ui?.buildLine);
     check('ui: depot upgrade button raises level', ui?.upgradeDepot?.upgraded, ui?.upgradeDepot);
     check('ui: build-factory button founds an owned industry', ui?.buildFactory?.nowHasRecipe && ui?.buildFactory?.ownedByPlayer, ui?.buildFactory);
-    check('ui: drag-to-lay track builds the right line (press city → drag → ✓ Finish)', ui?.trackLay?.lineBuilt && ui?.trackLay?.connectsChosenCities && ui?.trackLay?.finishButtonReady, ui?.trackLay);
+    check('ui: drag-to-lay track builds the right line (press city → drag lays it; ✓ Done ends the run)', ui?.trackLay?.lineBuilt && ui?.trackLay?.connectsChosenCities && ui?.trackLay?.finishButtonReady, ui?.trackLay);
+    check(
+      'ui: track is laid and PAID per click (real immediately, no ✓ needed; right-click undoes with a full refund)',
+      ui?.perClick?.realizedWithoutFinish && ui?.perClick?.paidOnClick && ui?.perClick?.extendsPerClick && ui?.perClick?.undoRefunds && ui?.perClick?.undoCreatedRemoves,
+      ui?.perClick
+    );
     check('ui: dragging to a depot-less city still snaps + connects to it', ui?.bareSnap?.built && ui?.bareSnap?.connectsBareDest, ui?.bareSnap);
     check('ui: track grade eases smoothly (no abrupt ramp; even ruling gradient)', ui?.grade?.smooth, ui?.grade);
     check(

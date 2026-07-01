@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { Network, GStation, GLine } from './Network';
-import { LocoClass } from './Locomotives';
 import { Heightfield } from '../world/Heightfield';
 
 const SNAP = 60; // ground-distance within which the cursor latches to a city
@@ -40,12 +39,12 @@ export interface BuildStatus {
  */
 export class TrackBuilder {
   onStatus?: (s: BuildStatus) => void;
-  /** Fired when a brand-new route is finished — the listener configures + commits it. */
-  onCommit?: (nodes: RouteNode[]) => void;
-  /** Fired when the route EXTENDS one of the player's existing lines from a free end. */
-  onExtend?: (line: GLine, end: 'head' | 'tail', waypoints: THREE.Vector3[], finalStop: GStation | null) => void;
-  /** Fired when a new track BRANCHES off an existing line at an arbitrary point along it. */
-  onBranch?: (waypoints: THREE.Vector3[], finalStop: GStation | null) => void;
+  /** Lay a new line NOW (per-click realize) — returns the created line, or null if refused. */
+  onCommit?: (nodes: RouteNode[]) => GLine | null;
+  /** Extend an existing line from an end NOW — returns whether the segment was laid+charged. */
+  onExtend?: (line: GLine, end: 'head' | 'tail', waypoints: THREE.Vector3[], finalStop: GStation | null) => boolean;
+  /** Branch a new track off an existing line NOW — returns the created branch line, or null. */
+  onBranch?: (waypoints: THREE.Vector3[], finalStop: GStation | null) => GLine | null;
 
   private active = false;
   private pulseT = 0;
@@ -56,11 +55,25 @@ export class TrackBuilder {
   private snapTarget: GStation | null = null;
   /** When the cursor is over a free end of one of your lines: connect + extend it. */
   private snapEnd: { line: GLine; end: 'head' | 'tail'; pos: THREE.Vector3; dir: THREE.Vector3 } | null = null;
-  /** Locked once the route starts from a line end — this run extends that line. */
+  /** The line this run is growing (set at start when connecting to a tip, or after the first
+   *  realized segment) — every further click extends it. */
   private extendFrom: { line: GLine; end: 'head' | 'tail' } | null = null;
   /** Set when the route starts by branching off the middle of a line: the junction point + the
    *  main line's tangent there (so the branch leaves it as a smooth turnout, not a T). */
   private branchFrom: { line: GLine; pos: THREE.Vector3; dir: THREE.Vector3 } | null = null;
+  /** Every segment REALIZED (laid + charged) this run, newest last — right-click rolls one back
+   *  with a full refund. A 'created' step undoes the whole new line; an 'extended' step restores
+   *  the line's previous shape. */
+  private runSteps: {
+    kind: 'created' | 'extended';
+    line: GLine;
+    prevWp?: THREE.Vector3[];
+    prevStops?: GStation[];
+    /** The anchor's station before this segment — restored on undo. */
+    prevAnchorStation: GStation | null;
+    cost: number;
+    bonus: number;
+  }[] = [];
 
   private ray = new THREE.Raycaster();
   private ndc = new THREE.Vector2();
@@ -77,9 +90,7 @@ export class TrackBuilder {
     private terrain: THREE.Object3D,
     private network: Network,
     private field: Heightfield,
-    private overlay: THREE.Scene,
-    /** The engine to staff a finished line with — supplied live by the HUD. */
-    private getLoco: () => LocoClass
+    private overlay: THREE.Scene
   ) {
     this.ghost = new THREE.Mesh(
       new THREE.SphereGeometry(3.0, 16, 12),
@@ -144,6 +155,7 @@ export class TrackBuilder {
     this.nodes = [];
     this.extendFrom = null;
     this.branchFrom = null;
+    this.runSteps = [];
     this.snapEnd = null;
     this.ghost.visible = false;
     this.snapRing.visible = false;
@@ -197,9 +209,14 @@ export class TrackBuilder {
     if (!this.active) return;
     const wasDrag = Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y) > CLICK_SLOP;
     if (e.button === 2) {
-      // Right-click undoes the last point, or leaves build mode if the route is empty.
-      if (this.nodes.length) {
+      // Right-click UNDOES: roll back the last laid segment (full refund); with nothing laid,
+      // clear the start point; with nothing at all, leave build mode.
+      if (this.runSteps.length) {
+        this.undoLastSegment();
+      } else if (this.nodes.length) {
         this.nodes.pop();
+        this.extendFrom = null;
+        this.branchFrom = null;
         this.refreshVisuals();
         this.emit();
       } else {
@@ -209,14 +226,78 @@ export class TrackBuilder {
     }
     if (e.button !== 0) return;
     this.raycast(e);
-    if (this.cursorValid && !(this.placedOnDown && !wasDrag)) {
-      // Anything but a plain click that only dropped the start adds a point at the release.
-      this.pushIfFar(this.snapNode());
+    if (this.cursorValid && !(this.placedOnDown && !wasDrag) && this.nodes.length >= 1) {
+      // Per-click realize: every click (or drag-release) LAYS AND PAYS FOR the stretch from the
+      // anchor to here, immediately — the track is real the moment you click.
+      this.realize(this.snapNode());
     }
     this.placedOnDown = false;
     this.refreshVisuals();
     this.emit();
   };
+
+  /** Lay + charge the segment from the current anchor to `n` right now, then move the anchor to
+   *  the freshly laid end so the next click continues the same line. */
+  private realize(n: RouteNode): void {
+    const anchor = this.nodes[this.nodes.length - 1];
+    if (!anchor || anchor.pos.distanceTo(n.pos) < 10) return; // a click on the anchor isn't a segment
+    const prevAnchorStation = anchor.station;
+    if (this.extendFrom) {
+      // Continue the line this run is growing (or the tip we connected to).
+      const { line, end } = this.extendFrom;
+      const prevWp = line.waypoints.map((p) => p.clone());
+      const prevStops = line.stops.slice();
+      if (!this.onExtend?.(line, end, [n.pos.clone()], n.station)) return;
+      this.runSteps.push({ kind: 'extended', line, prevWp, prevStops, prevAnchorStation, cost: this.network.lastBuildCost, bonus: 0 });
+    } else if (this.branchFrom) {
+      // First segment of a branch: leave the junction along the main's tangent (smooth turnout).
+      const bp = this.branchFrom.pos;
+      const sign = n.pos.clone().sub(bp).setY(0).dot(this.branchFrom.dir) >= 0 ? 1 : -1;
+      const lead = bp.clone().addScaledVector(this.branchFrom.dir, sign * BRANCH_LEAD);
+      const line = this.onBranch?.([bp.clone(), lead, n.pos.clone()], n.station) ?? null;
+      if (!line) return;
+      this.runSteps.push({ kind: 'created', line, prevAnchorStation, cost: this.network.lastBuildCost, bonus: this.network.lastBuildBonus });
+      this.extendFrom = { line, end: 'tail' };
+      this.branchFrom = null;
+    } else {
+      // First segment of a brand-new line (started at a city or open ground).
+      const line = this.onCommit?.([{ pos: anchor.pos.clone(), station: anchor.station }, { pos: n.pos.clone(), station: n.station }]) ?? null;
+      if (!line) return;
+      this.runSteps.push({ kind: 'created', line, prevAnchorStation, cost: this.network.lastBuildCost, bonus: this.network.lastBuildBonus });
+      this.extendFrom = { line, end: 'tail' };
+    }
+    this.reanchor(n.station);
+  }
+
+  /** Put the anchor on the REAL end of the line being grown (the committed geometry may berth or
+   *  curve, so the true rail end is what the next segment must continue from). */
+  private reanchor(station: GStation | null): void {
+    const ef = this.extendFrom;
+    if (!ef) { this.nodes = []; return; }
+    const w = ef.line.waypoints;
+    const pos = (ef.end === 'tail' ? w[w.length - 1] : w[0]).clone();
+    this.nodes = [{ pos, station }];
+  }
+
+  /** Roll back the newest laid segment: restore the line's previous shape (or delete a line this
+   *  run created) and refund exactly what it cost. */
+  private undoLastSegment(): void {
+    const step = this.runSteps.pop();
+    if (!step) return;
+    if (step.kind === 'extended') {
+      this.network.rollbackExtend(step.line, step.prevWp!, step.prevStops!, step.cost);
+      this.extendFrom = this.extendFrom ?? { line: step.line, end: 'tail' };
+      this.reanchor(step.prevAnchorStation);
+    } else {
+      this.network.undoCreatedLine(step.line, step.cost, step.bonus);
+      // Back to picking a start point — the run's line no longer exists.
+      this.extendFrom = null;
+      this.branchFrom = null;
+      this.nodes = [];
+    }
+    this.refreshVisuals();
+    this.emit();
+  }
 
   private onMove = (e: PointerEvent): void => {
     if (!this.active) return;
@@ -227,12 +308,6 @@ export class TrackBuilder {
   private snapNode(): RouteNode {
     if (this.snapEnd) return { pos: this.snapEnd.pos.clone(), station: null };
     return { pos: this.snapTarget ? this.snapTarget.pos.clone() : this.cursor.clone(), station: this.snapTarget };
-  }
-
-  private pushIfFar(n: RouteNode): void {
-    const last = this.nodes[this.nodes.length - 1];
-    if (last && last.pos.distanceTo(n.pos) < 10) return; // ignore a release right on the last point
-    this.nodes.push(n);
   }
 
   /** Project the pointer onto the terrain and resolve any city snap. */
@@ -301,30 +376,13 @@ export class TrackBuilder {
     return null;
   }
 
-  /** Hand the finished route (≥2 points) to the listener. Extending an existing line takes the
-   *  extend path; a fresh route takes the commit path. */
+  /** End the laying run. Everything clicked is already real and paid for (per-click realize), so
+   *  ✓ Done just clears the run state, ready to start the next run. */
   private finish(): void {
-    if (this.nodes.length < 2) return;
-    if (this.extendFrom) {
-      // nodes[0] is the line end (the anchor, already on the line); the rest are new ground.
-      const wp = this.nodes.slice(1).map((n) => n.pos.clone());
-      const finalStop = [...this.nodes].reverse().find((n) => n.station)?.station ?? null;
-      this.onExtend?.(this.extendFrom.line, this.extendFrom.end, wp, finalStop);
-    } else if (this.branchFrom) {
-      // nodes[0] is the junction on the main line; lay [junction, turnout-lead, …dragged].
-      const bp = this.branchFrom.pos;
-      const rest = this.nodes.slice(1).map((n) => n.pos.clone());
-      const dest = rest[rest.length - 1];
-      const sign = dest.clone().sub(bp).setY(0).dot(this.branchFrom.dir) >= 0 ? 1 : -1;
-      const lead = bp.clone().addScaledVector(this.branchFrom.dir, sign * BRANCH_LEAD);
-      const finalStop = [...this.nodes].reverse().find((n) => n.station)?.station ?? null;
-      this.onBranch?.([bp.clone(), lead, ...rest], finalStop);
-    } else {
-      this.onCommit?.(this.nodes.map((n) => ({ pos: n.pos.clone(), station: n.station })));
-    }
     this.nodes = [];
     this.extendFrom = null;
     this.branchFrom = null;
+    this.runSteps = [];
     this.refreshVisuals();
     this.emit();
   }
@@ -409,33 +467,35 @@ export class TrackBuilder {
   }
 
   private emit(): void {
-    const route = this.routePoints();
-    const cost = this.nodes.length && route.length >= 2 ? this.network.lineCost(route, this.getLoco()) : 0;
-    const stops = this.nodes.filter((n) => n.station).length;
+    // The quote is for the NEXT stretch only (anchor → cursor) — each click pays as it lays,
+    // so there's no accumulated bill to show. Track cost only; trains are bought separately.
+    // Quoted off the straight anchor→cursor run, exactly how the charge is computed.
+    const a = this.nodes[this.nodes.length - 1];
+    const cost = a && this.cursorValid ? this.network.routeCost([a.pos, this.snapTarget ? this.snapTarget.pos : this.cursor]) : 0;
     this.onStatus?.({
       active: this.active,
       fromName: this.nodes.find((n) => n.station)?.station?.name ?? null,
       cost,
       affordable: cost <= this.network.money,
-      canFinish: this.nodes.length >= 2,
-      hint: !this.active ? '' : this.routingHint(stops),
+      canFinish: this.runSteps.length > 0,
+      hint: !this.active ? '' : this.routingHint(),
     });
   }
 
-  private routingHint(stops: number): string {
-    if (this.branchFrom) return '🔗 <b>Branch off your track here</b> — drag out and the new track peels off as a smooth turnout, then <b>✓ Finish</b>.';
-    if (this.snapEnd) return '🔗 <b>Connected to your line</b> — drag out to a city and the track curves from here.';
-    if (this.snapTarget) {
-      if (this.nodes.length === 0 && this.snapTarget.hasStation) {
-        return `Start a <b>new line</b> from <b>${this.snapTarget.name}</b> — drag out to a destination. It gets its own platform (up to <b>4 lines</b> per station).`;
-      }
+  private routingHint(): string {
+    if (this.branchFrom && !this.nodes.length) return '🔗 <b>Branch off your track here</b> — press, then every click lays (and pays for) real track from this junction.';
+    if (this.snapEnd) return '🔗 <b>Connected to your line</b> — every click now lays (and pays for) the next stretch of track.';
+    if (this.snapTarget && this.nodes.length === 0) {
       return this.snapTarget.hasStation
-        ? `Release on <b>${this.snapTarget.name}</b> to connect it — then <b>✓ Finish</b>.`
+        ? `Start a <b>new line</b> from <b>${this.snapTarget.name}</b> — every click lays real track. It gets its own platform (up to <b>4 lines</b> per station).`
         : `<b>${this.snapTarget.name}</b> needs a <b>Station</b> first (click the city → Build Station).`;
     }
-    if (this.extendFrom) return `Extending your line — drag to a city, then <b>✓ Finish</b> · right-click undoes.`;
-    if (this.nodes.length === 0) return 'Press a <b>station</b> to start a new line, a <b>cyan tip</b> to extend, or <b>click on your track</b> to branch off it — then drag out to a destination.';
-    return `Route: ${stops} stop${stops === 1 ? '' : 's'} — drag on to the next city, or <b>✓ Finish</b> · right-click undoes · <b>✕ Cancel</b> discards.`;
+    if (this.nodes.length) {
+      const to = this.snapTarget ? ` — release on <b>${this.snapTarget.name}</b> to connect it` : '';
+      const done = this.runSteps.length ? ' · <b>✓ Done</b> ends the run' : '';
+      return `Click to <b>lay track</b> to the cursor (built and paid right there)${to} · right-click <b>undoes + refunds</b>${done}.`;
+    }
+    return 'Press a <b>station</b> to start a new line, a <b>cyan tip</b> to extend, or <b>click on your track</b> to branch — track lays and is paid for click by click.';
   }
 }
 

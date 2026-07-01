@@ -89,7 +89,7 @@ async function boot(cfg: BootCfg): Promise<void> {
   };
 
   // Interactive track laying + HUD.
-  const builder = new TrackBuilder(rig.camera, renderer.gl.domElement, terrain.mesh, network, field, scene, () => selectedLoco);
+  const builder = new TrackBuilder(rig.camera, renderer.gl.domElement, terrain.mesh, network, field, scene);
   // Synthesized sound — unlocked on the first interaction, chimes on deliveries.
   const audio = new AudioBus();
   // Dev diagnostics: count deliveries/revenue so a headless run can confirm the loop.
@@ -141,6 +141,8 @@ async function boot(cfg: BootCfg): Promise<void> {
   // Finishing a route: if the line links two depots, configure + run a train right away.
   // Otherwise just lay the track and say plainly what's needed to run it — a train earns
   // nothing without depots, so we never spawn (or charge for) one that can't work.
+  // Per-click realize: each of these fires the moment a click lands — the segment is laid and
+  // paid for right there (not at ✓ Done). Returning the line lets the builder keep growing it.
   builder.onCommit = (nodes) => {
     const waypoints = nodes.map((n) => n.pos);
     const stops = nodes.filter((n) => n.station).map((n) => n.station!);
@@ -149,7 +151,7 @@ async function boot(cfg: BootCfg): Promise<void> {
     const issue = network.lineBuildIssue(network.player, stops);
     if (issue) {
       hud.news(issue, false);
-      return;
+      return null;
     }
     // Lay TRACK ONLY — never auto-start a train. The player adds trains deliberately from the
     // line's panel ("🚂 Start a train"), so a line never sprouts a train it didn't ask for.
@@ -157,7 +159,7 @@ async function boot(cfg: BootCfg): Promise<void> {
     // the build is refused (no charge) with the reason.
     if (!network.buildLine(waypoints, stops, undefined, undefined, true)) {
       hud.news(network.lastBuildIssue ?? 'Not enough cash for that track.', false);
-      return;
+      return null;
     }
     const bare = stops.filter((s) => !s.hasStation);
     if (bare.length) {
@@ -166,33 +168,37 @@ async function boot(cfg: BootCfg): Promise<void> {
     } else if (stops.length >= 2) {
       hud.news('Track laid. Select the line → 🚂 Start a train to run it.', true);
     }
+    return network.lastBuilt;
   };
-  // Extending an existing line from its free end (continuing the stub) — the track flows out of
-  // the old end with a curve, and the new city becomes a stop on that same line.
+  // Continuing the run (or extending a stub's tip): each click adds one paid stretch. Success is
+  // mostly silent — the rails appearing and the treasury ticking are the feedback — except when a
+  // city is reached and there's something to say about it.
   builder.onExtend = (line, end, waypoints, finalStop) => {
     if (!network.extendLine(line, end, waypoints, finalStop, true)) {
       hud.news(network.lastBuildIssue ?? 'Not enough cash for that track.', false);
-      return;
+      return false;
     }
-    if (finalStop && !finalStop.hasStation) {
-      hud.news(`Track extended to ${finalStop.name} — build a Station there to serve it, then 🚂 Start a train.`, false);
-    } else {
-      hud.news('Track extended along your line.', true);
+    if (finalStop) {
+      hud.news(
+        finalStop.hasStation
+          ? `Connected ${finalStop.name}. Select the line → 🚂 Start a train to run it.`
+          : `Track reached ${finalStop.name} — build a Station there to serve it, then 🚂 Start a train.`,
+        finalStop.hasStation
+      );
     }
+    return true;
   };
   // Branch a new track off the middle of an existing line (a turnout at the clicked junction).
   builder.onBranch = (waypoints, finalStop) => {
     const stops = finalStop ? [finalStop] : [];
     if (!network.buildBranch(waypoints, stops)) {
       hud.news(network.lastBuildIssue ?? 'Not enough cash for that branch.', false);
-      return;
+      return null;
     }
-    hud.news(
-      finalStop
-        ? `Branch laid to ${finalStop.name}${finalStop.hasStation ? '' : ' — build a Station there to serve it'}.`
-        : 'Branch laid off your track.',
-      true
-    );
+    if (finalStop && !finalStop.hasStation) {
+      hud.news(`Branch reached ${finalStop.name} — build a Station there to serve it.`, false);
+    }
+    return network.lastBuilt;
   };
   renderer.gl.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -2045,6 +2051,70 @@ function runUiTest(
         startsAtJunction: built && !!branch && branch.waypoints[0].distanceTo(jp) < 6,
         reachesDest: built && !!branch && branch.stops.includes(bc),
       };
+    }
+  }
+
+  // SS) Per-click realize: every click LAYS AND PAYS FOR that stretch immediately (no ✓ needed),
+  //     and right-click rolls the last stretch back with a full refund — including deleting a
+  //     line the run just created.
+  {
+    network.status = 'playing';
+    network.player.money = 20_000_000;
+    builder.cancel();
+    // A fresh edge station: connect an unserved city to the network the plain way, then lay
+    // per-click OUTWARD from it (away from the map's crowd) so nothing crosses or snaps oddly.
+    const centroid = network.stations.reduce((acc, s) => acc.add(s.pos), new THREE.Vector3()).multiplyScalar(1 / network.stations.length);
+    // The outermost station with platform room — connected to the network first if it isn't yet.
+    const S = network.stations
+      .filter((s) => network.lineCountAt(network.player, s) < network.maxLinesPerStation)
+      .sort((x, y) => y.pos.distanceToSquared(centroid) - x.pos.distanceToSquared(centroid))[0];
+    if (S) {
+      if (!S.hasStation) network.buildStationAt(S);
+      if (!network.inNetwork(network.player, S)) {
+        const anyNet = network.player.lines.find((l) => !l.through && l.stops.length)?.stops[0];
+        if (anyNet) network.buildLine([anyNet.pos.clone(), S.pos.clone()], [anyNet, S]);
+      }
+      const out = S.pos.clone().sub(centroid).setY(0).normalize();
+      const g1 = S.pos.clone().addScaledVector(out, 140);
+      g1.y = network.groundAt(g1.x, g1.z);
+      const g2 = S.pos.clone().addScaledVector(out, 280);
+      g2.y = network.groundAt(g2.x, g2.z);
+      // Frame the run top-down so all three points project on-screen.
+      const pcMid = S.pos.clone().add(g2).multiplyScalar(0.5);
+      camera.position.set(pcMid.x + 1, pcMid.y + Math.max(S.pos.distanceTo(g2) * 1.4, 500), pcMid.z + 1);
+      camera.lookAt(pcMid);
+      camera.updateMatrixWorld(true);
+      const rect = canvas.getBoundingClientRect();
+      const scr = (p: THREE.Vector3): { x: number; y: number } => {
+        const v = p.clone().project(camera);
+        return { x: (v.x * 0.5 + 0.5) * rect.width + rect.left, y: (-v.y * 0.5 + 0.5) * rect.height + rect.top };
+      };
+      const sS = scr(S.pos);
+      const s1 = scr(g1);
+      const s2 = scr(g2);
+      const linesBefore = network.lines.length;
+      builder.start();
+      const money0 = network.player.money;
+      // Click 1: press the station, release out in the country — the segment must be REAL now.
+      dragCanvas(canvas, sS.x, sS.y, s1.x, s1.y);
+      const money1 = network.player.money;
+      const line = network.player.lines[network.player.lines.length - 1];
+      const realizedWithoutFinish = network.lines.length === linesBefore + 1;
+      const paidOnClick = money1 < money0;
+      const wpLen1 = line.waypoints.length;
+      // Click 2: a plain click further out extends the SAME line, charged again.
+      canvas.dispatchEvent(new PointerEvent('pointerdown', { clientX: s2.x, clientY: s2.y, button: 0, bubbles: true }));
+      canvas.dispatchEvent(new PointerEvent('pointerup', { clientX: s2.x, clientY: s2.y, button: 0, bubbles: true }));
+      const money2 = network.player.money;
+      const extendsPerClick = network.lines.length === linesBefore + 1 && line.waypoints.length > wpLen1 && money2 < money1;
+      // Right-click: undo the second stretch — shape restored, money refunded exactly.
+      canvas.dispatchEvent(new PointerEvent('pointerup', { clientX: s2.x, clientY: s2.y, button: 2, bubbles: true }));
+      const undoRefunds = line.waypoints.length === wpLen1 && Math.abs(network.player.money - money1) < 1;
+      // Right-click again: the run created this line — undo removes it entirely, full refund.
+      canvas.dispatchEvent(new PointerEvent('pointerup', { clientX: s2.x, clientY: s2.y, button: 2, bubbles: true }));
+      const undoCreatedRemoves = network.lines.length === linesBefore && Math.abs(network.player.money - money0) < 1;
+      builder.cancel();
+      result.perClick = { realizedWithoutFinish, paidOnClick, extendsPerClick, undoRefunds, undoCreatedRemoves };
     }
   }
 

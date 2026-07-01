@@ -363,6 +363,13 @@ export class Network {
   private firstConnected = new Set<string>();
   /** Why the last enforced build was refused (crossing too tight to bridge), for the HUD. */
   lastBuildIssue: string | null = null;
+  /** The line created/extended by the last successful build — the per-click builder keeps
+   *  growing this one across a laying run. */
+  lastBuilt: GLine | null = null;
+  /** What the last successful build/extend actually charged — refunded exactly on undo. */
+  lastBuildCost = 0;
+  /** First-connection bonus the last build collected — clawed back if that build is undone. */
+  lastBuildBonus = 0;
 
   /** Terrain height at a world XZ — for UI/harnesses that need the ground without the heightfield. */
   groundAt(x: number, z: number): number {
@@ -1339,6 +1346,11 @@ export class Network {
     if (line.through || addWaypoints.length < 1) return false;
     this.lastBuildIssue = null;
     const owner = line.owner;
+    // A full station can't take another line — not even by extending one into it.
+    if (enforce && newStop && !line.stops.includes(newStop) && this.lineCountAt(owner, newStop) >= this.maxLinesPerStation) {
+      this.lastBuildIssue = `${newStop.name} already has ${this.maxLinesPerStation} lines — the most a station can take.`;
+      return false;
+    }
     const anchor = end === 'tail' ? line.waypoints[line.waypoints.length - 1] : line.waypoints[0];
     let added = addWaypoints.map((p) => p.clone());
     // If we're reaching a city this railroad already serves, berth on a parallel platform track,
@@ -1361,6 +1373,23 @@ export class Network {
     }
     if (segCost > owner.money) return false;
     owner.money -= segCost;
+    if (newStop && !line.stops.includes(newStop)) {
+      if (end === 'tail') line.stops.push(newStop);
+      else line.stops.unshift(newStop);
+    }
+    this.relayTrack(line, wp, bridges);
+    this.lastBuilt = line;
+    this.lastBuildCost = segCost;
+    this.lastBuildBonus = 0;
+    if (owner === this.player) this.onBuilt?.();
+    return true;
+  }
+
+  /** Re-lay a line's physical track along new waypoints (shared by extend and undo): rebuilds the
+   *  Track, remaps doubled stretches by world position, refreshes stop fractions/value, regrades
+   *  the corridor, re-aligns depots, and resets any running trains to the start of the new rails. */
+  private relayTrack(line: GLine, wp: THREE.Vector3[], bridges: BridgeSpan[] = []): void {
+    const owner = line.owner;
     // Keep doubled stretches physically put across the rebuild: capture their world endpoints off
     // the OLD track, then remap to arc-fractions on the new one.
     const oldTrack = line.track;
@@ -1380,10 +1409,6 @@ export class Network {
       line.track.setDoubled(line.doubled);
     }
     line.waypoints = wp;
-    if (newStop && !line.stops.includes(newStop)) {
-      if (end === 'tail') line.stops.push(newStop);
-      else line.stops.unshift(newStop);
-    }
     line.stopFracs = line.stops.map((s) => line.track.nearestU(s.pos));
     line.value = this.routeCost(wp);
     this.clearTownsForCorridor(wp);
@@ -1396,8 +1421,34 @@ export class Network {
     for (const t of line.trains) {
       t.restore(0, 1, t.consist.map((c) => ({ amount: c.amount, origin: [c.origin.x, c.origin.y, c.origin.z] as [number, number, number] })));
     }
-    if (owner === this.player) this.onBuilt?.();
-    return true;
+  }
+
+  /** Undo the last laid stretch of `line` (per-click laying's right-click): restore the previous
+   *  waypoints/stops and refund exactly what that stretch cost. */
+  rollbackExtend(line: GLine, prevWp: THREE.Vector3[], prevStops: GStation[], refund: number): void {
+    line.stops = prevStops.slice();
+    this.relayTrack(line, prevWp.map((p) => p.clone()));
+    line.owner.money += refund;
+    if (line.owner === this.player) this.onBuilt?.();
+  }
+
+  /** Undo a line CREATED during the current laying run: remove it entirely and refund its full
+   *  cost (minus any first-connection bonus it collected, which is clawed back too). */
+  undoCreatedLine(line: GLine, refund: number, bonus: number): void {
+    for (const t of [...line.trains]) t.dispose(this.scene);
+    line.trains.length = 0;
+    this.scene.remove(line.track.group);
+    line.track.dispose();
+    const gi = this.lines.indexOf(line);
+    if (gi >= 0) this.lines.splice(gi, 1);
+    const oi = line.owner.lines.indexOf(line);
+    if (oi >= 0) line.owner.lines.splice(oi, 1);
+    line.owner.money += refund - bonus;
+    for (const st of line.stops) {
+      const d = st.depots.get(line.owner);
+      if (d) { d.aligned = false; this.alignDepot(st, line.owner); }
+    }
+    if (line.owner === this.player) this.onBuilt?.();
   }
 
   /** The nearest point on one of `owner`'s own running lines to world point p (within maxDist) —
@@ -1642,7 +1693,9 @@ export class Network {
             const whose = l.owner === owner ? 'your own track' : `${l.owner.name}'s track`;
             return {
               bridges: [],
-              error: `Can't lay that — it would cross ${whose} too close to a station to bridge over it (no room to slope up). Route around it, or start further out.`,
+              // Honest reason: the feasibility check is ROOM — the crossing sits too close to this
+              // track's end to ramp up to a bridge before reaching it.
+              error: `Can't lay that — it would cross ${whose} too close to this track's end to ramp up onto a bridge (no room to slope). Approach from further out, or route around it.`,
             };
           }
           bridges.push({ pos: new THREE.Vector3(hit.x, hit.ey, hit.z), deckY: hit.ey + BRIDGE_CLEAR });
@@ -1655,6 +1708,15 @@ export class Network {
   buildLineFor(owner: Company, waypoints: THREE.Vector3[], stops: GStation[], loco?: LocoClass, cars?: CargoKind[], enforce = false, raw = false): boolean {
     if (waypoints.length < 2) return false;
     this.lastBuildIssue = null;
+    // A full station can't take another line through ANY enforced path (new line, branch) —
+    // the 4-line cap holds everywhere, not just the plain-commit route.
+    if (enforce) {
+      const full = stops.find((s) => this.lineCountAt(owner, s) >= this.maxLinesPerStation);
+      if (full) {
+        this.lastBuildIssue = `${full.name} already has ${this.maxLinesPerStation} lines — the most a station can take.`;
+        return false;
+      }
+    }
     // Lay a line that duplicates a corridor this railroad already runs ALONGSIDE the first as a
     // clean parallel double-track, instead of overlapping (and blocking) it.
     // A duplicate corridor is silently shouldered aside so two lines never overlap-and-jam — but
@@ -1695,7 +1757,7 @@ export class Network {
       }
     }
     const trains = runnable ? [{ loco: loco!, cars: cars ?? this.defaultConsist(stops, loco!) }] : [];
-    this.layLine(owner, stops, route, trains, false, bridges);
+    const line = this.layLine(owner, stops, route, trains, false, bridges);
     // Snap this owner's depots onto this line's rails, and re-grow the station to its new platform
     // count (each new line berthing here makes the station bigger). Clear any houses it now covers.
     for (const st of stops) {
@@ -1709,6 +1771,9 @@ export class Network {
       owner.money += bonus;
       this.pushDelivery(`First link: ${stops[0].name} ↔ ${stops[stops.length - 1].name}`, bonus);
     }
+    this.lastBuilt = line;
+    this.lastBuildCost = cost;
+    this.lastBuildBonus = bonus;
     if (owner === this.player) this.onBuilt?.();
     return true;
   }
