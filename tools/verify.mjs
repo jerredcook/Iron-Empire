@@ -98,6 +98,11 @@ async function main() {
       ui?.perClick?.realizedWithoutFinish && ui?.perClick?.paidOnClick && ui?.perClick?.extendsPerClick && ui?.perClick?.undoRefunds && ui?.perClick?.undoCreatedRemoves,
       ui?.perClick
     );
+    check(
+      'ui: a branch spur is not a dead end — the turnout weld counts as real connectivity, and a through train runs from the spur city across the junction onto the main',
+      ui?.throughSpur?.spurBuilt && ui?.throughSpur?.weldConnects && ui?.throughSpur?.partnerFound && ui?.throughSpur?.throughRuns && ui?.throughSpur?.crossesTurnout,
+      ui?.throughSpur
+    );
     check('ui: dragging to a depot-less city still snaps + connects to it', ui?.bareSnap?.built && ui?.bareSnap?.connectsBareDest, ui?.bareSnap);
     check('ui: track grade eases smoothly (no abrupt ramp; even ruling gradient)', ui?.grade?.smooth, ui?.grade);
     check(

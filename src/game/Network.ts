@@ -25,6 +25,10 @@ const BRIDGE_CLEAR = 6; // a deck rides this far above the track it bridges over
 const BRIDGE_APPROACH = 110; // must match Track.BRIDGE_RAMP — room each side to slope up to the deck
 const CROSS_NEAR_STATION = 34; // a crossing this close to a station is yard convergence, not a conflict
 const STATION_END = 36; // a line-end within this of its own station stop is a platform, not a free tip
+// A line endpoint within this XZ distance of another line's rails is WELDED to them (a branch
+// turnout). Must stay well under PLATFORM_GAP (7.5) and DOUBLE_TRACK_GAP (9) so parallel platform
+// tracks and shouldered corridors never read as joined.
+const JOIN_TOL = 5;
 
 /** XZ intersection of segment a→b with c→d (interior only, not shared endpoints). Returns the
  *  crossing point plus the height of EACH segment there, or null if they don't cross. */
@@ -370,6 +374,8 @@ export class Network {
   lastBuildCost = 0;
   /** First-connection bonus the last build collected — clawed back if that build is undone. */
   lastBuildBonus = 0;
+  /** Cached physical welds between lines (branch turnouts) — rebuilt lazily after track changes. */
+  private railJoints: { a: GLine; ua: number; b: GLine; ub: number }[] | null = null;
 
   /** Terrain height at a world XZ — for UI/harnesses that need the ground without the heightfield. */
   groundAt(x: number, z: number): number {
@@ -664,6 +670,7 @@ export class Network {
 
   /** Tear down every line (meshes + trains) — used before restoring a save. */
   private clearLines(): void {
+    this.invalidateRail();
     for (const l of this.lines) {
       for (const t of l.trains) t.dispose(this.scene);
       this.scene.remove(l.track.group);
@@ -1044,23 +1051,212 @@ export class Network {
     return best;
   }
 
-  /** Every station reachable from `st` over the connected rail network — lines that
-   *  share a stop chain into one network, so cargo and trains move across the whole
-   *  component, not just a single line. */
-  reachableFrom(st: GStation): Set<GStation> {
-    const seen = new Set<GStation>([st]);
-    const queue: GStation[] = [st];
-    while (queue.length) {
-      const cur = queue.shift()!;
-      for (const l of this.lines) {
-        if (!l.stops.includes(cur)) continue;
-        for (const s of l.stops) if (!seen.has(s)) {
-          seen.add(s);
-          queue.push(s);
+  /** All places where one line's END is physically welded onto another line's rails — every
+   *  branch turnout. `a`'s endpoint (ua = 0 head / 1 tail) sits on `b` at arc-fraction `ub`.
+   *  Same-owner only (you can't fuse onto a rival's rails), cached until the track changes. */
+  private joints(): { a: GLine; ua: number; b: GLine; ub: number }[] {
+    if (this.railJoints) return this.railJoints;
+    const out: { a: GLine; ua: number; b: GLine; ub: number }[] = [];
+    const real = this.lines.filter((l) => !l.through && l.waypoints.length >= 2 && l.track.length > 0);
+    const q = new THREE.Vector3();
+    for (const a of real) {
+      const ends: [number, THREE.Vector3][] = [
+        [0, a.waypoints[0]],
+        [1, a.waypoints[a.waypoints.length - 1]],
+      ];
+      for (const [ua, p] of ends) {
+        for (const b of real) {
+          if (b === a || b.owner !== a.owner) continue;
+          const ub = b.track.nearestU(p);
+          b.track.curve.getPointAt(ub, q);
+          if (Math.hypot(q.x - p.x, q.z - p.z) <= JOIN_TOL) out.push({ a, ua, b, ub });
         }
       }
     }
+    this.railJoints = out;
+    return out;
+  }
+
+  /** The physical track changed — welds and everything derived from them must be recomputed. */
+  private invalidateRail(): void {
+    this.railJoints = null;
+  }
+
+  /** Every station reachable from `st` over the PHYSICAL rail network: lines chained by shared
+   *  stops AND by welded branch turnouts — one component, so cargo and trains can move across
+   *  all of it, not just a single line. */
+  reachableFrom(st: GStation): Set<GStation> {
+    // Union-find over stations + lines: a line joins all its stops; a weld joins its two lines.
+    const parent = new Map<object, object>();
+    const find = (x: object): object => {
+      let r = parent.get(x) ?? x;
+      while (parent.has(r) && parent.get(r) !== r) r = parent.get(r)!;
+      parent.set(x, r);
+      return r;
+    };
+    const union = (x: object, y: object): void => {
+      const rx = find(x);
+      const ry = find(y);
+      if (rx !== ry) parent.set(rx, ry);
+    };
+    for (const l of this.lines) {
+      if (l.through) continue;
+      for (const s of l.stops) union(l, s);
+    }
+    for (const j of this.joints()) union(j.a, j.b);
+    const root = find(st);
+    const seen = new Set<GStation>([st]);
+    for (const s of this.stations) if (find(s) === root) seen.add(s);
     return seen;
+  }
+
+  /** A landmark the rail router can stand on: a station stop or a welded turnout, at an
+   *  arc-fraction along one specific line. */
+  private railAnchors(company: Company): {
+    anchors: { line: GLine; u: number; station: GStation | null }[];
+    adj: Map<number, { to: number; w: number }[]>;
+  } {
+    const real = company.lines.filter((l) => !l.through && l.track.length > 0);
+    const realSet = new Set(real);
+    const anchors: { line: GLine; u: number; station: GStation | null }[] = [];
+    const byLine = new Map<GLine, number[]>();
+    const add = (line: GLine, u: number, station: GStation | null): number => {
+      const cu = THREE.MathUtils.clamp(u, 0, 1);
+      const list = byLine.get(line) ?? [];
+      for (const i of list) {
+        if (Math.abs(anchors[i].u - cu) * line.track.length < 4) {
+          if (station && !anchors[i].station) anchors[i].station = station;
+          return i;
+        }
+      }
+      anchors.push({ line, u: cu, station });
+      list.push(anchors.length - 1);
+      byLine.set(line, list);
+      return anchors.length - 1;
+    };
+    for (const l of real) for (let i = 0; i < l.stops.length; i++) add(l, l.stopFracs[i], l.stops[i]);
+    const adj = new Map<number, { to: number; w: number }[]>();
+    const link = (i: number, j: number, w: number): void => {
+      (adj.get(i) ?? adj.set(i, []).get(i)!).push({ to: j, w });
+      (adj.get(j) ?? adj.set(j, []).get(j)!).push({ to: i, w });
+    };
+    // Welded turnouts: a zero-length transfer between the two lines at the junction point.
+    for (const j of this.joints()) {
+      if (!realSet.has(j.a) || !realSet.has(j.b)) continue;
+      link(add(j.a, j.ua, null), add(j.b, j.ub, null), 0.5);
+    }
+    // Station transfers: lines meeting at the same station exchange there (the platform yard).
+    const atStation = new Map<GStation, number[]>();
+    anchors.forEach((a, i) => {
+      if (a.station) (atStation.get(a.station) ?? atStation.set(a.station, []).get(a.station)!).push(i);
+    });
+    for (const list of atStation.values()) for (let i = 1; i < list.length; i++) link(list[0], list[i], 0.5);
+    // Runs of rail between consecutive landmarks on the same line.
+    for (const [line, list] of byLine) {
+      const sorted = list.slice().sort((x, y) => anchors[x].u - anchors[y].u);
+      for (let i = 1; i < sorted.length; i++) {
+        link(sorted[i - 1], sorted[i], Math.abs(anchors[sorted[i]].u - anchors[sorted[i - 1]].u) * line.track.length);
+      }
+    }
+    return { anchors, adj };
+  }
+
+  /** Rail distances from `from` over the company's physical network (Dijkstra over stops +
+   *  welded turnouts). Returns per-anchor distance and the predecessor map for path recovery. */
+  private railDijkstra(
+    company: Company,
+    from: GStation
+  ): { anchors: { line: GLine; u: number; station: GStation | null }[]; dist: number[]; prev: number[] } {
+    const { anchors, adj } = this.railAnchors(company);
+    const dist = anchors.map(() => Infinity);
+    const prev = anchors.map(() => -1);
+    const open: number[] = [];
+    anchors.forEach((a, i) => {
+      if (a.station === from) {
+        dist[i] = 0;
+        open.push(i);
+      }
+    });
+    const done = new Set<number>();
+    while (open.length) {
+      open.sort((x, y) => dist[x] - dist[y]);
+      const u = open.shift()!;
+      if (done.has(u)) continue;
+      done.add(u);
+      for (const e of adj.get(u) ?? []) {
+        const nd = dist[u] + e.w;
+        if (nd < dist[e.to]) {
+          dist[e.to] = nd;
+          prev[e.to] = u;
+          open.push(e.to);
+        }
+      }
+    }
+    return { anchors, dist, prev };
+  }
+
+  /** The nearest OTHER stationed stop rail-reachable from `from` across the company's network —
+   *  through welded turnouts and station transfers. Null when the rails lead nowhere yet. */
+  nearestRailPartner(company: Company, from: GStation): GStation | null {
+    const { anchors, dist } = this.railDijkstra(company, from);
+    let best: GStation | null = null;
+    let bd = Infinity;
+    anchors.forEach((a, i) => {
+      if (a.station && a.station !== from && a.station.hasStation && dist[i] < bd) {
+        bd = dist[i];
+        best = a.station;
+      }
+    });
+    return best;
+  }
+
+  /** Stationed stops rail-reachable from `from` on this company's network (excluding `from`). */
+  reachableStations(company: Company, from: GStation): GStation[] {
+    const { anchors, dist } = this.railDijkstra(company, from);
+    const out = new Set<GStation>();
+    anchors.forEach((a, i) => {
+      if (a.station && a.station !== from && a.station.hasStation && dist[i] < Infinity) out.add(a.station);
+    });
+    return [...out];
+  }
+
+  /** Trace the physical rails from one stationed stop to another — across welded turnouts and
+   *  station transfers — as a sampled route plus the stations passed, ready for a through-train.
+   *  Null when no rail path exists. */
+  traceRoute(company: Company, from: GStation, to: GStation): { pts: THREE.Vector3[]; stops: GStation[] } | null {
+    if (from === to) return null;
+    const { anchors, dist, prev } = this.railDijkstra(company, from);
+    let end = -1;
+    anchors.forEach((a, i) => {
+      if (a.station === to && dist[i] < Infinity && (end < 0 || dist[i] < dist[end])) end = i;
+    });
+    if (end < 0) return null;
+    const path: number[] = [];
+    for (let i = end; i >= 0; i = prev[i]) path.unshift(i);
+    const pts: THREE.Vector3[] = [];
+    const stops: GStation[] = [];
+    const tmp = new THREE.Vector3();
+    for (let k = 0; k < path.length; k++) {
+      const a = anchors[path[k]];
+      if (k > 0) {
+        const p = anchors[path[k - 1]];
+        if (p.line === a.line) {
+          // A run of rail: sample the line's curve between the two landmarks.
+          const n = Math.max(4, Math.floor((Math.abs(a.u - p.u) * a.line.track.length) / 18));
+          for (let i = 1; i <= n; i++) {
+            a.line.track.curve.getPointAt(THREE.MathUtils.clamp(THREE.MathUtils.lerp(p.u, a.u, i / n), 0, 1), tmp);
+            pts.push(tmp.clone());
+          }
+        }
+        // A transfer (weld or station) is the same physical spot — nothing to sample.
+      } else {
+        a.line.track.curve.getPointAt(a.u, tmp);
+        pts.push(tmp.clone());
+      }
+      if (a.station && stops[stops.length - 1] !== a.station) stops.push(a.station);
+    }
+    if (pts.length < 2 || stops[0] !== from || stops[stops.length - 1] !== to) return null;
+    return { pts, stops };
   }
 
   /** Adjacent depots one segment away from `s`, with the line and segment length. */
@@ -1119,7 +1315,8 @@ export class Network {
    */
   buildThroughService(from: GStation, loco: LocoClass, cars?: CargoKind[]): boolean {
     if (loco.cost > this.player.money) return false;
-    const reach = [...this.reachableFrom(from)].filter((s) => s !== from && s.hasStation);
+    // Farthest stationed stop reachable over the PHYSICAL network — welded turnouts included.
+    const reach = this.reachableStations(this.player, from);
     if (!reach.length) return false;
     let to = reach[0];
     let far = -1;
@@ -1130,28 +1327,22 @@ export class Network {
         to = s;
       }
     }
-    const legs = this.pathLegs(from, to);
-    if (!legs || legs.length === 0) return false;
+    return this.startThroughTrain(from, to, loco, cars);
+  }
 
-    // Sample each leg's curve to trace a continuous route across the junctions.
-    const pts: THREE.Vector3[] = [];
-    const stops: GStation[] = [from];
-    const tmp = new THREE.Vector3();
-    for (const leg of legs) {
-      const uA = leg.line.track.nearestU(leg.from.pos);
-      const uB = leg.line.track.nearestU(leg.to.pos);
-      const n = Math.max(4, Math.floor((Math.abs(uB - uA) * leg.line.track.length) / 18));
-      for (let i = pts.length ? 1 : 0; i <= n; i++) {
-        leg.line.track.curve.getPointAt(THREE.MathUtils.clamp(THREE.MathUtils.lerp(uA, uB, i / n), 0, 1), tmp);
-        pts.push(tmp.clone());
-      }
-      stops.push(leg.to);
-    }
-
+  /** Run a through-train between two stationed stops anywhere on the player's connected rails:
+   *  the route is traced over the physical network (across welded branch turnouts and station
+   *  transfers), and the train rides a movement-only track over those rails. This is how a
+   *  branch spur gets service — a train from the spur's city across the turnout onto the main.
+   *  Charged the locomotive only (the rails already exist). */
+  startThroughTrain(from: GStation, to: GStation, loco: LocoClass, cars?: CargoKind[]): boolean {
+    if (loco.cost > this.player.money) return false;
+    const route = this.traceRoute(this.player, from, to);
+    if (!route) return false;
     this.player.money -= loco.cost;
     // Movement-only track tracing existing rails — built via layLine(through) so it
     // round-trips correctly through save/load.
-    this.layLine(this.player, stops, pts, [{ loco, cars: cars ?? this.defaultConsist(stops, loco) }], true);
+    this.layLine(this.player, route.stops, route.pts, [{ loco, cars: cars ?? this.defaultConsist(route.stops, loco) }], true);
     this.onBuilt?.();
     return true;
   }
@@ -1171,9 +1362,12 @@ export class Network {
     return best;
   }
 
-  /** Are two stations already joined on some corridor? */
+  /** Are two stations REALLY connected — a physical rail path between them (one corridor, a chain
+   *  of lines through shared stations, or across welded branch turnouts)? */
   isConnected(a: GStation, b: GStation): boolean {
-    return this.lines.some((l) => l.stops.includes(a) && l.stops.includes(b));
+    if (a === b) return true;
+    if (this.lines.some((l) => l.stops.includes(a) && l.stops.includes(b))) return true; // fast path
+    return this.reachableFrom(a).has(b);
   }
 
   /** Is this city part of the company's connected network (a depot here, or a stop it serves)? */
@@ -1389,6 +1583,7 @@ export class Network {
    *  Track, remaps doubled stretches by world position, refreshes stop fractions/value, regrades
    *  the corridor, re-aligns depots, and resets any running trains to the start of the new rails. */
   private relayTrack(line: GLine, wp: THREE.Vector3[], bridges: BridgeSpan[] = []): void {
+    this.invalidateRail(); // the physical network changed — welds must be recomputed
     const owner = line.owner;
     // Keep doubled stretches physically put across the rebuild: capture their world endpoints off
     // the OLD track, then remap to arc-fractions on the new one.
@@ -1435,6 +1630,7 @@ export class Network {
   /** Undo a line CREATED during the current laying run: remove it entirely and refund its full
    *  cost (minus any first-connection bonus it collected, which is clawed back too). */
   undoCreatedLine(line: GLine, refund: number, bonus: number): void {
+    this.invalidateRail();
     for (const t of [...line.trains]) t.dispose(this.scene);
     line.trains.length = 0;
     this.scene.remove(line.track.group);
@@ -1797,6 +1993,7 @@ export class Network {
     this.lines.push(line);
     owner.lines.push(line);
     if (!through) {
+      this.invalidateRail(); // the physical network changed — welds must be recomputed
       this.clearTownsForCorridor(waypoints); // shoulder town houses off the new rails
       this.onTrackBuilt?.(waypoints); // grade terrain + clear scatter to the new bed
     }
@@ -2052,6 +2249,7 @@ export class Network {
   /** Demolish a whole line: scrap its trains and rails, refund part of the grading. */
   demolishLine(line: GLine): boolean {
     if (this.status !== 'playing') return false; // no teardown once the game is decided (matches the other mutators)
+    this.invalidateRail();
     for (const t of [...line.trains]) t.dispose(this.scene);
     line.trains.length = 0;
     this.scene.remove(line.track.group);

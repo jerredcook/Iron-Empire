@@ -38,7 +38,8 @@ export class Inspector {
     private onAddStationBuilding: (st: GStation, type: StationBuilding) => void,
     private onUpgradeLoco: (line: GLine, train: Train) => void,
     private onRepairLine: (line: GLine) => void,
-    private onConnectLines: (a: GLine, b: GLine) => void = () => {}
+    private onConnectLines: (a: GLine, b: GLine) => void = () => {},
+    private onThroughTrain: (line: GLine) => void = () => {}
   ) {
     this.panel = document.createElement('div');
     Object.assign(this.panel.style, {
@@ -108,6 +109,8 @@ export class Inspector {
         const other = this.network.lines[+(el.getAttribute('data-connect') ?? -1)];
         if (other) (el as HTMLElement).onclick = () => this.onConnectLines(line, other);
       });
+      const thr = this.panel.querySelector('[data-throughtrain]') as HTMLElement | null;
+      if (thr) thr.onclick = () => this.onThroughTrain(line);
     }
     const ds = this.panel.querySelector('[data-demolishstation]') as HTMLElement | null;
     if (ds && this.sel.kind === 'station') {
@@ -313,7 +316,18 @@ export class Inspector {
             `<div style="font-size:11px;opacity:0.6;text-align:center;margin-top:3px">Pick a locomotive and what it should haul.</div>`
           : `<div data-addtrain style="margin-top:9px;text-align:center;cursor:pointer;pointer-events:auto;padding:6px;border-radius:6px;border:1px solid rgba(143,255,168,0.5);color:#8fffa8;font-size:12px">＋ Add another train</div>`;
       } else {
-        html += `<div style="margin-top:9px;padding:7px 9px;border-radius:7px;background:rgba(255,200,120,0.1);border:1px solid rgba(255,200,120,0.4);color:#ffd089;font-size:11.5px">⚠ Needs a Station at two of these cities before a train can run — click a city → Build Station.</div>`;
+        // A spur with ONE stationed stop isn't a dead end: its rails weld onto the rest of the
+        // network at the turnout, so a through-train can run from here across the junction to
+        // the nearest connected station.
+        const s0 = line.stops.find((s) => s.hasStation);
+        const partner = s0 ? this.network.nearestRailPartner(line.owner, s0) : null;
+        if (s0 && partner) {
+          html +=
+            `<div data-throughtrain style="margin-top:10px;text-align:center;cursor:pointer;pointer-events:auto;padding:9px;border-radius:7px;border:1px solid rgba(143,255,168,0.7);background:rgba(143,255,168,0.16);color:#8fffa8;font-size:13px;font-weight:700">🚂 Start a through train — ${s0.name} ↔ ${partner.name}</div>` +
+            `<div style="font-size:11px;opacity:0.6;text-align:center;margin-top:3px">Runs across the junction onto your connected rails.</div>`;
+        } else {
+          html += `<div style="margin-top:9px;padding:7px 9px;border-radius:7px;background:rgba(255,200,120,0.1);border:1px solid rgba(255,200,120,0.4);color:#ffd089;font-size:11.5px">⚠ Needs a Station at two of these cities before a train can run — click a city → Build Station.</div>`;
+        }
       }
     }
     if (!line.owner.isAI) {

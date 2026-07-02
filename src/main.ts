@@ -258,6 +258,20 @@ async function boot(cfg: BootCfg): Promise<void> {
         hud.news('Tracks connected — a train now runs straight through the junction.', true);
         clearSelection();
       }
+    },
+    (line) => {
+      // A spur's through-train: from its stationed stop, across the welded turnout, to the
+      // nearest connected station — the player picks the consist, then it runs.
+      const s0 = line.stops.find((s) => s.hasStation);
+      const partner = s0 ? network.nearestRailPartner(network.player, s0) : null;
+      if (!s0 || !partner) return;
+      configureConsist(network, [s0, partner], selectedLoco, (cars) => {
+        if (network.startThroughTrain(s0, partner, selectedLoco, cars)) {
+          hud.news(`Through train running ${s0.name} ↔ ${partner.name} — across the junction.`, true);
+        } else {
+          hud.news('Could not start that through train.', false);
+        }
+      });
     }
   );
   const auctioneer = new Auctioneer(network);
@@ -2115,6 +2129,51 @@ function runUiTest(
       const undoCreatedRemoves = network.lines.length === linesBefore && Math.abs(network.player.money - money0) < 1;
       builder.cancel();
       result.perClick = { realizedWithoutFinish, paidOnClick, extendsPerClick, undoRefunds, undoCreatedRemoves };
+    }
+  }
+
+  // TT) Through-running over the physical network: a branch spur is NOT a dead end. Its rails
+  //     weld onto the main at the turnout, the weld counts as REAL connectivity, and a through
+  //     train runs from the spur's city across the junction onto the main line.
+  {
+    network.status = 'playing';
+    network.player.money = 20_000_000;
+    const ttCentroid = network.stations.reduce((acc, s) => acc.add(s.pos), new THREE.Vector3()).multiplyScalar(1 / network.stations.length);
+    // A virgin city at the map's edge becomes the spur target; its two nearest stations with
+    // platform room host the main line.
+    const bc = network.stations
+      .filter((s) => network.lineCountAt(network.player, s) === 0)
+      .sort((x, y) => y.pos.distanceToSquared(ttCentroid) - x.pos.distanceToSquared(ttCentroid))[0];
+    const pair = bc
+      ? network.stations
+          .filter((s) => s !== bc && network.lineCountAt(network.player, s) < network.maxLinesPerStation)
+          .sort((x, y) => x.pos.distanceToSquared(bc.pos) - y.pos.distanceToSquared(bc.pos))
+          .slice(0, 2)
+      : [];
+    if (bc && pair.length === 2) {
+      const [base, md] = pair;
+      [bc, base, md].forEach((c) => { if (!c.hasStation) network.buildStationAt(c); });
+      network.buildLine([base.pos.clone(), md.pos.clone()], [base, md]);
+      const main = network.player.lines[network.player.lines.length - 1];
+      const jp = new THREE.Vector3();
+      const jt = new THREE.Vector3();
+      main.track.curve.getPointAt(0.5, jp);
+      main.track.curve.getTangentAt(0.5, jt);
+      jt.y = 0;
+      jt.normalize();
+      const sign = bc.pos.clone().sub(jp).setY(0).dot(jt) >= 0 ? 1 : -1;
+      const lead = jp.clone().addScaledVector(jt, sign * 18);
+      const spurBuilt = network.buildBranch([jp.clone(), lead, bc.pos.clone()], [bc]);
+      // The weld IS connectivity: no single line serves both cities, yet they are connected.
+      const sharesALine = network.lines.some((l) => l.stops.includes(bc) && l.stops.includes(md));
+      const weldConnects = spurBuilt && !sharesALine && network.isConnected(bc, md);
+      const partner = network.nearestRailPartner(network.player, bc);
+      const partnerFound = !!partner && (partner === base || partner === md);
+      const ok = !!partner && network.startThroughTrain(bc, partner, loco);
+      const thr = network.player.lines[network.player.lines.length - 1];
+      const throughRuns = ok && thr.through && thr.trains.length === 1 && thr.stops.includes(bc) && !!partner && thr.stops.includes(partner);
+      const crossesTurnout = ok && thr.waypoints.some((p) => Math.hypot(p.x - jp.x, p.z - jp.z) < 8);
+      result.throughSpur = { spurBuilt, weldConnects, partnerFound, throughRuns, crossesTurnout };
     }
   }
 
