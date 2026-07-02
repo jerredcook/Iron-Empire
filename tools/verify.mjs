@@ -103,6 +103,11 @@ async function main() {
       ui?.throughSpur?.spurBuilt && ui?.throughSpur?.weldConnects && ui?.throughSpur?.partnerFound && ui?.throughSpur?.throughRuns && ui?.throughSpur?.crossesTurnout,
       ui?.throughSpur
     );
+    check(
+      'ui: a hub station transforms with its yard — a platform strip alongside each berthed track, the building beyond the outermost rail (never mid-yard)',
+      ui?.stationYard?.threeTracks && ui?.stationYard?.platformsMatch && ui?.stationYard?.buildingOutsideYard,
+      ui?.stationYard
+    );
     check('ui: dragging to a depot-less city still snaps + connects to it', ui?.bareSnap?.built && ui?.bareSnap?.connectsBareDest, ui?.bareSnap);
     check('ui: track grade eases smoothly (no abrupt ramp; even ruling gradient)', ui?.grade?.smooth, ui?.grade);
     check(

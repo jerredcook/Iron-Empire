@@ -2177,6 +2177,48 @@ function runUiTest(
     }
   }
 
+  // UU) The station TRANSFORMS with its yard: a hub with several berthed tracks gets a passenger
+  //     platform strip alongside EACH track, and the building sits beyond the outermost rail —
+  //     beside its yard, never marooned in the middle of the tracks.
+  {
+    network.status = 'playing';
+    network.player.money = 20_000_000;
+    const uuCentroid = network.stations.reduce((acc, s) => acc.add(s.pos), new THREE.Vector3()).multiplyScalar(1 / network.stations.length);
+    const hub = network.stations
+      .filter((s) => network.lineCountAt(network.player, s) === 0)
+      .sort((x, y) => y.pos.distanceToSquared(uuCentroid) - x.pos.distanceToSquared(uuCentroid))[0];
+    const dests = hub
+      ? network.stations
+          .filter((s) => s !== hub && network.lineCountAt(network.player, s) < network.maxLinesPerStation)
+          .sort((x, y) => x.pos.distanceToSquared(hub.pos) - y.pos.distanceToSquared(hub.pos))
+          .slice(0, 3)
+      : [];
+    if (hub && dests.length === 3) {
+      if (!hub.hasStation) network.buildStationAt(hub);
+      for (const d of dests) {
+        if (!d.hasStation) network.buildStationAt(d);
+        network.buildLine([hub.pos.clone(), d.pos.clone()], [hub, d]);
+      }
+      const depot = hub.depots.get(network.player);
+      const yardLines = network.player.lines.filter((l) => !l.through && l.stops.includes(hub));
+      const platformsMatch = !!depot?.platforms && depot.platforms.children.length === yardLines.length * 2; // slab + skirt per track
+      // The building must clear every berthed rail — outside the yard, not between tracks.
+      let minRailDist = Infinity;
+      if (depot) {
+        const p = new THREE.Vector3();
+        for (const l of yardLines) {
+          l.track.curve.getPointAt(Math.max(0, Math.min(1, l.stopFracs[l.stops.indexOf(hub)])), p);
+          minRailDist = Math.min(minRailDist, Math.hypot(p.x - depot.mesh.position.x, p.z - depot.mesh.position.z));
+        }
+      }
+      result.stationYard = {
+        threeTracks: yardLines.length === 3,
+        platformsMatch,
+        buildingOutsideYard: minRailDist >= 5.5 && minRailDist < 60,
+      };
+    }
+  }
+
   // MM) Track is colour-coded by owner: a player line's rails carry the player's livery (a
   //     green-ish steel), not bare grey steel — so your track reads as yours at a glance.
   {

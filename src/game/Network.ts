@@ -187,6 +187,8 @@ export interface GDepot {
   mesh: THREE.Object3D;
   /** True once it's been sat beside its owner's serving line's rails. */
   aligned: boolean;
+  /** Passenger platform strips — one alongside each track berthed at this station. */
+  platforms?: THREE.Group;
 }
 
 export interface GLine {
@@ -862,6 +864,7 @@ export class Network {
     for (const l of [...this.lines]) {
       if (l.owner === this.player && l.stops.includes(st)) this.demolishLine(l);
     }
+    this.disposePlatforms(depot);
     this.scene.remove(depot.mesh);
     depot.mesh.traverse((o) => {
       const m = o as THREE.Mesh;
@@ -883,6 +886,7 @@ export class Network {
     // Re-placing this owner's depot (loading into an active game) — free the old mesh first.
     const existing = st.depots.get(owner);
     if (existing) {
+      this.disposePlatforms(existing);
       this.scene.remove(existing.mesh);
       existing.mesh.traverse((o) => {
         const m = o as THREE.Mesh;
@@ -904,26 +908,40 @@ export class Network {
     return st.depots.get(this.player)?.mesh ?? null;
   }
 
-  /** Place the depot beside the rails of a line that stops here, with its platform running
-   *  along the track so the station reads as part of the line. With no line yet, it faces
-   *  the nearest neighbouring city as a sensible default until one arrives. Purely visual —
-   *  catchment and the economy key off st.pos, never the depot mesh. */
+  /** Free a depot's platform strips (they're rebuilt on every re-alignment). */
+  private disposePlatforms(depot: GDepot): void {
+    if (!depot.platforms) return;
+    this.scene.remove(depot.platforms);
+    depot.platforms.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+      if (m.material) for (const mat of Array.isArray(m.material) ? m.material : [m.material]) mat.dispose();
+    });
+    depot.platforms = undefined;
+  }
+
+  /** Lay the station out as a REAL multi-platform station: read the yard (every one of this
+   *  owner's tracks berthed here and their lateral offsets), lay a passenger platform strip
+   *  alongside each track, and sit the building just BEYOND the outermost rail — never in the
+   *  middle of the yard. Re-run whenever a line berths, so the station visibly transforms as
+   *  tracks arrive. Purely visual — catchment and the economy key off st.pos, never the mesh. */
   private alignDepot(st: GStation, owner: Company): void {
     const depot = st.depots.get(owner);
     if (!depot) return;
     const at = new THREE.Vector3();
     const dir = new THREE.Vector3();
-    // Align beside a line OWNED BY this company that stops here, so each railroad's depot sits on
-    // its own rails — never a rival's.
-    const line = this.lines.find(
+    // The yard axis comes from the FIRST line berthed here (extra lines' platforms run parallel
+    // to it by construction — platformBerth fans them along this same tangent).
+    const lines = this.lines.filter(
       (l) => l.owner === owner && !l.through && l.stops.includes(st) && l.track.group.children.length > 0
     );
     // Stagger each railroad's depot further off the rails so two owners at one city never stack.
     const slot = Math.max(0, [...st.depots.keys()].indexOf(owner));
-    if (line) {
-      const u = Math.max(0, Math.min(1, line.stopFracs[line.stops.indexOf(st)]));
-      line.track.curve.getPointAt(u, at);
-      line.track.curve.getTangentAt(u, dir);
+    if (lines.length) {
+      const first = lines[0];
+      const u = Math.max(0, Math.min(1, first.stopFracs[first.stops.indexOf(st)]));
+      first.track.curve.getPointAt(u, at);
+      first.track.curve.getTangentAt(u, dir);
       dir.y = 0;
       depot.aligned = true;
     } else {
@@ -939,20 +957,53 @@ export class Network {
     }
     if (dir.lengthSq() < 1e-6) dir.set(1, 0, 0);
     dir.normalize();
-    // The station GROWS with the number of platforms (this railroad's lines berthing here): a
-    // bigger station building, set a touch further off the rails so it clears the fan of platform
-    // tracks — so a 4-line hub reads as a grand station, not the same shed a single stub gets.
-    const platforms = Math.min(4, this.lines.filter((l) => l.owner === owner && !l.through && l.stops.includes(st)).length || 1);
-    const grow = 1 + (platforms - 1) * 0.3;
-    depot.mesh.scale.set(grow, 1 + (platforms - 1) * 0.14, grow);
-    // Sit the depot just off one side of the track so its platform's track edge (+X local)
-    // runs right alongside the rails (its long axis +Z parallel to them) — a station ON the
-    // line, not a building nearby.
-    const SIDE = 6.5 + slot * 9 + (platforms - 1) * 3.5;
-    const px = at.x - dir.z * SIDE;
-    const pz = at.z + dir.x * SIDE;
+    const perp = new THREE.Vector3(-dir.z, 0, dir.x);
+    // Where each berthed track actually sits across the yard (signed offset along perp).
+    const offs = lines.map((l) => {
+      const p = new THREE.Vector3();
+      l.track.curve.getPointAt(Math.max(0, Math.min(1, l.stopFracs[l.stops.indexOf(st)])), p);
+      return p.sub(at).dot(perp);
+    });
+    if (!offs.length) offs.push(0);
+    // The building goes on the side of the yard with the tighter spread, just beyond the
+    // outermost rail there — a station HOUSE beside its yard, never marooned between tracks.
+    const maxPos = Math.max(0, ...offs);
+    const maxNeg = Math.max(0, ...offs.map((o) => -o));
+    const side = maxPos <= maxNeg ? 1 : -1;
+    const edge = side > 0 ? maxPos : maxNeg;
+    const platforms = Math.min(4, Math.max(1, lines.length));
+    // Grow mostly ALONG the yard (local +Z runs parallel to the rails) — a longer station
+    // building for a bigger yard, not a fatter blob.
+    depot.mesh.scale.set(1 + (platforms - 1) * 0.12, 1 + (platforms - 1) * 0.14, 1 + (platforms - 1) * 0.3);
+    const SIDE = edge + 7 + slot * 9;
+    const px = at.x + perp.x * side * SIDE;
+    const pz = at.z + perp.z * side * SIDE;
     depot.mesh.position.set(px, this.field.height(px, pz), pz);
     depot.mesh.rotation.y = Math.atan2(dir.x, dir.z);
+    // Passenger platforms: one low strip alongside EACH berthed track (on its building side), so
+    // a 4-track hub reads as four served platforms, not four bare rails past a shed.
+    this.disposePlatforms(depot);
+    if (depot.aligned && lines.length) {
+      const group = new THREE.Group();
+      const mat = new THREE.MeshStandardMaterial({ color: 0x9b948a, roughness: 0.95 });
+      const trim = new THREE.MeshStandardMaterial({ color: 0x6e675e, roughness: 1 });
+      for (const o of offs) {
+        const c = at.clone().addScaledVector(perp, o + side * 3.2);
+        const y = this.field.height(c.x, c.z);
+        const slab = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.9, 30), mat);
+        slab.position.set(c.x, y + 0.45, c.z);
+        slab.rotation.y = Math.atan2(dir.x, dir.z);
+        slab.castShadow = true;
+        slab.receiveShadow = true;
+        const skirt = new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.3, 30.6), trim);
+        skirt.position.set(c.x, y + 0.15, c.z);
+        skirt.rotation.y = slab.rotation.y;
+        skirt.receiveShadow = true;
+        group.add(skirt, slab);
+      }
+      this.scene.add(group);
+      depot.platforms = group;
+    }
   }
 
   /** Buy a maintenance building at a player-owned depot (one of each). */
